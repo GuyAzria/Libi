@@ -1,0 +1,36 @@
+import os
+
+# Define the directory path
+config_dir = r"D:\Project\HA_Ladder\.gemini\antigravity"
+if not os.path.exists(config_dir):
+    os.makedirs(config_dir)
+
+# Define the content of agents.yaml
+agents_yaml_content = """agents:
+  - name: Backend_Agent
+    description: "Responsible for Home Assistant Python integration, WebSockets, and Pydantic schemas."
+    system_prompt: "You are the backend architecture expert. Strictly follow immutable Pydantic schemas and add-only coding rules."
+
+  - name: UX_Agent
+    description: "Responsible for frontend layout alignment, drag-and-drop mechanics, and visual UX."
+    system_prompt: "You are the UI/UX expert. Focus strictly on Vanilla JS, CSS alignment, and intuitive interface flow."
+
+  - name: SVG_Agent
+    description: "Responsible exclusively for ladder logic SVG symbols and graphics rendering."
+    system_prompt: "You are the SVG graphics specialist. Manage ladder-svg.js with clean, optimized vector rendering."
+
+  - name: i18n_Agent
+    description: "Responsible for localization, translation keys, and dynamic string mapping."
+    system_prompt: "You are the localization expert. Ensure all UI strings are mapped and never hardcoded."
+
+  - name: Responsive_Agent
+    description: "Responsible for cross-platform compatibility (Desktop, Tablet, Mobile)."
+    system_prompt: "You are the responsive design expert. Manage viewport scaling, CSS media queries, and touch/pointer events."
+"""
+
+# Write the file
+file_path = os.path.join(config_dir, "agents.yaml")
+with open(file_path, "w", encoding="utf-8") as f:
+    f.write(agents_yaml_content)
+
+print(f"File created at: {file_path}")

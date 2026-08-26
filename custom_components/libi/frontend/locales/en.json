@@ -1,0 +1,15 @@
+{
+  "motion_sensor": "Motion Sensor",
+  "night_mode": "Night Mode",
+  "toggle": "Toggle",
+  "create_variable": "Create Variable",
+  "variable_name": "Variable Name",
+  "select_type": "Select Type",
+  "boolean_flag": "Boolean Flag",
+  "create": "Create",
+  "cancel": "Cancel",
+  "save_update_yaml": "Save / Update YAML",
+  "delete_node": "Delete",
+  "duplicate_node": "Duplicate",
+  "change_logic": "Change Logic"
+}
