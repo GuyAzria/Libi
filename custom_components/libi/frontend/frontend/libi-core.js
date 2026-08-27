@@ -14,7 +14,7 @@
  */
 /**
  * LIBI Panel - Core Engine
- * v3.16.0
+ * v3.17.0
  */
 // [ADDED v3.5.0 | 2026-08-24] Purpose: A net carries a level of automation, script or scene, and
 //   validateAST runs the rule set that belongs to that level. A net with no level is an automation.

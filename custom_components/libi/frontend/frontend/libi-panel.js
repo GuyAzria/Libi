@@ -17,14 +17,14 @@
  * v3.5.0
  */
 // [ADDED v3.5.0 | 2026-08-20] Purpose: Integrated the full SVG logo with the original house, electronic circuit traces, 3-rung ladder, and aligned text into the header title.
-import { LibiCore } from './libi-core.js?v=3.16.0';
-import { getStyles } from './libi-css.js?v=3.16.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.16.0';
-import { LibiOnline } from './libi-online.js?v=3.16.0';
+import { LibiCore } from './libi-core.js?v=3.17.0';
+import { getStyles } from './libi-css.js?v=3.17.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.17.0';
+import { LibiOnline } from './libi-online.js?v=3.17.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.16.0';
+export const LIBI_BUILD = '3.17.0';
 
 // [ADDED v3.16.0] Every helper Home Assistant can create from a stored collection, which is what a
 // ladder programmer means by a local variable: a bit, a word, a timer, a counter. The other kind of
@@ -43,6 +43,34 @@ export const HELPER_TYPES = [
     { domain: 'schedule',       label: 'Schedule  ·  schedule',      defaults: {} },
 ];
 const HELPER_DOMAINS = HELPER_TYPES.map(h => h.domain);
+
+// [ADDED v3.17.0] The ladder view of what a variable is. Home Assistant has no notion of a data
+// type, it has domains, so this table is the bridge: a bit, a whole number, a real number, text and
+// time. Anything that is not a helper at all is an ordinary Home Assistant entity.
+export const VAR_TYPES = {
+    BOOL:  { label: 'BOOL',  domain: 'input_boolean', title: 'A bit. On or off.' },
+    INT:   { label: 'INT',   domain: 'input_number',  title: 'A whole number.',  defaults: { min: 0, max: 100, step: 1, mode: 'box' } },
+    FLOAT: { label: 'FLOAT', domain: 'input_number',  title: 'A real number.',   defaults: { min: 0, max: 100, step: 0.1, mode: 'box' } },
+    TEXT:  { label: 'TEXT',  domain: 'input_text',    title: 'A string.',        defaults: { min: 0, max: 100, mode: 'text' } },
+    TIME:  { label: 'TIME',  domain: 'timer',         title: 'A timer or a date and time.', defaults: { duration: '00:01:00', restore: true } },
+};
+const VAR_TYPE_KEYS = Object.keys(VAR_TYPES);
+
+// Which of the five a given entity is. A counter and an input_number both hold a number, and the
+// step is what says whether it counts in whole numbers or in fractions.
+export function varTypeOf(entityId, hass) {
+    const domain = String(entityId || '').split('.')[0];
+    if (domain === 'input_boolean' || domain === 'input_button') return 'BOOL';
+    if (domain === 'input_text' || domain === 'input_select') return 'TEXT';
+    if (domain === 'input_datetime' || domain === 'timer' || domain === 'schedule') return 'TIME';
+    if (domain === 'counter') return 'INT';
+    if (domain === 'input_number') {
+        const st = hass && hass.states && hass.states[entityId];
+        const step = st && st.attributes ? Number(st.attributes.step) : 1;
+        return (!isFinite(step) || step >= 1) ? 'INT' : 'FLOAT';
+    }
+    return 'HA';
+}
 
 class LibiPanel extends HTMLElement {
     constructor() {
@@ -66,12 +94,18 @@ class LibiPanel extends HTMLElement {
         // [ADDED v3.14.0] The workspace that is open. A project holds a set of nets, each one
         // remembering which automation it was loaded from, and it is stored as its own .libi file.
         // [ADDED v3.16.0] The drawer of local variables at the foot of the sidebar.
+        // [CHANGED v3.17.0] The variables live in a bar of their own along the bottom, with the same
+        // fold and resize behaviour as the sidebar and a remembered height.
         this._varsOpen = this._readFlag('libi_vars_open');
+        this._varsH = this._readNum('libi_vars_h', 280, 120, 900);
+        this._varsTab = 'vars';        // vars | search
+        this._varsScope = 'net';       // net | all
+        this._varsFilter = 'ALL';      // ALL | BOOL | INT | FLOAT | TEXT | TIME | HA
         this._varsQuery = '';
         this._varsNewName = '';
-        this._varsNewType = 'input_boolean';
-        this._varsExtra = {};
+        this._varsNewType = 'BOOL';
         this._helperIds = {};          // domain -> { objectId: collectionId }
+        this._draggedVar = null;
         this._project = null;          // { slug, name }
         this._projectList = [];
         this._projectDirty = false;
@@ -547,9 +581,9 @@ class LibiPanel extends HTMLElement {
                     </div>
                     <div class="sidebar-rail-tag">LIBI</div>
                     <div class="sidebar-content">${sidebarHtml}</div>
-                    ${this._varsDrawerHtml()}
                 </div>
             </div>
+            ${this._varsBarHtml()}
         </div>
         ${fanMenuHtml}
         ${modalHtml}
@@ -1279,9 +1313,9 @@ class LibiPanel extends HTMLElement {
     }
 
     // [ADDED v3.12.0] Reads a saved number, clamped, and never throws when storage is unavailable.
-    // [ADDED v3.16.0] Every entity the drawing points at, so the search can say which variables
-    // belong to this project rather than only listing the whole house.
-    _projectEntities() {
+    // [ADDED v3.16.0] Every entity a drawing points at. With no net given it is the whole project,
+    // with one it is just that net, which is what the default view of the bar shows.
+    _netEntities(net) {
         const found = new Set();
         const add = (v) => {
             const s = String(v == null ? '' : v).replace(/\s*\+\d+$/, '').trim();
@@ -1294,105 +1328,205 @@ class LibiPanel extends HTMLElement {
             if (el.type === 'parallel') (el.branches || []).forEach(walk);
             if (el.type === 'repeat') walk(el.sequence);
         });
-        (this.core.nets || []).forEach(n => (n.rungs || []).forEach(r => walk(r.elements)));
+        (net.rungs || []).forEach(r => walk(r.elements));
+        // Variables made for this net but not yet placed on a rung still belong to it.
+        (net.vars || []).forEach(add);
         return found;
     }
 
-    // A row of the search results, or of the variable list.
-    _varRowHtml(entityId, opts = {}) {
+    _projectEntities() {
+        const all = new Set();
+        (this.core.nets || []).forEach(n => this._netEntities(n).forEach(e => all.add(e)));
+        return all;
+    }
+
+    // The net the bar is scoped to: the one holding the selected element, else the first one.
+    _currentNet() {
+        if (this._inspectedEl) {
+            const n = this.core.nets.find(x => x.id === this._inspectedEl.netId);
+            if (n) return n;
+        }
+        if (this._inspectedNetYaml) {
+            const n = this.core.nets.find(x => x.id === this._inspectedNetYaml);
+            if (n) return n;
+        }
+        return (this.core.nets || [])[0] || null;
+    }
+
+    _varsRows() {
+        const states = (this._hass && this._hass.states) || {};
+        const net = this._currentNet();
+        const scoped = this._varsScope === 'net' && net ? this._netEntities(net) : null;
+        const q = String(this._varsQuery || '').trim().toLowerCase();
+
+        let ids = scoped ? [...scoped] : Object.keys(states);
+        if (!scoped && this._varsFilter === 'ALL') {
+            // Showing the whole house with no filter would be thousands of rows, so only the
+            // helpers are listed until a filter or a search narrows it.
+            ids = ids.filter(e => HELPER_DOMAINS.includes(e.split('.')[0]));
+        }
+        return ids
+            .filter(e => this._varsFilter === 'ALL' || varTypeOf(e, this._hass) === this._varsFilter)
+            .filter(e => {
+                if (!q) return true;
+                const nm = (this.core.friendlyName(e, this._hass) || '').toLowerCase();
+                return e.toLowerCase().includes(q) || nm.includes(q);
+            })
+            .sort();
+    }
+
+    _varsRowHtml(entityId) {
         const st = (this._hass && this._hass.states && this._hass.states[entityId]) || null;
         const name = this.core.friendlyName(entityId, this._hass) || entityId.split('.').slice(1).join('.');
         const domain = entityId.split('.')[0];
-        const removable = HELPER_DOMAINS.includes(domain);
-        const stored = removable && this._helperIds[domain] && this._helperIds[domain][entityId.split('.').slice(1).join('.')];
-        const del = removable
-            ? `<button class="del vars-del" data-eid="${this._esc(entityId)}" ${stored ? '' : 'disabled'} title="${stored ? 'Delete this variable' : 'Defined in YAML, so it cannot be removed from here'}">🗑</button>`
-            : '';
-        return `<div class="vars-row vars-copy" data-eid="${this._esc(entityId)}" title="Click to copy ${this._esc(entityId)}">
-            <div class="txt"><div class="nm" dir="auto">${this._esc(name)}</div><div class="eid">${this._esc(entityId)}</div></div>
-            <span class="st">${st ? this._esc(String(st.state).slice(0, 12)) : '—'}</span>${del}
-        </div>`;
+        const type = varTypeOf(entityId, this._hass);
+        const objectId = entityId.split('.').slice(1).join('.');
+        const stored = HELPER_DOMAINS.includes(domain) && this._helperIds[domain] && this._helperIds[domain][objectId];
+        const typeCell = type === 'HA'
+            ? `<span class="type-tag type-HA" title="An ordinary Home Assistant entity, not a variable LIBI can change">HA</span>`
+            : `<select class="vars-type" data-eid="${this._esc(entityId)}" ${stored ? '' : 'disabled'} title="${stored ? 'Change the type of this variable' : 'Written in YAML, so LIBI cannot change it'}">
+                    ${VAR_TYPE_KEYS.map(k => `<option value="${k}" ${k === type ? 'selected' : ''}>${k}</option>`).join('')}
+               </select>`;
+        return `<tr class="vars-drag" draggable="true" data-eid="${this._esc(entityId)}" title="Drag onto a pin or a block to use it there">
+            <td class="grab">⠿</td>
+            <td class="c-name" dir="auto">${this._esc(name)}</td>
+            <td class="c-eid">${this._esc(entityId)}</td>
+            <td>${typeCell}</td>
+            <td class="c-val">${st ? this._esc(String(st.state).slice(0, 16)) : '—'}</td>
+            <td class="c-act"><button class="vars-del" data-eid="${this._esc(entityId)}" ${stored ? '' : 'disabled'} title="${stored ? 'Delete this variable' : 'Written in YAML, so it cannot be removed from here'}">🗑</button></td>
+        </tr>`;
     }
 
-    _varsDrawerHtml() {
-        const q = String(this._varsQuery || '').trim().toLowerCase();
-        const states = (this._hass && this._hass.states) || {};
-        const inProject = this._projectEntities();
+    _varsBarHtml() {
+        const net = this._currentNet();
+        const rows = this._varsRows();
+        const projectCount = this._projectEntities().size;
 
-        const matches = (eid) => {
-            if (!q) return true;
-            const nm = (this.core.friendlyName(eid, this._hass) || '').toLowerCase();
-            return eid.toLowerCase().includes(q) || nm.includes(q);
-        };
+        const chip = (id, label, on, title) =>
+            `<button class="vars-chip${on ? ' on' : ''}" id="${id}" title="${this._esc(title || '')}">${label}</button>`;
+        const filterChips = ['ALL', ...VAR_TYPE_KEYS, 'HA']
+            .map(k => `<button class="vars-chip vars-filter${this._varsFilter === k ? ' on' : ''}" data-f="${k}" title="${this._esc(k === 'ALL' ? 'Every type' : (VAR_TYPES[k] ? VAR_TYPES[k].title : 'Entities of Home Assistant that are not LIBI variables'))}">${k}</button>`)
+            .join('');
 
-        // Group one: what this project already uses. Group two: everything else in the house.
-        const mine = [...inProject].filter(matches).sort();
-        const helpers = Object.keys(states).filter(e => HELPER_DOMAINS.includes(e.split('.')[0]) && matches(e) && !inProject.has(e)).sort();
-        const rest = q
-            ? Object.keys(states).filter(e => matches(e) && !inProject.has(e) && !HELPER_DOMAINS.includes(e.split('.')[0])).sort().slice(0, 60)
-            : [];
+        const table = rows.length
+            ? `<table class="vars-table"><thead><tr>
+                    <th style="width:22px;"></th><th>Name</th><th>Entity</th><th style="width:110px;">Type</th><th style="width:110px;">Value</th><th style="width:44px;"></th>
+               </tr></thead><tbody>${rows.map(e => this._varsRowHtml(e)).join('')}</tbody></table>`
+            : `<div class="vars-empty">${this._varsScope === 'net'
+                    ? (net ? `This net uses no variables yet. Make one below and it is added to ${this._esc(net.name)}.` : 'There is no net to scope to yet.')
+                    : 'Nothing matches. Try another filter or another word.'}</div>`;
 
-        const group = (title, list, cap) => {
-            if (!list.length) return '';
-            const shown = cap ? list.slice(0, cap) : list;
-            return `<div class="vars-group-title">${title} <span class="n">${list.length}</span></div>
-                <div class="vars-list">${shown.map(e => this._varRowHtml(e)).join('')}</div>
-                ${list.length > shown.length ? `<div class="vars-empty">and ${list.length - shown.length} more, keep typing to narrow it down</div>` : ''}`;
-        };
-
-        const typeOpts = HELPER_TYPES.map(h =>
-            `<option value="${h.domain}" ${this._varsNewType === h.domain ? 'selected' : ''}>${h.label}</option>`).join('');
-        const chosen = HELPER_TYPES.find(h => h.domain === this._varsNewType) || HELPER_TYPES[0];
-        let extraHtml = '';
-        if (chosen.extra === 'number') {
-            extraHtml = `<div class="line"><input type="number" id="varsMin" placeholder="min" value="${this._varsExtra.min ?? 0}" /><input type="number" id="varsMax" placeholder="max" value="${this._varsExtra.max ?? 100}" /><input type="number" id="varsStep" placeholder="step" value="${this._varsExtra.step ?? 1}" /></div>`;
-        } else if (chosen.extra === 'options') {
-            extraHtml = `<div class="line"><input type="text" id="varsOptions" placeholder="Options, separated by commas" value="${this._esc(this._varsExtra.options || 'Option 1')}" dir="auto" /></div>`;
-        } else if (chosen.extra === 'duration') {
-            extraHtml = `<div class="line"><input type="text" id="varsDuration" placeholder="hh:mm:ss" value="${this._esc(this._varsExtra.duration || '00:01:00')}" /></div>`;
-        }
-
-        const total = mine.length + helpers.length + rest.length;
-        return `<div class="vars-drawer${this._varsOpen ? ' open' : ''}" id="varsDrawer">
-            <div class="vars-head" id="varsHead">
-                <span class="chev">▶</span> Local variables
-                <span class="count">${this._varsOpen ? total : ''}</span>
-            </div>
-            <div class="vars-body">
-                <div class="vars-search">
+        const body = this._varsTab === 'search'
+            ? `<div class="vars-filters">
                     <input type="text" id="varsQuery" placeholder="Search this project and all of Home Assistant" value="${this._esc(this._varsQuery)}" dir="auto" />
-                    ${this._varsQuery ? '<button class="btn btn-ghost" id="varsClear" style="padding:0 10px;">✕</button>' : ''}
+                    ${this._varsQuery ? '<button class="vars-chip" id="varsClear">Clear</button>' : ''}
+                    <div class="vars-sep"></div>${filterChips}
+               </div>
+               ${(() => {
+                    const q = String(this._varsQuery || '').trim().toLowerCase();
+                    const states = (this._hass && this._hass.states) || {};
+                    const inProj = this._projectEntities();
+                    const match = (e) => {
+                        if (this._varsFilter !== 'ALL' && varTypeOf(e, this._hass) !== this._varsFilter) return false;
+                        if (!q) return true;
+                        const nm = (this.core.friendlyName(e, this._hass) || '').toLowerCase();
+                        return e.toLowerCase().includes(q) || nm.includes(q);
+                    };
+                    const mine = [...inProj].filter(match).sort();
+                    const rest = Object.keys(states).filter(e => !inProj.has(e) && match(e)).sort().slice(0, 120);
+                    const sect = (title, list) => list.length
+                        ? `<div class="vars-group-title" style="font-size:11px;font-weight:800;text-transform:uppercase;color:#9e9e9e;margin:8px 0 2px;">${title} · ${list.length}</div>
+                           <table class="vars-table"><tbody>${list.map(e => this._varsRowHtml(e)).join('')}</tbody></table>` : '';
+                    if (!mine.length && !rest.length) return '<div class="vars-empty">Nothing matches that.</div>';
+                    return sect('In this project', mine) + sect('Everywhere in Home Assistant', rest);
+               })()}`
+            : `<div class="vars-filters">
+                    ${chip('varsScopeNet', net ? `Net · ${this._esc(net.name)}` : 'This net', this._varsScope === 'net', 'Only the variables this net uses')}
+                    ${chip('varsScopeAll', `All of Home Assistant`, this._varsScope === 'all', 'Every variable in the house')}
+                    <div class="vars-sep"></div>${filterChips}
+               </div>
+               ${table}
+               <div class="vars-new">
+                    <input type="text" class="name" id="varsNewName" placeholder="New variable name" value="${this._esc(this._varsNewName)}" dir="auto" />
+                    <select id="varsNewType">${VAR_TYPE_KEYS.map(k => `<option value="${k}" ${this._varsNewType === k ? 'selected' : ''}>${k} · ${VAR_TYPES[k].domain}</option>`).join('')}</select>
+                    <button class="btn" id="varsCreate">Add variable</button>
+                    <div class="note">${net ? `It is created in Home Assistant and listed under ${this._esc(net.name)} straight away.` : 'Make a net first so the variable has somewhere to belong.'}</div>
+               </div>`;
+
+        return `<div class="vars-bar${this._varsOpen ? '' : ' rail'}" id="varsBar">
+            <div class="vars-grip" id="varsGrip" title="Drag to resize. Double click to reset."></div>
+            <div class="vars-top">
+                <span class="vars-title">Variables</span>
+                <div class="vars-tabs">
+                    <button class="vars-tab${this._varsTab === 'vars' ? ' on' : ''}" id="varsTabVars">Variables<span class="n">${rows.length}</span></button>
+                    <button class="vars-tab${this._varsTab === 'search' ? ' on' : ''}" id="varsTabSearch">Search<span class="n">${projectCount}</span></button>
                 </div>
-                ${group('In this project', mine)}
-                ${group('Variables in Home Assistant', helpers, 40)}
-                ${group('Everything else', rest, 40)}
-                ${total === 0 ? `<div class="vars-empty">${q ? 'Nothing matches that.' : 'No variables yet. Make one below.'}</div>` : ''}
-                <div class="vars-new">
-                    <div class="line">
-                        <input type="text" class="name" id="varsNewName" placeholder="New variable name" value="${this._esc(this._varsNewName)}" dir="auto" />
-                        <select class="type" id="varsNewType">${typeOpts}</select>
-                    </div>
-                    ${extraHtml}
-                    <div class="line"><button class="btn" id="varsCreate" style="flex:1;">Create variable</button></div>
-                </div>
+                <div class="spacer"></div>
+                <button class="vars-fold" id="varsFold" title="${this._varsOpen ? 'Fold the bar down' : 'Open the bar'}">${this._varsOpen ? '▼' : '▲'}</button>
             </div>
+            <div class="vars-body">${body}</div>
         </div>`;
     }
 
-    // Home Assistant hands out its own id for a stored helper. Reading the list is what tells us
-    // which helpers can be deleted at all: one written into YAML by hand is not in the collection.
+    _applyVarsSize() {
+        const host = this.shadowRoot && this.shadowRoot.querySelector('.panel-layout');
+        if (host) host.style.setProperty('--libi-vars-h', this._varsH + 'px');
+        const bar = this.shadowRoot && this.shadowRoot.getElementById('varsBar');
+        if (bar) bar.classList.toggle('rail', !this._varsOpen);
+    }
+
+    _saveVars() {
+        try {
+            localStorage.setItem('libi_vars_h', String(this._varsH));
+            localStorage.setItem('libi_vars_open', this._varsOpen ? '1' : '0');
+        } catch (err) { /* storage unavailable */ }
+    }
+
+    // The grip sits on the top edge, so dragging up makes the bar taller.
+    _bindVarsGrip() {
+        const sr = this.shadowRoot;
+        const grip = sr.getElementById('varsGrip');
+        const bar = sr.getElementById('varsBar');
+        if (!grip || !bar) return;
+        let startY = 0, startH = 0;
+        const move = (ev) => {
+            const next = startH + (startY - ev.clientY);
+            this._varsH = Math.min(Math.round(window.innerHeight * 0.78), Math.max(120, Math.round(next)));
+            this._applyVarsSize();
+        };
+        const up = (ev) => {
+            grip.classList.remove('active');
+            bar.classList.remove('dragging');
+            try { grip.releasePointerCapture(ev.pointerId); } catch (err) { /* already released */ }
+            grip.removeEventListener('pointermove', move);
+            grip.removeEventListener('pointerup', up);
+            grip.removeEventListener('pointercancel', up);
+            this._saveVars();
+        };
+        grip.addEventListener('pointerdown', (ev) => {
+            if (!this._varsOpen) return;
+            ev.preventDefault();
+            startY = ev.clientY; startH = this._varsH;
+            grip.classList.add('active');
+            bar.classList.add('dragging');
+            try { grip.setPointerCapture(ev.pointerId); } catch (err) { /* fall back to bubbling */ }
+            grip.addEventListener('pointermove', move);
+            grip.addEventListener('pointerup', up);
+            grip.addEventListener('pointercancel', up);
+        });
+        grip.addEventListener('dblclick', () => { this._varsH = 280; this._saveVars(); this._applyVarsSize(); });
+    }
+
     async _varsRefreshIds() {
         if (!this._hass || !this._hass.connection) return;
         const next = {};
         await Promise.all(HELPER_DOMAINS.map(async (domain) => {
+            next[domain] = {};
             try {
                 const res = await this._hass.connection.sendMessagePromise({ type: `${domain}/list` });
                 const items = Array.isArray(res) ? res : (res && res.items) || [];
-                next[domain] = {};
                 items.forEach(it => { if (it && it.id) next[domain][String(it.id)] = String(it.id); });
-            } catch (err) {
-                next[domain] = {};
-            }
+            } catch (err) { /* the domain is not loaded in this installation */ }
         }));
         this._helperIds = next;
     }
@@ -1400,20 +1534,13 @@ class LibiPanel extends HTMLElement {
     async _varsCreate() {
         const name = String(this._varsNewName || '').trim();
         if (!name) { alert('A variable needs a name.'); return; }
-        const type = HELPER_TYPES.find(h => h.domain === this._varsNewType) || HELPER_TYPES[0];
-        const payload = { type: `${type.domain}/create`, name, ...type.defaults };
-        if (type.extra === 'number') {
-            payload.min = Number(this._varsExtra.min ?? 0);
-            payload.max = Number(this._varsExtra.max ?? 100);
-            payload.step = Number(this._varsExtra.step ?? 1);
-        } else if (type.extra === 'options') {
-            const opts = String(this._varsExtra.options || 'Option 1').split(',').map(s => s.trim()).filter(Boolean);
-            payload.options = opts.length ? opts : ['Option 1'];
-        } else if (type.extra === 'duration') {
-            payload.duration = String(this._varsExtra.duration || '00:01:00');
-        }
+        const spec = VAR_TYPES[this._varsNewType] || VAR_TYPES.BOOL;
         try {
-            await this._hass.connection.sendMessagePromise(payload);
+            await this._hass.connection.sendMessagePromise({ type: `${spec.domain}/create`, name, ...(spec.defaults || {}) });
+            // Remember it against the net that is open, so it is listed there before it is placed.
+            const net = this._currentNet();
+            const guessed = `${spec.domain}.${name.toLowerCase().trim().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')}`;
+            if (net) { net.vars = net.vars || []; if (!net.vars.includes(guessed)) net.vars.push(guessed); this._projectDirty = true; }
             this._varsNewName = '';
             await this._varsRefreshIds();
             this._render();
@@ -1422,24 +1549,95 @@ class LibiPanel extends HTMLElement {
         }
     }
 
+    // Changing the type. Within one domain this is a real update and the entity keeps its id and its
+    // history. Across domains Home Assistant has no such thing as a conversion, so the only way is to
+    // remove and remake, which gives a new entity id and breaks whatever pointed at the old one. That
+    // is said plainly before anything happens rather than discovered afterwards.
+    async _varsChangeType(entityId, nextKey) {
+        const current = varTypeOf(entityId, this._hass);
+        if (current === nextKey) return;
+        const spec = VAR_TYPES[nextKey];
+        const domain = entityId.split('.')[0];
+        const objectId = entityId.split('.').slice(1).join('.');
+        const name = this.core.friendlyName(entityId, this._hass) || objectId;
+
+        if (spec.domain === domain) {
+            try {
+                await this._hass.connection.sendMessagePromise({
+                    type: `${domain}/update`, [`${domain}_id`]: objectId, name, ...(spec.defaults || {}),
+                });
+                this._render();
+                return;
+            } catch (err) {
+                alert('Could not change the type: ' + (err && err.message ? err.message : err));
+                this._render();
+                return;
+            }
+        }
+
+        const ok = confirm(
+            `${name} is a ${current} and you are asking for a ${nextKey}.\n\n` +
+            `Home Assistant cannot convert one kind of helper into another. LIBI would have to delete ` +
+            `${entityId} and create a new one, which means a new entity id, no history, and every ` +
+            `rung or automation still pointing at the old id would break.\n\nDo it anyway?`);
+        if (!ok) { this._render(); return; }
+        try {
+            for (const key of [`${domain}_id`, 'item_id', 'id']) {
+                try { await this._hass.connection.sendMessagePromise({ type: `${domain}/delete`, [key]: objectId }); break; }
+                catch (err) { if (key === 'id') throw err; }
+            }
+            await this._hass.connection.sendMessagePromise({ type: `${spec.domain}/create`, name, ...(spec.defaults || {}) });
+            await this._varsRefreshIds();
+            this._render();
+        } catch (err) {
+            alert('The change did not finish: ' + (err && err.message ? err.message : err));
+            await this._varsRefreshIds();
+            this._render();
+        }
+    }
+
     async _varsDelete(entityId) {
         const domain = entityId.split('.')[0];
         const objectId = entityId.split('.').slice(1).join('.');
         const nm = this.core.friendlyName(entityId, this._hass) || entityId;
         if (!confirm(`Delete ${nm}?\n\nThis removes the variable from Home Assistant. Anything still pointing at it will break.`)) return;
-        // The name of the id field differs between Home Assistant versions, so the likely spellings
-        // are tried in turn and the real error is shown only if all of them are refused.
         const keys = [`${domain}_id`, 'item_id', 'id'];
         let lastErr = null;
         for (const key of keys) {
             try {
                 await this._hass.connection.sendMessagePromise({ type: `${domain}/delete`, [key]: objectId });
+                (this.core.nets || []).forEach(n => { if (n.vars) n.vars = n.vars.filter(v => v !== entityId); });
                 await this._varsRefreshIds();
                 this._render();
                 return;
             } catch (err) { lastErr = err; }
         }
         alert('Could not delete the variable: ' + (lastErr && lastErr.message ? lastErr.message : lastErr));
+    }
+
+    // Dropping a variable onto a block. A pin takes it in that pin's own field, and the block itself
+    // takes it wherever that kind of block keeps its entity.
+    _applyDroppedVar(entityId, netId, rungId, elId, prop) {
+        const el = this.core.findEl(netId, rungId, elId);
+        if (!el) return false;
+        const type = String(el.type || '');
+        let field = prop;
+        if (!field) {
+            if (type.startsWith('coil') || type.startsWith('contact') || type === 'wait') field = 'label';
+            else if (type.startsWith('cmp')) field = 'sourceA';
+            else if (type === 'move') field = (el.mode || 'value') === 'value' ? 'target' : 'target';
+            else if (type === 'ctu') field = 'source';
+            else field = 'label';
+        }
+        el[field] = entityId;
+        if (field === 'label' || field === 'target') {
+            el.targetSpec = { entity_id: [entityId] };
+            el.targetKind = 'entity';
+            el.targetLabel = entityId;
+        }
+        this.core.pushHistory();
+        this._projectDirty = true;
+        return true;
     }
 
     // [ADDED v3.14.0] The name of the open workspace, or a note that none is open.
@@ -1917,16 +2115,32 @@ class LibiPanel extends HTMLElement {
         // redraw, and the button flips between the saved width and the 40 pixel rail.
         this._applySidebarSize();
         this._bindSidebarGrip();
-        // [ADDED v3.16.0] The drawer of local variables.
-        this._bindGroup('local variables', () => {
-            on('varsHead', 'click', () => {
+        this._applyVarsSize();
+        this._bindVarsGrip();
+        // [CHANGED v3.17.0] The bar of variables along the bottom: two tabs, the scope and type
+        // filters, editing a type in the table, and dragging a row onto a block.
+        this._bindGroup('variables bar', () => {
+            on('varsFold', 'click', (e) => {
+                e.stopPropagation();
                 this._varsOpen = !this._varsOpen;
-                try { localStorage.setItem('libi_vars_open', this._varsOpen ? '1' : '0'); } catch (err) { /* no storage */ }
+                this._saveVars();
                 if (this._varsOpen) this._varsRefreshIds().then(() => this._render());
                 else this._render();
             });
+            on('varsTabVars', 'click', (e) => { e.stopPropagation(); this._varsTab = 'vars'; this._varsOpen = true; this._saveVars(); this._render(); });
+            on('varsTabSearch', 'click', (e) => { e.stopPropagation(); this._varsTab = 'search'; this._varsOpen = true; this._saveVars(); this._render(); });
+            on('varsScopeNet', 'click', (e) => { e.stopPropagation(); this._varsScope = 'net'; this._render(); });
+            on('varsScopeAll', 'click', (e) => { e.stopPropagation(); this._varsScope = 'all'; this._render(); });
+            all('.vars-filter', 'click', e => {
+                e.stopPropagation();
+                this._varsFilter = e.currentTarget.getAttribute('data-f');
+                this._render();
+            });
+            on('varsClear', 'click', (e) => { e.stopPropagation(); this._varsQuery = ''; this._render(); });
+
             const q = sr.getElementById('varsQuery');
             if (q) {
+                q.addEventListener('click', e => e.stopPropagation());
                 q.addEventListener('input', (e) => {
                     this._varsQuery = e.target.value;
                     clearTimeout(this._varsTimer);
@@ -1936,39 +2150,86 @@ class LibiPanel extends HTMLElement {
                         if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
                     }, 220);
                 });
-                q.addEventListener('click', e => e.stopPropagation());
             }
-            on('varsClear', 'click', () => { this._varsQuery = ''; this._render(); });
             const nameBox = sr.getElementById('varsNewName');
             if (nameBox) {
-                nameBox.addEventListener('input', e => { this._varsNewName = e.target.value; });
                 nameBox.addEventListener('click', e => e.stopPropagation());
+                nameBox.addEventListener('input', e => { this._varsNewName = e.target.value; });
                 nameBox.addEventListener('keydown', e => { if (e.key === 'Enter') this._varsCreate(); });
             }
             const typeBox = sr.getElementById('varsNewType');
             if (typeBox) {
                 typeBox.addEventListener('click', e => e.stopPropagation());
-                typeBox.addEventListener('change', e => { this._varsNewType = e.target.value; this._varsExtra = {}; this._render(); });
+                typeBox.addEventListener('change', e => { this._varsNewType = e.target.value; });
             }
-            [['varsMin', 'min'], ['varsMax', 'max'], ['varsStep', 'step'],
-             ['varsOptions', 'options'], ['varsDuration', 'duration']].forEach(([id, key]) => {
-                const box = sr.getElementById(id);
-                if (box) {
-                    box.addEventListener('input', e => { this._varsExtra[key] = e.target.value; });
-                    box.addEventListener('click', e => e.stopPropagation());
-                }
+            on('varsCreate', 'click', (e) => { e.stopPropagation(); this._varsCreate(); });
+
+            all('.vars-type', 'click', e => e.stopPropagation());
+            all('.vars-type', 'change', e => {
+                e.stopPropagation();
+                this._varsChangeType(e.currentTarget.getAttribute('data-eid'), e.currentTarget.value);
             });
-            on('varsCreate', 'click', () => this._varsCreate());
             all('.vars-del', 'click', e => {
                 e.stopPropagation();
                 if (e.currentTarget.hasAttribute('disabled')) return;
                 this._varsDelete(e.currentTarget.getAttribute('data-eid'));
             });
-            all('.vars-copy', 'click', e => {
-                const eid = e.currentTarget.getAttribute('data-eid');
-                try { navigator.clipboard.writeText(eid); } catch (err) { /* clipboard refused */ }
-                e.currentTarget.classList.add('copied');
-                setTimeout(() => e.currentTarget.classList.remove('copied'), 600);
+
+            // Dragging a row out of the table and onto the ladder.
+            all('.vars-drag', 'dragstart', e => {
+                this._draggedVar = e.currentTarget.getAttribute('data-eid');
+                this._draggedEl = null;
+                e.currentTarget.classList.add('dragging');
+                if (e.dataTransfer) {
+                    e.dataTransfer.effectAllowed = 'copy';
+                    e.dataTransfer.setData('text/plain', this._draggedVar);
+                }
+            });
+            all('.vars-drag', 'dragend', e => {
+                e.currentTarget.classList.remove('dragging');
+                this._draggedVar = null;
+            });
+        });
+
+        // The blocks accept a dropped variable. A pin takes it in its own field, the block itself
+        // takes it wherever that kind of block keeps its entity.
+        this._bindGroup('variable drop targets', () => {
+            const over = (e) => {
+                if (!this._draggedVar) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+                e.currentTarget.classList.add('var-drop');
+            };
+            const leave = (e) => e.currentTarget.classList.remove('var-drop');
+
+            all('.pin-val', 'dragover', over);
+            all('.pin-val', 'dragleave', leave);
+            all('.pin-val', 'drop', e => {
+                e.currentTarget.classList.remove('var-drop');
+                if (!this._draggedVar) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const block = e.currentTarget.closest('.libi-el');
+                if (!block) return;
+                const done = this._applyDroppedVar(this._draggedVar,
+                    block.getAttribute('data-nid'), block.getAttribute('data-rid'),
+                    block.getAttribute('data-eid'), e.currentTarget.getAttribute('data-prop'));
+                this._draggedVar = null;
+                if (done) this._render();
+            });
+
+            all('.libi-el', 'dragover', over);
+            all('.libi-el', 'dragleave', leave);
+            all('.libi-el', 'drop', e => {
+                e.currentTarget.classList.remove('var-drop');
+                if (!this._draggedVar) return;
+                e.preventDefault();
+                const done = this._applyDroppedVar(this._draggedVar,
+                    e.currentTarget.getAttribute('data-nid'), e.currentTarget.getAttribute('data-rid'),
+                    e.currentTarget.getAttribute('data-eid'), null);
+                this._draggedVar = null;
+                if (done) this._render();
             });
         });
 
@@ -2541,6 +2802,7 @@ class LibiPanel extends HTMLElement {
         });
 
         all('.libi-el', 'dragstart', e => { 
+            this._draggedVar = null;
             this._draggedEl = { 
                 netId: e.currentTarget.getAttribute('data-nid'), 
                 rungId: e.currentTarget.getAttribute('data-rid'), 

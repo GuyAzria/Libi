@@ -26,7 +26,9 @@ export const getStyles = () => `
 .header-title { font-size: 20px; font-weight: 500; }
 .header-acts { display: flex; gap: 8px; align-items: center; }
 
-.main-content { display: flex; flex-direction: row; flex: 1; height: calc(100vh - 56px); overflow: hidden; }
+/* [CHANGED v3.17.0] The bar at the bottom takes its share of the height, so the row above it just
+   fills whatever is left rather than claiming the whole viewport. */
+.main-content { display: flex; flex-direction: row; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .canvas { flex: 1; overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 20px; -webkit-overflow-scrolling: touch; }
 /* [CHANGED v3.12.0] The width is no longer written here. It lives in --libi-sidebar-w, which the
    panel sets from what was saved last, so there is no fixed width other than the first ever run. */
@@ -57,7 +59,7 @@ export const getStyles = () => `
     .main-content { flex-direction: column; }
     /* On a phone the sidebar is a sheet at the bottom, so the same saved number is a height and the
        grip drags up and down instead of sideways. */
-    .sidebar { width: 100% !important; flex: 0 0 auto !important; border-left: none; border-top: 2px solid var(--primary-color, #03a9f4); height: var(--libi-sidebar-h, 40vh); max-height: 80vh; min-height: 40px; box-shadow: 0 -2px 8px rgba(0,0,0,0.1); }
+    .sidebar { width: 100% !important; flex: 0 0 auto !important; border-left: none; border-top: 2px solid var(--primary-color, #03a9f4); height: var(--libi-sidebar-h, 40vh); max-height: 60vh; min-height: 40px; box-shadow: 0 -2px 8px rgba(0,0,0,0.1); }
     .sidebar.rail { width: 100% !important; height: 40px !important; flex: 0 0 40px !important; }
     .sidebar-grip { left: 0; right: 0; top: -3px; bottom: auto; width: auto; height: 7px; cursor: row-resize; }
     .sidebar-rail-tag { writing-mode: horizontal-tb; margin: 0 0 0 6px; }
@@ -264,38 +266,79 @@ export const getStyles = () => `
 .project-chip .dirty { color: var(--warning-color, #ffa600); font-weight: 800; }
 @media (max-width: 768px) { .project-chip { max-width: 120px; margin-left: 6px; } }
 
-/* [ADDED v3.16.0] The drawer of local variables at the foot of the sidebar. */
-.vars-drawer { border-top: 1px solid var(--divider-color, #e0e0e0); background: var(--card-background-color, #fff); display: flex; flex-direction: column; flex: 0 0 auto; max-height: 60%; }
-.vars-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer; user-select: none; font-size: 12px; font-weight: 800; letter-spacing: .3px; text-transform: uppercase; color: var(--secondary-text-color, #757575); background: rgba(0,0,0,0.02); }
-.vars-head:hover { background: rgba(0,0,0,0.05); }
-.vars-head .chev { transition: transform .18s; font-size: 11px; }
-.vars-drawer.open .vars-head .chev { transform: rotate(90deg); }
-.vars-head .count { margin-left: auto; font-weight: 700; color: var(--primary-color, #03a9f4); text-transform: none; letter-spacing: 0; }
-.vars-body { display: none; flex-direction: column; min-height: 0; padding: 10px 12px 12px 12px; gap: 10px; overflow: auto; }
-.vars-drawer.open .vars-body { display: flex; }
-.vars-search { display: flex; gap: 6px; align-items: center; }
-.vars-search input { flex: 1; min-width: 0; }
-.vars-group-title { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .3px; color: var(--secondary-text-color, #9e9e9e); margin: 4px 0 2px 0; display: flex; align-items: center; gap: 6px; }
-.vars-group-title .n { font-weight: 700; color: var(--primary-color, #03a9f4); }
-.vars-list { display: flex; flex-direction: column; border: 1px solid var(--divider-color, #eee); border-radius: 6px; overflow: hidden; }
-.vars-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-bottom: 1px solid var(--divider-color, #f2f2f2); font-size: 13px; cursor: pointer; }
-.vars-row:last-child { border-bottom: none; }
-.vars-row:hover { background: var(--secondary-background-color, #f5f5f5); }
-.vars-row.copied { background: #e8f5e9; }
-.vars-row .txt { flex: 1; min-width: 0; }
-.vars-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.vars-row .eid { font-family: monospace; font-size: 11px; color: var(--secondary-text-color, #9e9e9e); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.vars-row .st { font-size: 11px; font-weight: 700; color: var(--secondary-text-color, #757575); flex: 0 0 auto; }
-.vars-row .del { border: none; background: none; color: var(--error-color, #db4437); cursor: pointer; font-size: 15px; line-height: 1; padding: 2px 4px; flex: 0 0 auto; border-radius: 4px; }
-.vars-row .del:hover { background: #fdecea; }
-.vars-row .del[disabled] { color: #bdbdbd; cursor: default; }
-.vars-row .del[disabled]:hover { background: none; }
-.vars-new { display: flex; flex-direction: column; gap: 6px; border: 1px dashed var(--divider-color, #ddd); border-radius: 6px; padding: 9px; }
-.vars-new .line { display: flex; gap: 6px; }
+/* [CHANGED v3.17.0] The variables moved out of the right sidebar into a bar of their own that runs
+   the whole width of the screen along the bottom. It behaves like the sidebar: a grip to resize, a
+   remembered size, and one button that folds it down to a rail. */
+.vars-bar { display: flex; flex-direction: column; flex: 0 0 auto; height: var(--libi-vars-h, 280px); min-height: 40px; max-height: 78vh; background: var(--card-background-color, #fff); border-top: 1px solid var(--divider-color, #e0e0e0); box-shadow: 0 -2px 8px rgba(0,0,0,.06); position: relative; z-index: 12; }
+.vars-bar.rail { height: 40px !important; }
+.vars-bar.dragging { user-select: none; }
+.vars-grip { position: absolute; left: 0; right: 0; top: -3px; height: 7px; cursor: row-resize; z-index: 30; touch-action: none; }
+.vars-grip:hover, .vars-grip.active { background: var(--primary-color, #03a9f4); opacity: .35; }
+.vars-bar.rail .vars-grip { display: none; }
+
+/* The row that stays visible when the bar is folded: the title, the two tabs, the fold button. */
+.vars-top { display: flex; align-items: center; gap: 8px; padding: 5px 10px; min-height: 40px; box-sizing: border-box; border-bottom: 1px solid var(--divider-color, #eee); background: rgba(0,0,0,0.02); flex: 0 0 auto; }
+.vars-title { font-size: 12px; font-weight: 800; letter-spacing: .3px; text-transform: uppercase; color: var(--secondary-text-color, #757575); flex: 0 0 auto; }
+.vars-tabs { display: flex; gap: 4px; }
+.vars-tab { border: 1px solid transparent; background: none; border-radius: 16px; padding: 5px 14px; font-size: 13px; font-weight: 600; color: var(--secondary-text-color, #757575); cursor: pointer; font-family: inherit; }
+.vars-tab:hover { background: rgba(0,0,0,.05); }
+.vars-tab.on { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
+.vars-tab .n { opacity: .75; font-weight: 700; margin-left: 5px; }
+.vars-top .spacer { flex: 1; }
+.vars-fold { border: 1px solid var(--divider-color, #ddd); background: var(--card-background-color, #fff); color: var(--secondary-text-color, #757575); border-radius: 6px; width: 26px; height: 26px; line-height: 1; font-size: 13px; cursor: pointer; flex: 0 0 auto; padding: 0; }
+.vars-fold:hover { border-color: var(--primary-color, #03a9f4); color: var(--primary-color, #03a9f4); }
+.vars-body { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; padding: 10px 12px 12px 12px; gap: 8px; }
+.vars-bar.rail .vars-body { display: none; }
+
+/* The scope and type filters. */
+.vars-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; }
+.vars-chip { border: 1px solid var(--divider-color, #ddd); background: var(--card-background-color, #fff); border-radius: 14px; padding: 4px 11px; font-size: 12px; font-weight: 600; color: var(--secondary-text-color, #757575); cursor: pointer; font-family: inherit; }
+.vars-chip:hover { border-color: var(--primary-color, #03a9f4); }
+.vars-chip.on { background: var(--primary-color, #03a9f4); border-color: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
+.vars-sep { width: 1px; align-self: stretch; background: var(--divider-color, #e0e0e0); margin: 0 4px; }
+.vars-filters input[type="text"] { flex: 1; min-width: 160px; }
+
+/* The table itself. */
+.vars-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.vars-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .3px; color: var(--secondary-text-color, #9e9e9e); font-weight: 800; padding: 6px 8px; border-bottom: 2px solid var(--divider-color, #e0e0e0); position: sticky; top: 0; background: var(--card-background-color, #fff); z-index: 2; }
+.vars-table td { padding: 5px 8px; border-bottom: 1px solid var(--divider-color, #f4f4f4); vertical-align: middle; }
+.vars-table tbody tr { cursor: grab; }
+.vars-table tbody tr:hover { background: var(--secondary-background-color, #f5f5f5); }
+.vars-table tbody tr.dragging { opacity: .45; }
+.vars-table .c-name { font-weight: 600; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vars-table .c-eid { font-family: monospace; font-size: 11px; color: var(--secondary-text-color, #9e9e9e); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vars-table .c-val { font-weight: 700; color: var(--primary-text-color, #212121); white-space: nowrap; }
+.vars-table .c-act { text-align: right; white-space: nowrap; }
+.vars-table select { font-size: 12px; padding: 2px 4px; }
+.vars-table .grab { color: #bdbdbd; cursor: grab; user-select: none; }
+.type-tag { display: inline-block; font-size: 10px; font-weight: 800; letter-spacing: .4px; padding: 2px 7px; border-radius: 10px; }
+.type-BOOL { background: #e8f5e9; color: #2e7d32; }
+.type-INT { background: #e3f2fd; color: #1565c0; }
+.type-FLOAT { background: #ede7f6; color: #5e35b1; }
+.type-TEXT { background: #fff8e1; color: #ef6c00; }
+.type-TIME { background: #fce4ec; color: #ad1457; }
+.type-HA { background: #eceff1; color: #546e7a; }
+.vars-del { border: none; background: none; color: var(--error-color, #db4437); cursor: pointer; font-size: 14px; padding: 2px 5px; border-radius: 4px; }
+.vars-del:hover { background: #fdecea; }
+.vars-del[disabled] { color: #cfcfcf; cursor: default; }
+.vars-del[disabled]:hover { background: none; }
+.vars-empty { font-size: 12px; color: var(--secondary-text-color, #9e9e9e); padding: 14px 4px; }
+
+/* Adding a variable, inline under the table. */
+.vars-new { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; border: 1px dashed var(--divider-color, #ddd); border-radius: 6px; padding: 8px; flex: 0 0 auto; }
 .vars-new input, .vars-new select { min-width: 0; }
-.vars-new .name { flex: 1; }
-.vars-new .type { flex: 1; }
-.vars-empty { font-size: 12px; color: var(--secondary-text-color, #9e9e9e); padding: 8px 2px; }
+.vars-new .name { flex: 1; min-width: 170px; }
+.vars-new .note { font-size: 11px; color: var(--secondary-text-color, #9e9e9e); flex-basis: 100%; }
+
+/* An element that a variable is being dragged over. */
+.libi-el.var-drop, .pin-val.var-drop { outline: 2px dashed var(--primary-color, #03a9f4); outline-offset: 2px; background: rgba(3,169,244,.10); }
+
+@media (max-width: 768px) {
+    .vars-bar { max-height: 70vh; }
+    .vars-title { display: none; }
+    .vars-table .c-eid { display: none; }
+}
+
 .libi-el.live-on .el-ico { background: #e8f5e9; border-color: #2e7d32; box-shadow: 0 0 0 2px rgba(46,125,50,.18); }
 .libi-el.live-on .plc-block { border-color: #2e7d32; box-shadow: 0 0 0 2px rgba(46,125,50,.15); }
 .libi-el.live-on .plc-header { background: rgba(46,125,50,.16); color: #1b5e20; border-bottom-color: #2e7d32; }
