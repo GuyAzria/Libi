@@ -17,14 +17,14 @@
  * v3.5.0
  */
 // [ADDED v3.5.0 | 2026-08-20] Purpose: Integrated the full SVG logo with the original house, electronic circuit traces, 3-rung ladder, and aligned text into the header title.
-import { LibiCore } from './libi-core.js?v=3.17.0';
-import { getStyles } from './libi-css.js?v=3.17.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.17.0';
-import { LibiOnline } from './libi-online.js?v=3.17.0';
+import { LibiCore } from './libi-core.js?v=3.25.0';
+import { getStyles } from './libi-css.js?v=3.25.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.25.0';
+import { LibiOnline } from './libi-online.js?v=3.25.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.17.0';
+export const LIBI_BUILD = '3.25.0';
 
 // [ADDED v3.16.0] Every helper Home Assistant can create from a stored collection, which is what a
 // ladder programmer means by a local variable: a bit, a word, a timer, a counter. The other kind of
@@ -98,7 +98,13 @@ class LibiPanel extends HTMLElement {
         // fold and resize behaviour as the sidebar and a remembered height.
         this._varsOpen = this._readFlag('libi_vars_open');
         this._varsH = this._readNum('libi_vars_h', 280, 120, 900);
-        this._varsTab = 'vars';        // vars | search
+        // [CHANGED v3.20.0] Helper comes first and is what the bar opens on. It is the helpers page
+        // of Home Assistant itself, frame and all, so its own Create helper button is right there.
+        this._varsTab = 'helper';      // helper | vars | search
+        this._helperQuery = '';
+        this._hkPick = null;           // the kind chosen in the Create helper dialog
+        this._hkForm = {};
+        this._hkQuery = '';
         this._varsScope = 'net';       // net | all
         this._varsFilter = 'ALL';      // ALL | BOOL | INT | FLOAT | TEXT | TIME | HA
         this._varsQuery = '';
@@ -461,6 +467,8 @@ class LibiPanel extends HTMLElement {
                 <p style="font-size:13px; color:#757575; margin:0;">The automations, scripts and scenes this project compiled stay exactly where they are in Home Assistant and keep running. Only the .libi file is removed, so the ladder is gone and the YAML is not.</p>
                 <div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button><button class="btn danger" id="projDeleteOk">Delete the drawing</button></div>
             </div></div>`;
+        } else if (this._modal === 'helper_new') {
+            modalHtml = this._hkDialogHtml();
         } else if (this._modal === 'pick_level') {
             // [ADDED v3.5.0] A new net says what kind of logic it is before it exists, because the kind
             // decides which rules the linter applies and which file the net is compiled into.
@@ -682,6 +690,52 @@ class LibiPanel extends HTMLElement {
         `;
     }
 
+    // [ADDED v3.24.0] The service a coil calls. The list is the services of the entity's own domain,
+    // so a cover offers closing, opening and stopping. Changing it also changes which coil is drawn,
+    // because closing latches and stopping releases.
+    _serviceField(el) {
+        const wrap = document.createElement('div');
+        wrap.className = 'fgrp';
+        const entity = String(el.label || '').replace(/\s*\+\d+$/, '').trim();
+        const domain = entity.includes('.') ? entity.split('.')[0] : '';
+        const table = this.core.COIL_SERVICES();
+        const list = (table[domain] || ['turn_on', 'turn_off', 'toggle']).slice();
+        const current = String(el.service || '');
+        if (current && !list.includes(current.split('.').pop())) list.unshift(current.split('.').pop());
+        const dom = domain || (current.includes('.') ? current.split('.')[0] : 'homeassistant');
+        wrap.innerHTML = `<label id="lbl_service">Action</label>
+            <select id="inp_service">${list.map(s => {
+                const full = `${dom}.${s}`;
+                return `<option value="${full}" ${full === current ? 'selected' : ''}>${full}</option>`;
+            }).join('')}</select>`;
+        const sel = wrap.querySelector('#inp_service');
+        sel.addEventListener('change', (e) => {
+            el.service = e.target.value;
+            // The symbol follows the verb, so close becomes (S) and stop becomes (R).
+            const next = this.core.coilForService(el.service);
+            if (next) el.type = next;
+            this.core.pushHistory();
+            this._render();
+        });
+        return wrap;
+    }
+
+    // [ADDED v3.24.0] continue_on_error, with the drawing it produces spelled out.
+    _coeField(el) {
+        const wrap = document.createElement('div');
+        wrap.className = 'fgrp checkbox-grp';
+        wrap.innerHTML = `<input type="checkbox" id="inp_coe" ${el.continueOnError ? 'checked' : ''} />
+            <label style="margin:0;">Continue on error
+                <span style="display:block; font-weight:400; font-size:11px; color:#757575;">Draws a bypass around this block. The rung carries on to the next checks even if the action fails or the entity is unavailable.</span>
+            </label>`;
+        wrap.querySelector('#inp_coe').addEventListener('change', (e) => {
+            el.continueOnError = e.target.checked;
+            this.core.pushHistory();
+            this._render();
+        });
+        return wrap;
+    }
+
     // [ADDED v3.9.0] The entity id of the element, written under the picker that hides it.
     _idNote(el) {
         const wrap = document.createElement('div');
@@ -795,6 +849,12 @@ class LibiPanel extends HTMLElement {
             // [ADDED v3.9.0] The Home Assistant picker shows only the friendly name, which is not
             // enough to tell which entity or which device is behind it. The id goes right under it.
             slot.appendChild(this._idNote(el));
+            // [ADDED v3.24.0] Which service the coil calls, and whether the rung carries on when it
+            // fails. Neither could be seen or changed before.
+            if (el.type.startsWith('coil')) {
+                slot.appendChild(this._serviceField(el));
+                slot.appendChild(this._coeField(el));
+            }
             // [CHANGED v3.7.0] The single device field and the single area field are replaced by the
             // native target selector, which is what Home Assistant itself shows and is the only way
             // to express a mixed list such as seventeen targets across devices and entities.
@@ -850,6 +910,8 @@ class LibiPanel extends HTMLElement {
                 // [CHANGED v3.7.0] A value assignment targets things the same way an action does.
                 const tpm = this._targetPicker(el);
                 if (tpm) slot.appendChild(tpm);
+                // [ADDED v3.24.0] Every action can carry on after an error, not only a coil.
+                slot.appendChild(this._coeField(el));
                 slot.appendChild(this._targetNote(el));
             }
 
@@ -1228,7 +1290,10 @@ class LibiPanel extends HTMLElement {
         const selClass = (isSelected ? 'selected ' : '') + (errs.el || hasStructErr ? 'has-error ' : '') + isTriggerClass;
         
         const errTooltip = hasStructErr ? `<div class="err-tooltip">⚠️ ${el.structuralError}</div>` : '';
-        const triggerLabelHtml = el.isTrigger ? `<div class="trigger-bottom-lbl">Trigger</div>` : '';
+        // [CHANGED v3.25.0] Both badges sit under the block. A trigger and a continue on error can
+        // never be the same block, so they never collide.
+        const triggerLabelHtml = el.isTrigger ? `<div class="trigger-bottom-lbl">Trigger</div>`
+            : (el.continueOnError ? `<div class="coe-bottom-lbl" title="continue_on_error: the rung carries on to the next checks even if this fails or the entity is unavailable">continue if error</div>` : '');
 
         const ANCHOR = this.core.LAY.ANCHOR;
         const posStyle = pos ? `position:absolute; left:${pos.x}px; top:${pos.y - ANCHOR}px; margin:0; ` : '';
@@ -1453,19 +1518,388 @@ class LibiPanel extends HTMLElement {
                     <div class="note">${net ? `It is created in Home Assistant and listed under ${this._esc(net.name)} straight away.` : 'Make a net first so the variable has somewhere to belong.'}</div>
                </div>`;
 
+
         return `<div class="vars-bar${this._varsOpen ? '' : ' rail'}" id="varsBar">
             <div class="vars-grip" id="varsGrip" title="Drag to resize. Double click to reset."></div>
             <div class="vars-top">
                 <span class="vars-title">Variables</span>
                 <div class="vars-tabs">
+                    <button class="vars-tab${this._varsTab === 'helper' ? ' on' : ''}" id="varsTabHelper">Helper</button>
                     <button class="vars-tab${this._varsTab === 'vars' ? ' on' : ''}" id="varsTabVars">Variables<span class="n">${rows.length}</span></button>
                     <button class="vars-tab${this._varsTab === 'search' ? ' on' : ''}" id="varsTabSearch">Search<span class="n">${projectCount}</span></button>
                 </div>
                 <div class="spacer"></div>
                 <button class="vars-fold" id="varsFold" title="${this._varsOpen ? 'Fold the bar down' : 'Open the bar'}">${this._varsOpen ? '▼' : '▲'}</button>
             </div>
-            <div class="vars-body">${body}</div>
+            <div class="vars-body">${this._varsTab === 'helper' ? this._helperViewHtml() : body}</div>
         </div>`;
+    }
+
+    // [ADDED v3.21.0] The same rows the helpers page of Home Assistant shows, drawn from state the
+    // panel already has. Nothing is fetched and nothing is loaded, so opening the tab is instant.
+    HELPER_ICONS() {
+        return { input_boolean: '⏼', input_button: '⏻', input_number: '↔', input_text: 'T',
+                 input_select: '☰', input_datetime: '🕐', counter: '#', timer: '⏱', schedule: '📅' };
+    }
+
+    _helperRows() {
+        const states = (this._hass && this._hass.states) || {};
+        const q = String(this._helperQuery || '').trim().toLowerCase();
+        return Object.keys(states)
+            .filter(e => HELPER_DOMAINS.includes(e.split('.')[0]))
+            .filter(e => {
+                if (!q) return true;
+                const nm = (this.core.friendlyName(e, this._hass) || '').toLowerCase();
+                return e.toLowerCase().includes(q) || nm.includes(q);
+            })
+            .sort((a, b) => (this.core.friendlyName(a, this._hass) || a)
+                .localeCompare(this.core.friendlyName(b, this._hass) || b));
+    }
+
+    _helperAreaName(entityId) {
+        const h = this._hass || {};
+        const reg = (h.entities || {})[entityId] || null;
+        let areaId = reg && reg.area_id;
+        if (!areaId && reg && reg.device_id && h.devices) {
+            const dev = h.devices[reg.device_id];
+            areaId = dev && dev.area_id;
+        }
+        const area = areaId && h.areas ? h.areas[areaId] : null;
+        return (area && area.name) || '';
+    }
+
+    _helperViewHtml() {
+        const icons = this.HELPER_ICONS();
+        const rows = this._helperRows();
+        const body = rows.length
+            ? `<table class="helper-table"><thead><tr>
+                    <th style="width:30px;"></th><th>Name</th><th style="width:150px;">Type</th>
+                    <th style="width:150px;">Area</th><th>Entity</th><th style="width:110px;">Value</th>
+               </tr></thead><tbody>${rows.map(e => {
+                    const domain = e.split('.')[0];
+                    const st = (this._hass.states || {})[e];
+                    return `<tr class="helper-row" data-eid="${this._esc(e)}" title="Open the Home Assistant settings for this helper">
+                        <td class="h-ico">${icons[domain] || '•'}</td>
+                        <td class="h-name" dir="auto">${this._esc(this.core.friendlyName(e, this._hass) || e.split('.').slice(1).join('.'))}</td>
+                        <td>${domain}</td>
+                        <td class="h-area" dir="auto">${this._esc(this._helperAreaName(e) || '—')}</td>
+                        <td class="h-eid">${this._esc(e)}</td>
+                        <td class="h-val">${st ? this._esc(String(st.state).slice(0, 16)) : '—'}</td>
+                    </tr>`;
+               }).join('')}</tbody></table>`
+            : `<div class="vars-empty">${this._helperQuery ? 'No helper matches that.' : 'There are no helpers yet.'}</div>`;
+
+        return `<div class="helper-view">
+            <div class="helper-top">
+                <input type="text" id="helperSearch" placeholder="Search helpers" value="${this._esc(this._helperQuery)}" dir="auto" />
+                ${this._helperQuery ? '<button class="vars-chip" id="helperClear">Clear</button>' : ''}
+                <span class="helper-count">${rows.length} helper${rows.length === 1 ? '' : 's'}</span>
+            </div>
+            <div class="helper-scroll">${body}</div>
+            <div class="helper-foot">
+                <button class="btn" id="helperCreate">＋ Create helper</button>
+                <span class="note">Opens the dialog of Home Assistant. Clicking a row opens its settings, also the dialog of Home Assistant.</span>
+            </div>
+        </div>`;
+    }
+
+    // Clicking a helper opens the settings dialog of Home Assistant for it. hass-more-info is a
+    // first class event of the frontend: the root element listens for it and loads the dialog
+    // itself, so this works from a custom panel with nothing embedded and nothing duplicated.
+    _openHelperSettings(entityId) {
+        this.dispatchEvent(new CustomEvent('hass-more-info', {
+            bubbles: true, composed: true, detail: { entityId },
+        }));
+    }
+
+    // [CHANGED v3.22.0] Home Assistant's own dialog first, always. It is registered as
+    // dialog-helper-detail, and when it has been loaded in this browser tab that is what opens.
+    // Its module sits behind a file name carrying a build hash, so nothing outside its frontend can
+    // import it on demand, and a panel opened straight at /libi will usually not have it. Rather
+    // than throw the user out of LIBI to press the same button again on another page, the dialog
+    // below is LIBI's own, built to the same shape.
+    _openCreateHelper() {
+        const TAG = 'dialog-helper-detail';
+        if (typeof customElements !== 'undefined' && customElements.get(TAG)) {
+            this.dispatchEvent(new CustomEvent('show-dialog', {
+                bubbles: true, composed: true,
+                detail: {
+                    dialogTag: TAG,
+                    dialogImport: () => Promise.resolve(),
+                    dialogParams: { dialogClosedCallback: () => this._render() },
+                },
+            }));
+            return;
+        }
+        this._hkPick = null;
+        this._hkForm = {};
+        this._hkQuery = '';
+        this._modal = 'helper_new';
+        this._render();
+    }
+
+    // [CHANGED v3.23.0] The whole Create helper list of Home Assistant, in its own order. The first
+    // nine are kept in a stored collection and any client can create them, so LIBI builds them here
+    // with the settings each one really takes. The rest are built by a setup flow of their own and
+    // cannot be created from outside the Home Assistant frontend, so they are listed and handed over
+    // rather than half made.
+    HELPER_KINDS() {
+        return [
+            { domain: 'input_button',   name: 'Button',           icon: '⏻', fields: ['icon'] },
+            { domain: 'switch_as_x',    name: 'Change device type of a switch', icon: '⇄', flow: true },
+            { domain: 'min_max',        name: 'Combine the state of several sensors', icon: '±', flow: true },
+            { domain: 'counter',        name: 'Counter',          icon: '#',  fields: ['icon', 'initial', 'minimum', 'maximum', 'step', 'restore'] },
+            { domain: 'input_datetime', name: 'Date and/or time', icon: '🕐', fields: ['icon', 'has_date', 'has_time'] },
+            { domain: 'derivative',     name: 'Derivative sensor', icon: 'ƒ', flow: true },
+            { domain: 'input_select',   name: 'Dropdown',         icon: '☰',  fields: ['icon', 'options', 'initial_option'] },
+            { domain: 'filter',         name: 'Filter',           icon: '⏷', flow: true },
+            { domain: 'generic_hygrostat', name: 'Generic hygrostat', icon: '💧', flow: true },
+            { domain: 'generic_thermostat', name: 'Generic thermostat', icon: '🌡', flow: true },
+            { domain: 'group',          name: 'Group',            icon: '◎', flow: true },
+            { domain: 'history_stats',  name: 'History Stats',    icon: '📈', flow: true },
+            { domain: 'integration',    name: 'Integral sensor',  icon: '∫', flow: true },
+            { domain: 'mold_indicator', name: 'Mold Indicator',   icon: '☂', flow: true },
+            { domain: 'input_number',   name: 'Number',           icon: '↔',  fields: ['icon', 'min', 'max', 'initial', 'step', 'mode_number', 'unit_of_measurement'] },
+            { domain: 'totp',           name: 'One-Time Password (OTP)', icon: '🔐', flow: true },
+            { domain: 'random',         name: 'Random',           icon: '🎲', flow: true },
+            { domain: 'schedule',       name: 'Schedule',         icon: '📅', fields: ['icon', 'week'] },
+            { domain: 'statistics',     name: 'Statistics',       icon: '📊', flow: true },
+            { domain: 'template',       name: 'Template',         icon: '{}', flow: true },
+            { domain: 'input_text',     name: 'Text',             icon: 'T',  fields: ['icon', 'min', 'max', 'initial_text', 'pattern', 'mode_text'] },
+            { domain: 'threshold',      name: 'Threshold Sensor', icon: '⚖', flow: true },
+            { domain: 'timer',          name: 'Timer',            icon: '⏱', fields: ['icon', 'duration', 'restore'] },
+            { domain: 'tod',            name: 'Times of the Day Sensor', icon: '🕓', flow: true },
+            { domain: 'input_boolean',  name: 'Toggle',           icon: '⏼', fields: ['icon'] },
+            { domain: 'trend',          name: 'Trend',            icon: '📉', flow: true },
+            { domain: 'utility_meter',  name: 'Utility Meter',    icon: '⏲', flow: true },
+        ];
+    }
+
+    // What each setting is called, what it looks like and what it starts as. The key that is sent to
+    // Home Assistant is the key here, except where a suffix keeps two different fields apart.
+    HELPER_FIELD_SPEC() {
+        return {
+            icon:                { label: 'Icon', type: 'text', def: '', hint: 'mdi:lightbulb', optional: true },
+            min:                 { label: 'Minimum', type: 'number', def: 0 },
+            max:                 { label: 'Maximum', type: 'number', def: 100 },
+            step:                { label: 'Step size', type: 'number', def: 1 },
+            minimum:             { label: 'Minimum', type: 'number', def: 0 },
+            maximum:             { label: 'Maximum', type: 'number', def: 100 },
+            initial:             { label: 'Initial value', type: 'number', def: 0 },
+            initial_text:        { label: 'Initial value', type: 'text', def: '', key: 'initial', optional: true },
+            initial_option:      { label: 'Initial option', type: 'text', def: '', key: 'initial', optional: true },
+            restore:             { label: 'Restore the value after a restart', type: 'bool', def: true },
+            has_date:            { label: 'Has date', type: 'bool', def: true },
+            has_time:            { label: 'Has time', type: 'bool', def: true },
+            options:             { label: 'Options, one per line', type: 'lines', def: 'Option 1' },
+            duration:            { label: 'Duration', type: 'text', def: '00:01:00', hint: 'hh:mm:ss' },
+            pattern:             { label: 'Regex pattern', type: 'text', def: '', optional: true },
+            unit_of_measurement: { label: 'Unit of measurement', type: 'text', def: '', hint: '°C, %, kWh', optional: true },
+            mode_number:         { label: 'Display mode', type: 'select', def: 'box', key: 'mode',
+                                   choices: [['box', 'Input field'], ['slider', 'Slider']] },
+            mode_text:           { label: 'Display mode', type: 'select', def: 'text', key: 'mode',
+                                   choices: [['text', 'Text'], ['password', 'Password']] },
+            week:                { label: 'Days', type: 'week', def: null },
+        };
+    }
+
+    WEEK_DAYS() {
+        return [['monday', 'Mon'], ['tuesday', 'Tue'], ['wednesday', 'Wed'], ['thursday', 'Thu'],
+                ['friday', 'Fri'], ['saturday', 'Sat'], ['sunday', 'Sun']];
+    }
+
+    _hkPickKind(domain) {
+        const kind = this.HELPER_KINDS().find(k => k.domain === domain);
+        if (!kind) return;
+        this._hkPick = domain;
+        this._hkForm = { name: '' };
+        if (kind.flow) {
+            // A setup flow of its own. If Home Assistant has its flow dialog loaded, start it there
+            // and nothing more is needed from LIBI.
+            if (this._startConfigFlow(domain)) { this._modal = null; this._hkPick = null; this._render(); return; }
+            this._render();
+            return;
+        }
+        const spec = this.HELPER_FIELD_SPEC();
+        (kind.fields || []).forEach(f => { this._hkForm[f] = spec[f].def; });
+        if ((kind.fields || []).includes('week')) {
+            // Every day off to begin with, the same as a new schedule in Home Assistant.
+            this._hkForm.week = {};
+            this.WEEK_DAYS().forEach(([d]) => { this._hkForm.week[d] = { on: false, from: '08:00', to: '17:00' }; });
+        }
+        this._render();
+    }
+
+    // The very call the Create helper dialog of Home Assistant makes for a helper that has a setup
+    // flow. It works whenever that dialog has been loaded in this browser tab.
+    _startConfigFlow(handler) {
+        const TAG = 'dialog-data-entry-flow';
+        if (typeof customElements === 'undefined' || !customElements.get(TAG)) return false;
+        this.dispatchEvent(new CustomEvent('show-dialog', {
+            bubbles: true, composed: true,
+            detail: {
+                dialogTag: TAG,
+                dialogImport: () => Promise.resolve(),
+                dialogParams: { startFlowHandler: handler, showAdvanced: false,
+                                dialogClosedCallback: () => this._render() },
+            },
+        }));
+        return true;
+    }
+
+    async _hkCreate() {
+        const kind = this.HELPER_KINDS().find(k => k.domain === this._hkPick);
+        if (!kind || kind.flow) return;
+        const name = String(this._hkForm.name || '').trim();
+        if (!name) { alert('A helper needs a name.'); return; }
+        const spec = this.HELPER_FIELD_SPEC();
+        const msg = { type: `${kind.domain}/create`, name };
+
+        for (const f of (kind.fields || [])) {
+            const s = spec[f];
+            const key = s.key || f;
+            let v = this._hkForm[f];
+            if (s.type === 'week') {
+                this.WEEK_DAYS().forEach(([d]) => {
+                    const row = (v || {})[d] || {};
+                    msg[d] = row.on ? [{ from: `${row.from}:00`, to: `${row.to}:00` }] : [];
+                });
+                continue;
+            }
+            if (s.type === 'number') v = Number(v);
+            else if (s.type === 'bool') v = !!v;
+            else if (s.type === 'lines') {
+                v = String(v || '').split('\n').map(x => x.trim()).filter(Boolean);
+                if (!v.length) v = ['Option 1'];
+            } else v = String(v == null ? '' : v).trim();
+            // An optional field that was left blank is not sent at all, because Home Assistant
+            // treats an empty string as a value and would store it.
+            if (s.optional && (v === '' || (Array.isArray(v) && !v.length))) continue;
+            msg[key] = v;
+        }
+
+        if (kind.domain === 'input_number') {
+            if (!(msg.max > msg.min)) { alert('The maximum has to be above the minimum.'); return; }
+            if (msg.initial !== undefined && (msg.initial < msg.min || msg.initial > msg.max)) {
+                alert('The initial value has to sit between the minimum and the maximum.'); return;
+            }
+        }
+        if (kind.domain === 'counter' && !(msg.maximum > msg.minimum)) {
+            alert('The maximum has to be above the minimum.'); return;
+        }
+        if (kind.domain === 'input_text' && msg.max === undefined) msg.max = 100;
+        if (kind.domain === 'input_select' && msg.initial && !(msg.options || []).includes(msg.initial)) {
+            alert('The initial option has to be one of the options.'); return;
+        }
+
+        try {
+            await this._hass.connection.sendMessagePromise(msg);
+            this._modal = null;
+            this._hkPick = null;
+            this._hkForm = {};
+            this._render();
+        } catch (err) {
+            alert('Could not create the helper: ' + (err && err.message ? err.message : err));
+        }
+    }
+
+    _hkDialogHtml() {
+        const spec = this.HELPER_FIELD_SPEC();
+
+        // Step two: the settings for the kind that was picked.
+        if (this._hkPick) {
+            const kind = this.HELPER_KINDS().find(k => k.domain === this._hkPick);
+
+            if (kind.flow) {
+                return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:460px;">
+                    <button class="hk-back" id="hkBack">‹ All helpers</button>
+                    <h2 class="modal-title">${kind.icon}&nbsp; ${this._esc(kind.name)}</h2>
+                    <p class="hk-flow">This one is not stored as a simple helper. Home Assistant builds it with a setup flow of its own, which asks for entities, templates or ranges and validates each answer against the integration behind it. That flow only exists inside the Home Assistant frontend, so LIBI cannot run it and will not pretend to.</p>
+                    <p class="hk-note">Open the helpers page once and press Create helper there. From then on this button opens the real dialog of Home Assistant inside LIBI, for this kind and every other.</p>
+                    <div class="modal-actions">
+                        <button class="btn btn-ghost" id="closeModalBtn">Cancel</button>
+                        <button class="btn" id="hkMore">Open the helpers page</button>
+                    </div>
+                </div></div>`;
+            }
+
+            const field = (f) => {
+                const s = spec[f];
+                const v = this._hkForm[f];
+                if (s.type === 'week') return this._hkWeekHtml();
+                if (s.type === 'bool') {
+                    return `<div class="fgrp checkbox-grp"><input type="checkbox" class="hk-f" data-k="${f}" ${v ? 'checked' : ''} />
+                            <label style="margin:0;">${s.label}</label></div>`;
+                }
+                if (s.type === 'lines') {
+                    return `<div class="fgrp"><label>${s.label}</label>
+                            <textarea class="hk-f" data-k="${f}" rows="4" dir="auto">${this._esc(v)}</textarea></div>`;
+                }
+                if (s.type === 'select') {
+                    return `<div class="fgrp"><label>${s.label}</label><select class="hk-f" data-k="${f}">
+                            ${s.choices.map(([val, lab]) => `<option value="${val}" ${v === val ? 'selected' : ''}>${lab}</option>`).join('')}
+                            </select></div>`;
+                }
+                return `<div class="fgrp"><label>${s.label}${s.optional ? ' <span style="font-weight:400;color:#9e9e9e;">optional</span>' : ''}</label>
+                        <input type="${s.type === 'number' ? 'number' : 'text'}" class="hk-f" data-k="${f}" value="${this._esc(v)}" placeholder="${this._esc(s.hint || '')}" dir="auto" /></div>`;
+            };
+
+            // Two numbers that belong together sit on one line, the way the dialog of Home Assistant
+            // lays them out.
+            const fields = (kind.fields || []).slice();
+            const out = [];
+            while (fields.length) {
+                const f = fields.shift();
+                const pair = { min: 'max', minimum: 'maximum' }[f];
+                if (pair && fields[0] === pair) {
+                    fields.shift();
+                    out.push(`<div class="hk-row">${field(f)}${field(pair)}</div>`);
+                } else out.push(field(f));
+            }
+
+            return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:470px;">
+                <button class="hk-back" id="hkBack">‹ All helpers</button>
+                <h2 class="modal-title">${kind.icon}&nbsp; ${this._esc(kind.name)}</h2>
+                <div class="hk-form">
+                    <div class="fgrp"><label>Name</label><input type="text" id="hkName" value="${this._esc(this._hkForm.name || '')}" dir="auto" placeholder="Boiler on" /></div>
+                    ${out.join('')}
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-ghost" id="closeModalBtn">Cancel</button>
+                    <button class="btn" id="hkCreate">Create</button>
+                </div>
+            </div></div>`;
+        }
+
+        // Step one: the list, in the order Home Assistant lists them.
+        const q = String(this._hkQuery || '').trim().toLowerCase();
+        const all = this.HELPER_KINDS().filter(k => !q || k.name.toLowerCase().includes(q) || k.domain.includes(q));
+        const items = all.map(k => `<div class="hk-item hk-kind${k.flow ? ' flow' : ''}" data-d="${k.domain}" title="${k.flow ? 'Built by a setup flow of Home Assistant' : 'Created straight away'}">
+                <span class="i">${k.icon}</span><span class="n">${this._esc(k.name)}</span><span class="c">›</span>
+            </div>`).join('');
+        return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:470px;">
+            <h2 class="modal-title">Create helper</h2>
+            <div class="fgrp"><input type="text" id="hkSearch" placeholder="Search for a helper" value="${this._esc(this._hkQuery)}" dir="auto" /></div>
+            <div class="hk-list">${items || '<div class="vars-empty" style="padding:16px;">Nothing matches that.</div>'}</div>
+            <div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Close</button></div>
+        </div></div>`;
+    }
+
+    // [ADDED v3.23.0] The week of a Schedule: a row per day with a switch and a span of time.
+    _hkWeekHtml() {
+        const week = this._hkForm.week || {};
+        return `<div class="fgrp"><label>Days</label><div class="hk-days">
+            ${this.WEEK_DAYS().map(([key, label]) => {
+                const row = week[key] || { on: false, from: '08:00', to: '17:00' };
+                return `<div class="hk-day${row.on ? '' : ' off'}">
+                    <input type="checkbox" class="hk-day-on" data-d="${key}" ${row.on ? 'checked' : ''} />
+                    <span class="d">${label}</span>
+                    <input type="time" class="hk-day-t" data-d="${key}" data-e="from" value="${this._esc(row.from)}" />
+                    <span class="to">to</span>
+                    <input type="time" class="hk-day-t" data-d="${key}" data-e="to" value="${this._esc(row.to)}" />
+                </div>`;
+            }).join('')}
+        </div></div>`;
     }
 
     _applyVarsSize() {
@@ -2127,6 +2561,7 @@ class LibiPanel extends HTMLElement {
                 if (this._varsOpen) this._varsRefreshIds().then(() => this._render());
                 else this._render();
             });
+            on('varsTabHelper', 'click', (e) => { e.stopPropagation(); this._varsTab = 'helper'; this._varsOpen = true; this._saveVars(); this._render(); });
             on('varsTabVars', 'click', (e) => { e.stopPropagation(); this._varsTab = 'vars'; this._varsOpen = true; this._saveVars(); this._render(); });
             on('varsTabSearch', 'click', (e) => { e.stopPropagation(); this._varsTab = 'search'; this._varsOpen = true; this._saveVars(); this._render(); });
             on('varsScopeNet', 'click', (e) => { e.stopPropagation(); this._varsScope = 'net'; this._render(); });
@@ -2163,6 +2598,71 @@ class LibiPanel extends HTMLElement {
                 typeBox.addEventListener('change', e => { this._varsNewType = e.target.value; });
             }
             on('varsCreate', 'click', (e) => { e.stopPropagation(); this._varsCreate(); });
+            on('helperCreate', 'click', (e) => { e.stopPropagation(); this._openCreateHelper(); });
+
+            // The Create helper dialog of LIBI, shown only when Home Assistant's own is not loaded.
+            all('.hk-kind', 'click', e => { e.stopPropagation(); this._hkPickKind(e.currentTarget.getAttribute('data-d')); });
+            on('hkBack', 'click', (e) => { e.stopPropagation(); this._hkPick = null; this._render(); });
+            on('hkCreate', 'click', (e) => { e.stopPropagation(); this._hkCreate(); });
+            on('hkMore', 'click', (e) => {
+                e.stopPropagation();
+                try { window.open('/config/helpers', '_blank'); } catch (err) { /* popup blocked */ }
+            });
+            const hkq = sr.getElementById('hkSearch');
+            if (hkq) hkq.addEventListener('input', (e) => {
+                this._hkQuery = e.target.value;
+                clearTimeout(this._hkTimer);
+                this._hkTimer = setTimeout(() => {
+                    this._render();
+                    const box = this.shadowRoot.getElementById('hkSearch');
+                    if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+                }, 200);
+            });
+            const hkn = sr.getElementById('hkName');
+            if (hkn) {
+                hkn.addEventListener('input', e => { this._hkForm.name = e.target.value; });
+                hkn.addEventListener('keydown', e => { if (e.key === 'Enter') this._hkCreate(); });
+            }
+            all('.hk-f', 'input', e => {
+                const k = e.currentTarget.getAttribute('data-k');
+                if (e.currentTarget.type !== 'checkbox') this._hkForm[k] = e.currentTarget.value;
+            });
+            all('.hk-f', 'change', e => {
+                const k = e.currentTarget.getAttribute('data-k');
+                this._hkForm[k] = e.currentTarget.type === 'checkbox' ? e.currentTarget.checked : e.currentTarget.value;
+            });
+            all('.hk-day-on', 'change', e => {
+                const d = e.currentTarget.getAttribute('data-d');
+                this._hkForm.week = this._hkForm.week || {};
+                this._hkForm.week[d] = this._hkForm.week[d] || { from: '08:00', to: '17:00' };
+                this._hkForm.week[d].on = e.currentTarget.checked;
+                this._render();
+            });
+            all('.hk-day-t', 'change', e => {
+                const d = e.currentTarget.getAttribute('data-d');
+                const edge = e.currentTarget.getAttribute('data-e');
+                this._hkForm.week = this._hkForm.week || {};
+                this._hkForm.week[d] = this._hkForm.week[d] || { on: false, from: '08:00', to: '17:00' };
+                this._hkForm.week[d][edge] = e.currentTarget.value;
+            });
+            on('helperClear', 'click', (e) => { e.stopPropagation(); this._helperQuery = ''; this._render(); });
+            all('.helper-row', 'click', e => {
+                e.stopPropagation();
+                this._openHelperSettings(e.currentTarget.getAttribute('data-eid'));
+            });
+            const hs = sr.getElementById('helperSearch');
+            if (hs) {
+                hs.addEventListener('click', e => e.stopPropagation());
+                hs.addEventListener('input', (e) => {
+                    this._helperQuery = e.target.value;
+                    clearTimeout(this._helperTimer);
+                    this._helperTimer = setTimeout(() => {
+                        this._render();
+                        const box = this.shadowRoot.getElementById('helperSearch');
+                        if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+                    }, 200);
+                });
+            }
 
             all('.vars-type', 'click', e => e.stopPropagation());
             all('.vars-type', 'change', e => {

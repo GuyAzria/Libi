@@ -32,6 +32,8 @@ const MARK = {
   N: `<path d="M68 69L68 31L88 69L88 31" stroke="currentColor" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
   S: `<path d="M88 38Q88 31 78 31Q68 31 68 40Q68 48 78 50Q88 52 88 60Q88 69 78 69Q68 69 68 62" stroke="currentColor" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
   R: `<path d="M68 69L68 31L80 31Q89 31 89 40.5Q89 50 80 50L68 50L89 69" stroke="currentColor" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
+  // [ADDED v3.30.0] A capital T, drawn on the same 68 to 89 by 31 to 69 box the other marks use.
+  T: `<path d="M67 31L90 31M78.5 31L78.5 69" stroke="currentColor" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
 };
 
 const SDW = `<defs><filter id="sdw"><feDropShadow dx="1" dy="2" stdDeviation="1.5" flood-opacity="0.3"/></filter></defs>`;
@@ -62,6 +64,9 @@ export const LIBI_ICONS = {
   coil:       `<svg viewBox="0 0 155 100">${SDW}${COIL_BASE}</svg>`,
   coil_s:     `<svg viewBox="0 0 155 100">${SDW}${COIL_BASE}${MARK.S}</svg>`,
   coil_r:     `<svg viewBox="0 0 155 100">${SDW}${COIL_BASE}${MARK.R}</svg>`,
+  // [ADDED v3.30.0] The toggle coil. It does not drive the output to a state, it flips whatever
+  // state the thing is in, so the letter sits between the two arcs like S and R do.
+  coil_t:     `<svg viewBox="0 0 155 100">${SDW}${COIL_BASE}${MARK.T}</svg>`,
   timer:      `<svg viewBox="0 0 155 100">${SDW}<path d="M0 50L45 50M110 50L155 50" stroke="currentColor" stroke-width="5" fill="none" stroke-linecap="round"/><rect x="45" y="15" width="65" height="70" stroke="currentColor" stroke-width="6" fill="var(--card-background-color, #fff)" rx="8" filter="url(#sdw)"/><text x="77.5" y="58" font-family="sans-serif" font-size="22" text-anchor="middle" font-weight="800" fill="currentColor">TMR</text></svg>`,
   custom:     `<svg viewBox="0 0 155 100">${SDW}<path d="M0 50L45 50M110 50L155 50" stroke="currentColor" stroke-width="5" fill="none" stroke-linecap="round"/><rect x="45" y="15" width="65" height="70" stroke="currentColor" stroke-width="6" fill="var(--card-background-color, #fff)" rx="12" filter="url(#sdw)"/><text x="77.5" y="58" font-family="sans-serif" font-size="22" text-anchor="middle" font-weight="800" fill="currentColor">FB</text></svg>`,
 };

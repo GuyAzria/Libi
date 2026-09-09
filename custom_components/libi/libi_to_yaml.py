@@ -28,7 +28,7 @@ import re
 from .yaml_to_libi import (
     norm_service, norm_entity, norm_kind, domain_of, short,
     ON_STATES, SET_VALUE_SERVICES, element_sig, EVENT_TRIGGER_KEYS, target_spec,
-    target_summary,
+    target_summary, hms_to_seconds,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,6 +47,7 @@ NET_LEVELS = ("automation", "script", "scene")
 
 # The only coils a scene can hold. A scene assigns end states and nothing else.
 SCENE_ON_TYPES = ("coil", "coil_s")
+# A toggle has no fixed end state, so a scene, which is a snapshot of end states, cannot hold one.
 
 
 def net_level(net):
@@ -148,11 +149,30 @@ def apply_target_spec(out, spec):
     return out
 
 
+def _apply_continue_on_error(out, el):
+    """[ADDED v3.24.0] The flag is a real field of the action, so the tick in the inspector writes it
+    and clearing the tick takes it away rather than leaving a false behind."""
+    out = dict(out)
+    if el.get("continueOnError"):
+        out["continue_on_error"] = True
+    else:
+        out.pop("continue_on_error", None)
+    return out
+
+
 def _untouched(el):
     """True when the element still describes its original node exactly, so that node is emitted
     verbatim and every field the ladder does not model survives the round trip."""
     if el.get("type") in ("repeat", "parallel"):
         return False
+    # [ADDED v3.24.0] Neither of these is part of the text fingerprint, so they are checked here.
+    raw = el.get("raw") if isinstance(el.get("raw"), dict) else None
+    if raw is not None:
+        if bool(el.get("continueOnError")) != (raw.get("continue_on_error") is True):
+            return False
+        picked = str(el.get("service") or "").strip()
+        if picked and norm_service(raw) and picked != norm_service(raw):
+            return False
     # [ADDED v3.7.0] The picked targets are not part of the text fingerprint, so they are checked
     # here. Without this a target chosen in the picker would be silently thrown away on save.
     if spec_changed(el):
@@ -237,6 +257,12 @@ def _patch(raw, updates, target_kind=""):
 # ==========================================================================================
 
 def _element_to_trigger(el, trig_id):
+    # [ADDED v3.33.0] A group LIBI understood but did not invent goes back untouched. Editing the
+    # members of one is not offered, so there is nothing here that could quietly rewrite it.
+    if el.get("spookGroup") and isinstance(el.get("raw"), dict):
+        out = dict(el["raw"])
+        out.setdefault("id", trig_id)
+        return out
     t = el.get("type", "")
     raw = el.get("raw")
 
@@ -265,6 +291,10 @@ def _element_to_trigger(el, trig_id):
             out["event"] = "leave" if t == "cmp_ne" else "enter"
         elif t in ("cmp_eq", "cmp_ne") and norm_kind(raw) == "time":
             out["at"] = el.get("sourceB")
+        elif el.get("deviceNode") or norm_kind(out) == "device":
+            # [ADDED v3.26.0] The inspector edits the node itself, so it already carries the device
+            # and the trigger that were chosen. Patching an entity_id in would break it.
+            pass
         elif t.startswith("contact_"):
             # [CHANGED v3.6.0] A pulse contact over a conversation, a webhook, an mqtt topic or a tag
             # has no entity at all. Its identity lives in that trigger's own key, and writing an
@@ -513,7 +543,7 @@ def _move_value_action(el):
     # [ADDED v3.8.0] A wrapper never turns into a value assignment, otherwise the service name on the
     # IN pin would be written into the data payload of the action.
     if el.get("moveKind") == "action":
-        return _move_action_node(el)
+        return _apply_continue_on_error(_move_action_node(el), el)
 
     # [ADDED v3.6.0] The reply a voice assistant speaks back is a key of its own, not a service call.
     # Without this branch an edited reply came back as an action named conversation.response.
@@ -534,6 +564,7 @@ def _move_value_action(el):
         out["action"] = norm_service(raw)
         # [CHANGED v3.7.0] A MOVE follows the same target rule as a coil, so picking devices or an
         # area on a value assignment writes a proper target block.
+        out = _apply_continue_on_error(out, el)
         updates, kind = target_updates(el)
         if updates and "__target_spec__" in updates:
             return _patch(out, updates)
@@ -670,12 +701,19 @@ def _element_to_actions(el):
         if isinstance(raw, dict) and norm_service(raw):
             out = dict(raw)
             out.pop("service", None)
-            out["action"] = norm_service(raw)
+            # [CHANGED v3.24.0] The service chosen in the inspector wins, so switching a cover from
+            # close to open or to stop comes back out as that service.
+            picked = str(el.get("service") or "").strip()
+            out["action"] = picked if re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", picked) else norm_service(raw)
+            out = _apply_continue_on_error(out, el)
             # [CHANGED v3.6.0] A coil that came from a device, an area or a label target keeps that
             # target untouched unless the user typed a real entity id over it.
             updates, kind = target_updates(el)
             return [_patch(out, updates, target_kind=kind) if updates else out]
-        svc = "homeassistant.turn_off" if t == "coil_r" else "homeassistant.turn_on"
+        # [CHANGED v3.30.0] A coil drawn from scratch, with no node behind it yet.
+        svc = ("homeassistant.toggle" if t == "coil_t"
+               else "homeassistant.turn_off" if t == "coil_r"
+               else "homeassistant.turn_on")
         return [{"action": svc, "target": {"entity_id": clean_target(el.get("label", ""))}}]
 
     if _is_condition(el):
@@ -695,7 +733,12 @@ def _split_rung(elements):
     body = []
     in_body = False
     for el in elements:
-        if not in_body and not el.get("fromAction") and (el.get("isTrigger") or _is_condition(el)):
+        # [CHANGED v3.27.0] An on delay timer that carries forOf is the for of the condition before
+        # it, so it belongs to the head. Without this it started the body, and every condition drawn
+        # after it was compiled as an action.
+        if not in_body and not el.get("fromAction") and (
+                el.get("isTrigger") or _is_condition(el)
+                or _is_for_timer(el) or _is_recent_timer(el)):
             head.append(el)
         else:
             in_body = True
@@ -831,6 +874,63 @@ def _group_condition(span):
     return {"condition": "template", "value_template": "{{ " + expr + " }}"} if expr else None
 
 
+def hms_to_for(text):
+    """[ADDED v3.27.0] hh:mm:ss back into the mapping Home Assistant writes for a for."""
+    parts = str(text or "").split(":")
+    try:
+        h, m, s = [int(float(x)) for x in (parts + ["0", "0", "0"])[:3]]
+    except (TypeError, ValueError):
+        return None
+    if h == m == s == 0:
+        return None
+    return {"hours": h, "minutes": m, "seconds": s}
+
+
+def _is_for_timer(el):
+    return el.get("type") == "timer_ton" and (el.get("isFor") or el.get("forOf"))
+
+
+def _is_recent_timer(el):
+    """[ADDED v3.33.0] An off delay timer drawn straight after a contact says that the contact only
+    has to have been true lately, not right now."""
+    return el.get("type") == "timer_tof" and el.get("isRecent")
+
+
+def _recent_after(head, index):
+    nxt = head[index + 1] if index + 1 < len(head) else None
+    if nxt and _is_recent_timer(nxt):
+        secs = hms_to_seconds(nxt.get("label"))
+        return secs if secs > 0 else None
+    return None
+
+
+def _recent_condition(el, seconds):
+    """The condition that says it holds now or held within the window. Every entity carries the
+    moment it reached its present state, so this needs no helper and no timer of its own."""
+    entity = clean_target(el.get("label"))
+    if not entity or "." not in entity:
+        return None
+    state = el.get("recentState")
+    if not state:
+        state = "off" if el.get("type") == "contact_nc" else "on"
+    return {
+        "condition": "template",
+        "value_template": (
+            "{{ is_state('%s','%s') and "
+            "(now() - states.%s.last_changed).total_seconds() < %d }}" % (entity, state, entity, seconds)
+        ),
+    }
+
+
+def _for_after(head, index):
+    """[ADDED v3.27.0] The on delay timer drawn straight after the element at this position, which is
+    that condition's for. A timer with no marker is an ordinary delay and is not one of these."""
+    nxt = head[index + 1] if index + 1 < len(head) else None
+    if nxt and _is_for_timer(nxt):
+        return hms_to_for(nxt.get("label"))
+    return None
+
+
 def _rung_conditions(head, trig_ids, use_trigger_refs):
     conds = []
     for key, span in _spans(head):
@@ -875,8 +975,33 @@ def _rung_conditions(head, trig_ids, use_trigger_refs):
                     elif ors:
                         conds.append({"condition": "or", "conditions": ors})
                 continue
+        if _is_for_timer(el) or _is_recent_timer(el):
+            continue   # it belongs to the condition before it, not a condition of its own
+        # [ADDED v3.33.0] A contact with an off delay timer behind it asks whether the thing was
+        # true lately rather than whether it is true now.
+        recent = _recent_after(head, head.index(el)) if el in head else None
+        if str(el.get("type", "")).startswith("contact_") and (recent or el.get("recentState")):
+            if recent:
+                built = _recent_condition(el, recent)
+            else:
+                # The timer was taken off the rung, so the question is no longer whether it happened
+                # lately but simply whether it holds. The window goes with the timer.
+                entity = clean_target(el.get("label"))
+                state = el.get("recentState") or ("off" if el.get("type") == "contact_nc" else "on")
+                built = {"condition": "state", "entity_id": entity, "state": state} if entity else None
+            if built:
+                conds.append(built)
+                continue
         cond = _element_to_condition(el)
         if cond:
+            # [ADDED v3.27.0] The timer drawn after this condition is its for. When there is none,
+            # any for the node used to carry is gone, because the timer was taken off the rung.
+            held = _for_after(head, head.index(el)) if el in head else None
+            cond = dict(cond)
+            if held:
+                cond["for"] = held
+            else:
+                cond.pop("for", None)
             conds.append(cond)
     return conds
 

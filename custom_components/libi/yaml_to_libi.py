@@ -48,12 +48,46 @@ TURN_OFF_SERVICES = ("turn_off",)
 # [ADDED v3.6.0] A coil is the ladder symbol for a service that puts something into one of two
 # states, so the whole verb family belongs here and not in a MOVE. () energises, (R) de-energises,
 # and homeassistant.turn_on stays (S) because it is the latching form.
-COIL_SET_SERVICES = ("turn_on", "toggle", "open_cover", "unlock", "open_valve", "open",
-                     "media_play", "start", "enable", "press", "arm_home", "arm_away", "arm_night",
+# [CHANGED v3.24.0] A reset coil means the rung switches something off. Closing a cover is not that.
+# A cover has open and closed, not on and off, and close_cover drives a motor exactly as open_cover
+# does, so both are commands that make something happen and both latch, which is (S). Only a service
+# that genuinely takes something out of service is (R): turning off, stopping, pausing, disarming.
+# [CHANGED v3.29.0] A plain coil ( ) is a momentary output: in a scanning controller it is energised
+# only while the rung is true and drops the moment it is not. Home Assistant does not scan. An
+# automation fires on a trigger, runs once and stops, and the light it turned on stays on. That is a
+# latch, so turning something on is (S). The only genuinely momentary thing left is a button press,
+# which is an impulse and latches nothing.
+COIL_PLAIN_SERVICES = ("press",)
+
+# [ADDED v3.30.0] A toggle is neither a set nor a reset. It flips whatever state the thing is in, so
+# it drives the output to the opposite of what it was and gets a symbol of its own, (T).
+COIL_TOGGLE_SERVICES = ("toggle",)
+COIL_RESET_SERVICES = ("turn_off", "stop", "stop_cover", "stop_valve", "media_pause", "media_stop",
+                       "cancel", "disable", "disarm", "alarm_disarm", "close", "turn_off_all")
+COIL_SET_SERVICES = ("turn_on", "open_cover", "close_cover", "lock", "unlock",
+                     "open_valve", "close_valve", "open", "media_play", "start", "enable",
+                     "arm_home", "arm_away", "arm_night",
                      "alarm_arm_home", "alarm_arm_away", "alarm_arm_night", "alarm_arm_vacation")
-COIL_RESET_SERVICES = ("turn_off", "close_cover", "lock", "close_valve", "close",
-                       "media_pause", "media_stop", "stop", "cancel", "disable", "disarm",
-                       "alarm_disarm")
+
+# Every service that is drawn as a coil at all.
+COIL_ALL_SERVICES = (COIL_PLAIN_SERVICES + COIL_RESET_SERVICES
+                     + COIL_SET_SERVICES + COIL_TOGGLE_SERVICES)
+
+
+def coil_for_service(svc):
+    """[ADDED v3.24.0] Which coil draws this service, or an empty string when none of them does."""
+    name = str(svc or "").split(".")[-1]
+    if svc in ("homeassistant.turn_on", "homeassistant.turn_off"):
+        return "coil_r" if name == "turn_off" else "coil_s"
+    if name in COIL_RESET_SERVICES:
+        return "coil_r"
+    if name in COIL_TOGGLE_SERVICES:
+        return "coil_t"
+    if name in COIL_PLAIN_SERVICES:
+        return "coil"
+    if name in COIL_SET_SERVICES:
+        return "coil_s"
+    return ""
 
 # [ADDED v3.6.0] Every place Home Assistant can name a target, in the order it resolves them.
 TARGET_KEYS = ("entity_id", "device_id", "area_id", "label_id", "floor_id")
@@ -246,6 +280,8 @@ def _move_action(ids, node, svc, label, kind, src):
     el = _el(ids, "move", mode="value", source=svc,
              target=target_summary(label, kind, target_spec(node)),
              service=svc, moveKind="action", raw=node, src=src)
+    if isinstance(node, dict) and node.get("continue_on_error") is True:
+        el["continueOnError"] = True
     return _attach_target(el, ids, node, label, kind)
 
 
@@ -526,13 +562,24 @@ def _device_element(node, ids, src, as_action=False):
         base = (node.get("domain") or "device") if unnamed else re.sub(r"[^a-z0-9_]+", "_", str(dev).lower()).strip("_")
         label = f"{base}.{dtype}"
 
+    # [ADDED v3.26.0] A device node points at a device and a kind of event, never at an entity. The
+    # element says so, so the inspector can offer the two fields that really apply and the compiler
+    # knows not to write an entity_id into something that has no entity.
+    def _mark(el):
+        el["deviceNode"] = "action" if as_action else "trigger"
+        el["deviceId"] = str(node.get("device_id") or "")
+        return el
+
     if as_action:
-        if dtype in ("turn_on", "toggle"):
-            return _el(ids, "coil", label=label, raw=node, src=src)
+        if dtype == "toggle":
+            return _mark(_el(ids, "coil_t", label=label, raw=node, src=src))
+        if dtype == "turn_on":
+            # Same reasoning: a device action that switches something on latches, so it is (S).
+            return _mark(_el(ids, "coil_s", label=label, raw=node, src=src))
         if dtype == "turn_off":
-            return _el(ids, "coil_r", label=label, raw=node, src=src)
-        return _fallback_move(ids, node, src=src, service=f"device.{dtype}" if dtype else "device",
-                              entity=label, value=_params_line(node))
+            return _mark(_el(ids, "coil_r", label=label, raw=node, src=src))
+        return _mark(_fallback_move(ids, node, src=src, service=f"device.{dtype}" if dtype else "device",
+                                    entity=label, value=_params_line(node)))
 
     numeric = _numeric_element(ids, label, node.get("above"), node.get("below"), src, node)
     if numeric is not None:
@@ -541,10 +588,10 @@ def _device_element(node, ids, src, as_action=False):
     # [CHANGED v2.2.0] A device event carries no number, so by the standard it is a boolean and it is
     # drawn as a contact. The device id, the domain and the event type all stay in raw for the way back.
     if dtype in DEVICE_OFF_TYPES:
-        return _el(ids, "contact_nc", label=label, raw=node, src=src)
+        return _mark(_el(ids, "contact_nc", label=label, raw=node, src=src))
     if dtype in DEVICE_PRESS_TYPES:
-        return _el(ids, "contact_p", label=label, raw=node, src=src)
-    return _el(ids, "contact_no", label=label, raw=node, src=src)
+        return _mark(_el(ids, "contact_p", label=label, raw=node, src=src))
+    return _mark(_el(ids, "contact_no", label=label, raw=node, src=src))
 
 
 def _is_trigger_shape(el):
@@ -621,6 +668,28 @@ def _trigger_to_element(t, ids, src):
     elif kind == "time_pattern":
         parts = [f"{k}={v}" for k, v in t.items() if k in ("hours", "minutes", "seconds")]
         el = _el(ids, "cmp_eq", sourceA="time pattern", sourceB=" ".join(parts))
+
+    # [ADDED v3.33.0] Spook adds an all of trigger: several triggers that must all have happened
+    # inside a window, in any order. LIBI does not invent it and does not depend on it. It is simply
+    # understood on the way in and handed back exactly as it came, so an installation that has Spook
+    # sees its logic drawn, and one that does not is never handed a trigger it cannot run.
+    if kind in ("spook.all_of", "spook.sequence", "spook.any_of"):
+        opts = t.get("options") if isinstance(t.get("options"), dict) else t
+        window = opts.get("within") or opts.get("window") or ""
+        members = opts.get("triggers") or []
+        branches = []
+        for i, member in enumerate(members if isinstance(members, list) else []):
+            sub = _trigger_to_element(member, ids, f"{src}.all_of[{i}]")
+            sub["isTrigger"] = False       # the group as a whole is the trigger, not each member
+            branches.append([sub])
+        if not branches:
+            branches = [[_el(ids, "contact_p", label=f"{kind}.empty", src=src)]]
+        group = _el(ids, "parallel", branches=branches, src=src)
+        group["raw"] = t
+        group["spookGroup"] = kind
+        group["spookWindow"] = str(window)
+        group["isTrigger"] = True
+        return group
 
     # [ADDED v3.6.0] The rule, enforced in one place: a trigger is a boolean contact or a comparison.
     # A kind with no specific drawing becomes a pulse contact that carries the identity of the event,
@@ -751,6 +820,46 @@ def _tree_to_elements(node, ids, src, tpl_id):
     return None
 
 
+# [ADDED v3.33.0] "It happened lately" written as a template. Home Assistant has no AND over time
+# in its triggers, but every entity carries the moment it reached its present state, so the question
+# is expressible as an ordinary condition. In ladder that shape is an off delay timer: the contact
+# holds for a while after the thing stopped being true, and two of those in series is an AND over
+# time without a helper entity anywhere.
+_RECENT_RE = re.compile(
+    r"^\s*\{\{\s*is_state\(\s*['\"]([a-z_][a-z0-9_]*\.[a-z0-9_]+)['\"]\s*,\s*['\"]([^'\"]*)['\"]\s*\)"
+    r"\s+and\s+\(\s*now\(\)\s*-\s*states\.\1\.last_changed\s*\)\.total_seconds\(\)\s*<\s*(\d+)\s*\}\}\s*$"
+)
+
+
+def seconds_to_hms(total):
+    total = int(total)
+    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+
+
+def hms_to_seconds(text):
+    parts = str(text or "").split(":")
+    try:
+        h, m, s = [int(float(x)) for x in (parts + ["0", "0", "0"])[:3]]
+    except (TypeError, ValueError):
+        return 0
+    return h * 3600 + m * 60 + s
+
+
+def _recent_to_elements(tpl_text, ids, src, raw_node):
+    """A contact followed by an off delay timer, when the template says exactly that and nothing
+    more. Anything else falls through to the ordinary template importer."""
+    m = _RECENT_RE.match(str(tpl_text or ""))
+    if not m:
+        return None
+    entity, state, seconds = m.group(1), m.group(2), int(m.group(3))
+    kind = "contact_no" if str(state).lower() in ON_STATES else "contact_nc"
+    contact = _el(ids, kind, label=entity, raw=raw_node, src=src)
+    contact["recentState"] = state
+    tof = _el(ids, "timer_tof", label=seconds_to_hms(seconds), src=src)
+    tof["isRecent"] = True
+    return [contact, tof]
+
+
 def template_to_elements(tpl_text, ids, src, raw_node):
     """Never returns None. If the expression cannot be broken down it becomes a single comparison
     against true, which is still a standard block and still compiles back to the original text."""
@@ -790,7 +899,65 @@ def _invert(el):
     return None
 
 
+def for_to_hms(value):
+    """[ADDED v3.27.0] The for of a condition or a trigger, as hh:mm:ss. It arrives either as a
+    mapping of hours, minutes and seconds or already as a string."""
+    if isinstance(value, dict):
+        h = int(value.get("hours") or 0)
+        m = int(value.get("minutes") or 0)
+        s = int(value.get("seconds") or 0)
+        if value.get("milliseconds"):
+            s += int(int(value["milliseconds"]) / 1000)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parts = text.split(":")
+    if len(parts) == 3:
+        try:
+            return "{:02d}:{:02d}:{:02d}".format(int(parts[0]), int(parts[1]), int(float(parts[2])))
+        except (TypeError, ValueError):
+            return text
+    return text
+
+
+def _for_seconds(value):
+    """Zero means there is nothing to draw, so a for of all zeros is left alone."""
+    hms = for_to_hms(value)
+    try:
+        h, m, s = [int(float(x)) for x in hms.split(":")]
+        return h * 3600 + m * 60 + s
+    except (TypeError, ValueError):
+        return 0
+
+
+def _attach_for_timer(els, ids, node, src):
+    """[ADDED v3.27.0] A condition that has to hold for a while is a contact followed by an on delay
+    timer, which is exactly how a ladder says it. The timer carries the id of the contact it belongs
+    to, so the way back knows it is that condition's for and not a delay of its own."""
+    if not els:
+        return els
+    seconds = _for_seconds((node or {}).get("for"))
+    if seconds <= 0:
+        return els
+    ton = _el(ids, "timer_ton", label=for_to_hms(node.get("for")), src=src)
+    # The element ids are handed out again when the net is assembled, so the link is the position:
+    # this timer belongs to whatever sits immediately before it. isFor is what says so.
+    ton["isFor"] = True
+    return els + [ton]
+
+
 def _condition_to_elements(c, ids, trig_map, src, parallel_ids=None):
+    """[CHANGED v3.27.0] A thin wrapper so every caller gets the for drawn without knowing about it.
+    The timer is attached only to a leaf condition, since and, or and not carry no for of their own
+    and their children are handled by the recursion inside."""
+    els = _condition_to_elements_inner(c, ids, trig_map, src, parallel_ids)
+    if isinstance(c, dict) and not any(k in c for k in ("and", "or", "not", "conditions")):
+        els = _attach_for_timer(els, ids, c, src)
+    return els
+
+
+def _condition_to_elements_inner(c, ids, trig_map, src, parallel_ids=None):
     """Returns a LIST of elements in series. or becomes one closed parallel block."""
     if not isinstance(c, dict):
         return []
@@ -854,6 +1021,12 @@ def _condition_to_elements(c, ids, trig_map, src, parallel_ids=None):
 
     if ctype == "state":
         st = c.get("state")
+        # [CHANGED v3.28.0] A list holding one state means the same thing as that state written
+        # plainly, and the Home Assistant editor writes it either way. It was drawn as a comparison
+        # while the plain form was drawn as a contact, so the same condition looked like two
+        # different things depending on which editor last touched it. One item unwraps.
+        if isinstance(st, list) and len(st) == 1:
+            st = st[0]
         if isinstance(st, list):
             el = _el(ids, "cmp_eq", sourceA=ent, sourceB=", ".join(str(x) for x in st))
         elif is_boolean_state(ent, st):
@@ -876,6 +1049,9 @@ def _condition_to_elements(c, ids, trig_map, src, parallel_ids=None):
         return [el]
 
     if ctype == "template":
+        recent = _recent_to_elements(c.get("value_template", ""), ids, src, c)
+        if recent:
+            return recent
         return template_to_elements(c.get("value_template", ""), ids, src, c)
 
     if ctype == "zone":
@@ -1083,15 +1259,17 @@ def _action_to_elements(a, ids, trig_map, src):
         # names exactly one thing that resolves to an entity. The moment an action points at several
         # targets, or at a group such as a label, an area or a floor, it is a MOVE ACTION instead:
         # the ladder cannot honestly draw seventeen lights as one contact on a rung.
-        if name in COIL_SET_SERVICES or name in COIL_RESET_SERVICES:
+        coil = coil_for_service(svc)
+        if coil:
             spec = target_spec(a)
             single_entity = spec_total(spec) <= 1 and target_kind in ("entity", "device")
             if single_entity:
-                if svc in ("homeassistant.turn_on", "homeassistant.turn_off"):
-                    coil = "coil_r" if name == "turn_off" else "coil_s"
-                else:
-                    coil = "coil_r" if name in COIL_RESET_SERVICES else "coil"
-                el = _el(ids, coil, label=ent, raw=a, src=src)
+                # [CHANGED v3.24.0] The coil now carries the service it came from and whether the
+                # rung is allowed to carry on when it fails. Without the service the block could say
+                # cover but never close cover, and there was nothing for the inspector to edit.
+                el = _el(ids, coil, label=ent, service=svc, raw=a, src=src)
+                if a.get("continue_on_error") is True:
+                    el["continueOnError"] = True
                 return [_attach_target(el, ids, a, ent, target_kind)]
             return [_move_action(ids, a, svc, ent, target_kind, src)]
 
@@ -1262,6 +1440,8 @@ def _describe_el(el, as_trigger=False, calc=None):
         return ""
     if t == "coil_r":
         return f"turn off {lbl}"
+    if t == "coil_t":
+        return f"toggle {lbl}"
     if t in ("coil", "coil_s"):
         return f"turn on {lbl}"
     if t == "move":

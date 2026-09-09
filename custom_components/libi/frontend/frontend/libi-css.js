@@ -167,6 +167,11 @@ export const getStyles = () => `
 .libi-el.is-trigger .plc-header { background-color: rgba(249, 168, 37, 0.18); color: #d97706; border-bottom-color: #f9a825; }
 .trigger-bottom-lbl { position: absolute; top: calc(100% + 4px); left: 50%; transform: translateX(-50%); font-size: 10px; font-weight: 800; color: #a16207; background: #fff8e1; padding: 2px 6px; border-radius: 4px; border: 1px solid #f9a825; z-index: 5; pointer-events: none; }
 
+/* [CHANGED v3.25.0] continue_on_error used to be a dashed bypass drawn over the rung. It sat on top
+   of the labels of the blocks either side and hid them, so it is a badge under the block instead,
+   in the same place and the same shape as the Trigger badge, in red. */
+.coe-bottom-lbl { position: absolute; top: calc(100% + 4px); left: 50%; transform: translateX(-50%); font-size: 10px; font-weight: 800; color: #c62828; background: #fdecea; padding: 2px 6px; border-radius: 4px; border: 1px solid #e57373; z-index: 5; pointer-events: none; white-space: nowrap; }
+
 /* ERROR LINTER STYLES */
 .libi-el.has-error .plc-block { border-color: var(--error-color, #f44336) !important; box-shadow: 0 0 8px rgba(244,67,54,0.4) !important; }
 .libi-el.has-error .el-ico { border-color: var(--error-color, #f44336) !important; box-shadow: 0 0 8px rgba(244,67,54,0.4) !important; }
@@ -289,6 +294,56 @@ export const getStyles = () => `
 .vars-fold:hover { border-color: var(--primary-color, #03a9f4); color: var(--primary-color, #03a9f4); }
 .vars-body { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; padding: 10px 12px 12px 12px; gap: 8px; }
 .vars-bar.rail .vars-body { display: none; }
+
+/* [CHANGED v3.21.0] The Helper tab used to hold /config/helpers in a frame. That meant a second
+   whole copy of the Home Assistant frontend inside the bar, with its own sidebar and its own
+   WebSocket, which is why there were two sidebars and why everything crawled. The list is drawn
+   here instead, from state the panel already holds, and every dialog it opens is Home Assistant's
+   own, so nothing is reimplemented and nothing is loaded twice. */
+.helper-view { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.helper-top { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; }
+.helper-top input[type="text"] { flex: 1; min-width: 160px; }
+.helper-count { font-size: 12px; color: var(--secondary-text-color, #9e9e9e); white-space: nowrap; }
+.helper-scroll { flex: 1; min-height: 0; overflow: auto; }
+.helper-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.helper-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .3px; color: var(--secondary-text-color, #9e9e9e); font-weight: 800; padding: 6px 8px; border-bottom: 2px solid var(--divider-color, #e0e0e0); position: sticky; top: 0; background: var(--card-background-color, #fff); z-index: 2; }
+.helper-table td { padding: 6px 8px; border-bottom: 1px solid var(--divider-color, #f4f4f4); vertical-align: middle; }
+.helper-table tbody tr { cursor: pointer; }
+.helper-table tbody tr:hover { background: var(--secondary-background-color, #f5f5f5); }
+.helper-table .h-ico { width: 26px; text-align: center; font-size: 15px; color: var(--secondary-text-color, #757575); }
+.helper-table .h-name { font-weight: 600; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.helper-table .h-eid { font-family: monospace; font-size: 11px; color: var(--secondary-text-color, #9e9e9e); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.helper-table .h-area, .helper-table .h-val { color: var(--secondary-text-color, #757575); white-space: nowrap; }
+.helper-foot { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; padding-top: 2px; border-top: 1px solid var(--divider-color, #f0f0f0); margin-top: 2px; padding-top: 8px; }
+.helper-foot .note { font-size: 11px; color: var(--secondary-text-color, #9e9e9e); }
+
+/* [ADDED v3.22.0] The Create helper dialog, laid out the way Home Assistant lays out its own: a
+   search box over a scrolling list of kinds, each row an icon, a name and a chevron. */
+.hk-list { max-height: 52vh; overflow: auto; margin: 4px -10px 0 -10px; }
+.hk-item { display: flex; align-items: center; gap: 14px; padding: 11px 18px; cursor: pointer; }
+.hk-item:hover { background: var(--secondary-background-color, #f2f2f2); }
+.hk-item .i { width: 26px; text-align: center; font-size: 17px; color: var(--primary-color, #03a9f4); flex: 0 0 auto; }
+.hk-item .n { flex: 1; font-size: 14px; }
+.hk-item .c { color: var(--secondary-text-color, #bdbdbd); font-size: 18px; }
+.hk-back { background: none; border: none; color: var(--primary-color, #03a9f4); font-size: 13px; cursor: pointer; padding: 0; margin-bottom: 6px; font-family: inherit; }
+.hk-note { font-size: 12px; color: var(--secondary-text-color, #9e9e9e); margin: 10px 0 0 0; line-height: 1.5; }
+.hk-note a { color: var(--primary-color, #03a9f4); cursor: pointer; text-decoration: underline; }
+.hk-item.flow .i { color: var(--secondary-text-color, #9e9e9e); }
+.hk-sec { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .3px; color: var(--secondary-text-color, #9e9e9e); padding: 10px 18px 4px 18px; }
+.hk-form { max-height: 56vh; overflow: auto; margin-right: -6px; padding-right: 6px; }
+.hk-row { display: flex; gap: 8px; }
+.hk-row > * { flex: 1; min-width: 0; }
+
+/* [ADDED v3.23.0] The week editor of a Schedule: a row per day, each with a switch and a span. */
+.hk-days { display: flex; flex-direction: column; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 6px; overflow: hidden; }
+.hk-day { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--divider-color, #f2f2f2); }
+.hk-day:last-child { border-bottom: none; }
+.hk-day .d { width: 40px; font-size: 12px; font-weight: 700; color: var(--primary-text-color, #212121); }
+.hk-day input[type="time"] { width: 104px; font-family: inherit; }
+.hk-day.off input[type="time"] { opacity: .4; pointer-events: none; }
+.hk-day .to { font-size: 12px; color: var(--secondary-text-color, #9e9e9e); }
+.hk-flow { font-size: 13px; color: var(--primary-text-color, #212121); line-height: 1.6; }
+
 
 /* The scope and type filters. */
 .vars-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; }

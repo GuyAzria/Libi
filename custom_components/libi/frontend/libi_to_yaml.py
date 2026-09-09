@@ -148,11 +148,30 @@ def apply_target_spec(out, spec):
     return out
 
 
+def _apply_continue_on_error(out, el):
+    """[ADDED v3.24.0] The flag is a real field of the action, so the tick in the inspector writes it
+    and clearing the tick takes it away rather than leaving a false behind."""
+    out = dict(out)
+    if el.get("continueOnError"):
+        out["continue_on_error"] = True
+    else:
+        out.pop("continue_on_error", None)
+    return out
+
+
 def _untouched(el):
     """True when the element still describes its original node exactly, so that node is emitted
     verbatim and every field the ladder does not model survives the round trip."""
     if el.get("type") in ("repeat", "parallel"):
         return False
+    # [ADDED v3.24.0] Neither of these is part of the text fingerprint, so they are checked here.
+    raw = el.get("raw") if isinstance(el.get("raw"), dict) else None
+    if raw is not None:
+        if bool(el.get("continueOnError")) != (raw.get("continue_on_error") is True):
+            return False
+        picked = str(el.get("service") or "").strip()
+        if picked and norm_service(raw) and picked != norm_service(raw):
+            return False
     # [ADDED v3.7.0] The picked targets are not part of the text fingerprint, so they are checked
     # here. Without this a target chosen in the picker would be silently thrown away on save.
     if spec_changed(el):
@@ -513,7 +532,7 @@ def _move_value_action(el):
     # [ADDED v3.8.0] A wrapper never turns into a value assignment, otherwise the service name on the
     # IN pin would be written into the data payload of the action.
     if el.get("moveKind") == "action":
-        return _move_action_node(el)
+        return _apply_continue_on_error(_move_action_node(el), el)
 
     # [ADDED v3.6.0] The reply a voice assistant speaks back is a key of its own, not a service call.
     # Without this branch an edited reply came back as an action named conversation.response.
@@ -534,6 +553,7 @@ def _move_value_action(el):
         out["action"] = norm_service(raw)
         # [CHANGED v3.7.0] A MOVE follows the same target rule as a coil, so picking devices or an
         # area on a value assignment writes a proper target block.
+        out = _apply_continue_on_error(out, el)
         updates, kind = target_updates(el)
         if updates and "__target_spec__" in updates:
             return _patch(out, updates)
@@ -670,7 +690,11 @@ def _element_to_actions(el):
         if isinstance(raw, dict) and norm_service(raw):
             out = dict(raw)
             out.pop("service", None)
-            out["action"] = norm_service(raw)
+            # [CHANGED v3.24.0] The service chosen in the inspector wins, so switching a cover from
+            # close to open or to stop comes back out as that service.
+            picked = str(el.get("service") or "").strip()
+            out["action"] = picked if re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", picked) else norm_service(raw)
+            out = _apply_continue_on_error(out, el)
             # [CHANGED v3.6.0] A coil that came from a device, an area or a label target keeps that
             # target untouched unless the user typed a real entity id over it.
             updates, kind = target_updates(el)

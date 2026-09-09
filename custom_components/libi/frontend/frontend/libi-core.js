@@ -14,7 +14,7 @@
  */
 /**
  * LIBI Panel - Core Engine
- * v3.17.0
+ * v3.25.0
  */
 // [ADDED v3.5.0 | 2026-08-24] Purpose: A net carries a level of automation, script or scene, and
 //   validateAST runs the rule set that belongs to that level. A net with no level is an automation.
@@ -119,6 +119,49 @@ export class LibiCore {
             el.targetLabel = res.label;
         }
         return el;
+    }
+
+    // [ADDED v3.24.0] The services Home Assistant offers for a domain that the ladder draws as a
+    // coil. This is what the inspector lists, so a cover can be switched between closing, opening
+    // and stopping without leaving the block.
+    COIL_SERVICES() {
+        return {
+            cover:               ['close_cover', 'open_cover', 'stop_cover', 'toggle'],
+            valve:               ['close_valve', 'open_valve', 'stop_valve', 'toggle'],
+            lock:                ['lock', 'unlock', 'open'],
+            light:               ['turn_on', 'turn_off', 'toggle'],
+            switch:              ['turn_on', 'turn_off', 'toggle'],
+            fan:                 ['turn_on', 'turn_off', 'toggle'],
+            climate:             ['turn_on', 'turn_off', 'toggle'],
+            media_player:        ['turn_on', 'turn_off', 'toggle', 'media_play', 'media_pause', 'media_stop'],
+            vacuum:              ['start', 'stop', 'turn_on', 'turn_off'],
+            humidifier:          ['turn_on', 'turn_off', 'toggle'],
+            water_heater:        ['turn_on', 'turn_off'],
+            siren:               ['turn_on', 'turn_off', 'toggle'],
+            remote:              ['turn_on', 'turn_off', 'toggle'],
+            automation:          ['turn_on', 'turn_off', 'toggle'],
+            script:              ['turn_on', 'turn_off', 'toggle'],
+            input_boolean:       ['turn_on', 'turn_off', 'toggle'],
+            button:              ['press'],
+            input_button:        ['press'],
+            timer:               ['start', 'cancel', 'pause'],
+            alarm_control_panel: ['alarm_arm_home', 'alarm_arm_away', 'alarm_arm_night', 'alarm_disarm'],
+            homeassistant:       ['turn_on', 'turn_off', 'toggle'],
+        };
+    }
+
+    // Which coil a service is drawn as. Closing a cover drives a motor exactly as opening it does,
+    // so it latches and is (S). Only a service that takes something out of service is (R).
+    coilForService(svc) {
+        const full = String(svc || '');
+        const name = full.split('.').pop();
+        if (full === 'homeassistant.turn_off') return 'coil_r';
+        if (full === 'homeassistant.turn_on') return 'coil_s';
+        const RESET = ['turn_off', 'stop', 'stop_cover', 'stop_valve', 'media_pause', 'media_stop',
+                       'cancel', 'disable', 'disarm', 'alarm_disarm', 'close', 'pause'];
+        if (RESET.includes(name)) return 'coil_r';
+        if (name === 'turn_on') return 'coil';
+        return 'coil_s';
     }
 
     // [ADDED v3.5.0] Every read of the level goes through here, so a net saved before this
@@ -405,9 +448,12 @@ export class LibiCore {
     // [ADDED v3.10.0] The kind of thing an element points at, written on a second line under the
     // name. A name alone does not say what it is: פינת אוכל could be a thermostat, a light or a
     // sensor, and Sony XR-85X95L could be a media player or a switch. The domain settles it.
+    // [CHANGED v3.24.0] On a coil the line underneath the name is the service, written the way Home
+    // Assistant writes it. cover on its own never said whether the rung closes the blind or opens it.
     domainText(el, hass) {
         const t = String(el.type || '');
         if (!(t.startsWith('contact') || t.startsWith('coil'))) return '';
+        if (t.startsWith('coil') && el.service) return String(el.service);
         if (el.eventKind) return String(el.eventKind);
         const evKinds = ['conversation', 'event', 'webhook', 'mqtt', 'tag', 'homeassistant', 'persistent_notification'];
         const head = String(el.label || '').split('.')[0];

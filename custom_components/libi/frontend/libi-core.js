@@ -14,7 +14,7 @@
  */
 /**
  * LIBI Panel - Core Engine
- * v3.16.0
+ * v3.33.0
  */
 // [ADDED v3.5.0 | 2026-08-24] Purpose: A net carries a level of automation, script or scene, and
 //   validateAST runs the rule set that belongs to that level. A net with no level is an automation.
@@ -119,6 +119,53 @@ export class LibiCore {
             el.targetLabel = res.label;
         }
         return el;
+    }
+
+    // [ADDED v3.24.0] The services Home Assistant offers for a domain that the ladder draws as a
+    // coil. This is what the inspector lists, so a cover can be switched between closing, opening
+    // and stopping without leaving the block.
+    COIL_SERVICES() {
+        return {
+            cover:               ['close_cover', 'open_cover', 'stop_cover', 'toggle'],
+            valve:               ['close_valve', 'open_valve', 'stop_valve', 'toggle'],
+            lock:                ['lock', 'unlock', 'open'],
+            light:               ['turn_on', 'turn_off', 'toggle'],
+            switch:              ['turn_on', 'turn_off', 'toggle'],
+            fan:                 ['turn_on', 'turn_off', 'toggle'],
+            climate:             ['turn_on', 'turn_off', 'toggle'],
+            media_player:        ['turn_on', 'turn_off', 'toggle', 'media_play', 'media_pause', 'media_stop'],
+            vacuum:              ['start', 'stop', 'turn_on', 'turn_off'],
+            humidifier:          ['turn_on', 'turn_off', 'toggle'],
+            water_heater:        ['turn_on', 'turn_off'],
+            siren:               ['turn_on', 'turn_off', 'toggle'],
+            remote:              ['turn_on', 'turn_off', 'toggle'],
+            automation:          ['turn_on', 'turn_off', 'toggle'],
+            script:              ['turn_on', 'turn_off', 'toggle'],
+            input_boolean:       ['turn_on', 'turn_off', 'toggle'],
+            button:              ['press'],
+            input_button:        ['press'],
+            timer:               ['start', 'cancel', 'pause'],
+            alarm_control_panel: ['alarm_arm_home', 'alarm_arm_away', 'alarm_arm_night', 'alarm_disarm'],
+            homeassistant:       ['turn_on', 'turn_off', 'toggle'],
+        };
+    }
+
+    // Which coil a service is drawn as. Closing a cover drives a motor exactly as opening it does,
+    // so it latches and is (S). Only a service that takes something out of service is (R).
+    coilForService(svc) {
+        const full = String(svc || '');
+        const name = full.split('.').pop();
+        if (full === 'homeassistant.turn_off') return 'coil_r';
+        if (full === 'homeassistant.turn_on') return 'coil_s';
+        const RESET = ['turn_off', 'stop', 'stop_cover', 'stop_valve', 'media_pause', 'media_stop',
+                       'cancel', 'disable', 'disarm', 'alarm_disarm', 'close', 'pause'];
+        if (RESET.includes(name)) return 'coil_r';
+        // [ADDED v3.30.0] A toggle flips the state rather than driving it to one, so it is (T).
+        if (name === 'toggle') return 'coil_t';
+        // [CHANGED v3.29.0] Only a button press is momentary. Everything else that switches
+        // something on latches, because Home Assistant runs the rung once and walks away.
+        if (name === 'press') return 'coil';
+        return 'coil_s';
     }
 
     // [ADDED v3.5.0] Every read of the level goes through here, so a net saved before this
@@ -304,6 +351,11 @@ export class LibiCore {
     friendlyName(entityId, hass) {
         const h = hass || this.hass;
         const id = String(entityId || '').replace(/\s*\+\d+$/, '').trim();
+        // [ADDED v3.28.1] A name just typed in the rename dialog is shown at once. Home Assistant
+        // pushes the new state a moment later, and the override is dropped as soon as it lands.
+        if (this.nameOverrides && Object.prototype.hasOwnProperty.call(this.nameOverrides, id)) {
+            return this.nameOverrides[id];
+        }
         if (!h || !id.includes('.')) return '';
         const st = h.states && h.states[id];
         if (st && st.attributes && st.attributes.friendly_name) return String(st.attributes.friendly_name);
@@ -405,10 +457,35 @@ export class LibiCore {
     // [ADDED v3.10.0] The kind of thing an element points at, written on a second line under the
     // name. A name alone does not say what it is: פינת אוכל could be a thermostat, a light or a
     // sensor, and Sony XR-85X95L could be a media player or a switch. The domain settles it.
+    // [CHANGED v3.24.0] On a coil the line underneath the name is the service, written the way Home
+    // Assistant writes it. cover on its own never said whether the rung closes the blind or opens it.
     domainText(el, hass) {
         const t = String(el.type || '');
         if (!(t.startsWith('contact') || t.startsWith('coil'))) return '';
+        if (t.startsWith('coil') && el.service) return String(el.service);
+        // [ADDED v3.31.0] A block built from a device node has no service of its own, so the line
+        // underneath names the integration behind the device and what it is being asked to do.
+        if (el.deviceNode) {
+            const raw = (el.raw && typeof el.raw === 'object') ? el.raw : {};
+            const bits = [raw.domain, raw.subtype || raw.type].filter(Boolean);
+            if (bits.length) return bits.join(' · ');
+        }
         if (el.eventKind) return String(el.eventKind);
+        // [ADDED v3.27.0] A friendly name on its own does not say which thing it is. חלונות could be
+        // any of several lights, so the line underneath names the device the entity belongs to as
+        // well as the domain, exactly the two things the Home Assistant entity picker shows.
+        {
+            const id = String((el.raw_trigger && el.raw_trigger.type) || el.label || '')
+                .replace(/\s*\+\d+$/, '').trim();
+            if (id.includes('.')) {
+                const dom = id.split('.')[0];
+                const h = hass || this.hass;
+                const reg = (h && h.entities && h.entities[id]) || null;
+                const dev = reg && reg.device_id && h.devices ? h.devices[reg.device_id] : null;
+                const devName = dev ? (dev.name_by_user || dev.name) : '';
+                if (devName) return `${dom} · ${devName}`;
+            }
+        }
         const evKinds = ['conversation', 'event', 'webhook', 'mqtt', 'tag', 'homeassistant', 'persistent_notification'];
         const head = String(el.label || '').split('.')[0];
         if (evKinds.includes(head)) return head;
@@ -1064,11 +1141,13 @@ export class LibiCore {
 
     validateAST() {
         this.repairAST();
-        const isAction = (el) => ['coil', 'coil_s', 'coil_r', 'move', 'ctu', 'notify', 'repeat'].includes(el.type) || el.type.startsWith('math_');
+        const isAction = (el) => ['coil', 'coil_s', 'coil_r', 'coil_t', 'move', 'ctu', 'notify', 'repeat'].includes(el.type) || el.type.startsWith('math_');
         const isTriggerBlock = (el) => el.isTrigger;
         // [ADDED v3.5.0] The only thing a scene may hold: a coil that sets a switch, or a MOVE in
         // value mode that puts a number or a string on an entity. A MOVE that calls a service is a
         // sequence step, so it does not belong in a snapshot.
+        // [CHANGED v3.30.0] A scene is a snapshot of end states. A toggle has no end state of its
+        // own, it depends on what the thing happened to be, so it cannot belong to one.
         const isSceneAssign = (el) => ['coil', 'coil_s', 'coil_r'].includes(el.type) || (el.type === 'move' && (el.mode || 'value') === 'value');
 
         const checkPathStart = (elements) => {

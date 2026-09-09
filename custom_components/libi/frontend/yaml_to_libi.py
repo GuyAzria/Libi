@@ -48,12 +48,35 @@ TURN_OFF_SERVICES = ("turn_off",)
 # [ADDED v3.6.0] A coil is the ladder symbol for a service that puts something into one of two
 # states, so the whole verb family belongs here and not in a MOVE. () energises, (R) de-energises,
 # and homeassistant.turn_on stays (S) because it is the latching form.
-COIL_SET_SERVICES = ("turn_on", "toggle", "open_cover", "unlock", "open_valve", "open",
-                     "media_play", "start", "enable", "press", "arm_home", "arm_away", "arm_night",
+# [CHANGED v3.24.0] A reset coil means the rung switches something off. Closing a cover is not that.
+# A cover has open and closed, not on and off, and close_cover drives a motor exactly as open_cover
+# does, so both are commands that make something happen and both latch, which is (S). Only a service
+# that genuinely takes something out of service is (R): turning off, stopping, pausing, disarming.
+# A plain turn_on stays the plain coil ( ), the ordinary energised output of a ladder.
+COIL_PLAIN_SERVICES = ("turn_on",)
+COIL_RESET_SERVICES = ("turn_off", "stop", "stop_cover", "stop_valve", "media_pause", "media_stop",
+                       "cancel", "disable", "disarm", "alarm_disarm", "close", "turn_off_all")
+COIL_SET_SERVICES = ("toggle", "open_cover", "close_cover", "lock", "unlock", "open_valve",
+                     "close_valve", "open", "media_play", "start", "enable", "press",
+                     "arm_home", "arm_away", "arm_night",
                      "alarm_arm_home", "alarm_arm_away", "alarm_arm_night", "alarm_arm_vacation")
-COIL_RESET_SERVICES = ("turn_off", "close_cover", "lock", "close_valve", "close",
-                       "media_pause", "media_stop", "stop", "cancel", "disable", "disarm",
-                       "alarm_disarm")
+
+# Every service that is drawn as a coil at all.
+COIL_ALL_SERVICES = COIL_PLAIN_SERVICES + COIL_RESET_SERVICES + COIL_SET_SERVICES
+
+
+def coil_for_service(svc):
+    """[ADDED v3.24.0] Which coil draws this service, or an empty string when none of them does."""
+    name = str(svc or "").split(".")[-1]
+    if svc in ("homeassistant.turn_on", "homeassistant.turn_off"):
+        return "coil_r" if name == "turn_off" else "coil_s"
+    if name in COIL_RESET_SERVICES:
+        return "coil_r"
+    if name in COIL_PLAIN_SERVICES:
+        return "coil"
+    if name in COIL_SET_SERVICES:
+        return "coil_s"
+    return ""
 
 # [ADDED v3.6.0] Every place Home Assistant can name a target, in the order it resolves them.
 TARGET_KEYS = ("entity_id", "device_id", "area_id", "label_id", "floor_id")
@@ -246,6 +269,8 @@ def _move_action(ids, node, svc, label, kind, src):
     el = _el(ids, "move", mode="value", source=svc,
              target=target_summary(label, kind, target_spec(node)),
              service=svc, moveKind="action", raw=node, src=src)
+    if isinstance(node, dict) and node.get("continue_on_error") is True:
+        el["continueOnError"] = True
     return _attach_target(el, ids, node, label, kind)
 
 
@@ -1083,15 +1108,17 @@ def _action_to_elements(a, ids, trig_map, src):
         # names exactly one thing that resolves to an entity. The moment an action points at several
         # targets, or at a group such as a label, an area or a floor, it is a MOVE ACTION instead:
         # the ladder cannot honestly draw seventeen lights as one contact on a rung.
-        if name in COIL_SET_SERVICES or name in COIL_RESET_SERVICES:
+        coil = coil_for_service(svc)
+        if coil:
             spec = target_spec(a)
             single_entity = spec_total(spec) <= 1 and target_kind in ("entity", "device")
             if single_entity:
-                if svc in ("homeassistant.turn_on", "homeassistant.turn_off"):
-                    coil = "coil_r" if name == "turn_off" else "coil_s"
-                else:
-                    coil = "coil_r" if name in COIL_RESET_SERVICES else "coil"
-                el = _el(ids, coil, label=ent, raw=a, src=src)
+                # [CHANGED v3.24.0] The coil now carries the service it came from and whether the
+                # rung is allowed to carry on when it fails. Without the service the block could say
+                # cover but never close cover, and there was nothing for the inspector to edit.
+                el = _el(ids, coil, label=ent, service=svc, raw=a, src=src)
+                if a.get("continue_on_error") is True:
+                    el["continueOnError"] = True
                 return [_attach_target(el, ids, a, ent, target_kind)]
             return [_move_action(ids, a, svc, ent, target_kind, src)]
 

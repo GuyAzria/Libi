@@ -17,14 +17,14 @@
  * v3.5.0
  */
 // [ADDED v3.5.0 | 2026-08-20] Purpose: Integrated the full SVG logo with the original house, electronic circuit traces, 3-rung ladder, and aligned text into the header title.
-import { LibiCore } from './libi-core.js?v=3.16.0';
-import { getStyles } from './libi-css.js?v=3.16.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.16.0';
-import { LibiOnline } from './libi-online.js?v=3.16.0';
+import { LibiCore } from './libi-core.js?v=3.33.0';
+import { getStyles } from './libi-css.js?v=3.33.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.33.0';
+import { LibiOnline } from './libi-online.js?v=3.33.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.16.0';
+export const LIBI_BUILD = '3.33.0';
 
 // [ADDED v3.16.0] Every helper Home Assistant can create from a stored collection, which is what a
 // ladder programmer means by a local variable: a bit, a word, a timer, a counter. The other kind of
@@ -43,6 +43,34 @@ export const HELPER_TYPES = [
     { domain: 'schedule',       label: 'Schedule  ·  schedule',      defaults: {} },
 ];
 const HELPER_DOMAINS = HELPER_TYPES.map(h => h.domain);
+
+// [ADDED v3.17.0] The ladder view of what a variable is. Home Assistant has no notion of a data
+// type, it has domains, so this table is the bridge: a bit, a whole number, a real number, text and
+// time. Anything that is not a helper at all is an ordinary Home Assistant entity.
+export const VAR_TYPES = {
+    BOOL:  { label: 'BOOL',  domain: 'input_boolean', title: 'A bit. On or off.' },
+    INT:   { label: 'INT',   domain: 'input_number',  title: 'A whole number.',  defaults: { min: 0, max: 100, step: 1, mode: 'box' } },
+    FLOAT: { label: 'FLOAT', domain: 'input_number',  title: 'A real number.',   defaults: { min: 0, max: 100, step: 0.1, mode: 'box' } },
+    TEXT:  { label: 'TEXT',  domain: 'input_text',    title: 'A string.',        defaults: { min: 0, max: 100, mode: 'text' } },
+    TIME:  { label: 'TIME',  domain: 'timer',         title: 'A timer or a date and time.', defaults: { duration: '00:01:00', restore: true } },
+};
+const VAR_TYPE_KEYS = Object.keys(VAR_TYPES);
+
+// Which of the five a given entity is. A counter and an input_number both hold a number, and the
+// step is what says whether it counts in whole numbers or in fractions.
+export function varTypeOf(entityId, hass) {
+    const domain = String(entityId || '').split('.')[0];
+    if (domain === 'input_boolean' || domain === 'input_button') return 'BOOL';
+    if (domain === 'input_text' || domain === 'input_select') return 'TEXT';
+    if (domain === 'input_datetime' || domain === 'timer' || domain === 'schedule') return 'TIME';
+    if (domain === 'counter') return 'INT';
+    if (domain === 'input_number') {
+        const st = hass && hass.states && hass.states[entityId];
+        const step = st && st.attributes ? Number(st.attributes.step) : 1;
+        return (!isFinite(step) || step >= 1) ? 'INT' : 'FLOAT';
+    }
+    return 'HA';
+}
 
 class LibiPanel extends HTMLElement {
     constructor() {
@@ -66,12 +94,31 @@ class LibiPanel extends HTMLElement {
         // [ADDED v3.14.0] The workspace that is open. A project holds a set of nets, each one
         // remembering which automation it was loaded from, and it is stored as its own .libi file.
         // [ADDED v3.16.0] The drawer of local variables at the foot of the sidebar.
+        // [CHANGED v3.17.0] The variables live in a bar of their own along the bottom, with the same
+        // fold and resize behaviour as the sidebar and a remembered height.
         this._varsOpen = this._readFlag('libi_vars_open');
+        this._varsH = this._readNum('libi_vars_h', 280, 120, 900);
+        // [CHANGED v3.20.0] Helper comes first and is what the bar opens on. It is the helpers page
+        // of Home Assistant itself, frame and all, so its own Create helper button is right there.
+        this._varsTab = 'helper';      // helper | vars | search
+        this._helperQuery = '';
+        this._ctx = null;              // the right click menu on a block name
+        this._ep = null;               // the entity chooser: what it is picking for
+        this._epTab = 'target';        // target | type
+        this._epQuery = '';
+        this._epOpen = {};             // which groups are unfolded
+        this._renameFor = '';          // the entity being renamed
+        this._renameTo = '';
+        this._hkPick = null;           // the kind chosen in the Create helper dialog
+        this._hkForm = {};
+        this._hkQuery = '';
+        this._varsScope = 'net';       // net | all
+        this._varsFilter = 'ALL';      // ALL | BOOL | INT | FLOAT | TEXT | TIME | HA
         this._varsQuery = '';
         this._varsNewName = '';
-        this._varsNewType = 'input_boolean';
-        this._varsExtra = {};
+        this._varsNewType = 'BOOL';
         this._helperIds = {};          // domain -> { objectId: collectionId }
+        this._draggedVar = null;
         this._project = null;          // { slug, name }
         this._projectList = [];
         this._projectDirty = false;
@@ -334,7 +381,7 @@ class LibiPanel extends HTMLElement {
 
         if (fm.type === 'dot') {
             ['contact_no', 'contact_nc', 'contact_p', 'cmp_eq', 'cmp_gt', 'cmp_lt', 'math_add', 'math_div',
-             'move', 'coil', 'coil_s', 'coil_r', 'timer_ton', 'ctu', 'repeat', 'parallel']
+             'move', 'coil', 'coil_s', 'coil_r', 'coil_t', 'timer_ton', 'ctu', 'repeat', 'parallel']
                 .forEach(v => choices.push({ action: 'add', val: v }));
 
             if (this.core.clipboard) actions.push({ action: 'paste', icon: '<small>PASTE</small>', title: 'Paste' });
@@ -356,7 +403,7 @@ class LibiPanel extends HTMLElement {
             const pick = (list) => list.forEach(v => choices.push({ action: 'mod', val: v, selected: v === t }));
 
             if (t.startsWith('contact')) pick(['contact_no', 'contact_nc', 'contact_p', 'contact_n']);
-            else if (t.startsWith('coil')) pick(['coil', 'coil_s', 'coil_r']);
+            else if (t.startsWith('coil')) pick(['coil', 'coil_s', 'coil_r', 'coil_t']);
             else if (t.startsWith('timer')) pick(['timer_ton', 'timer_toff']);
             else if (t.startsWith('cmp')) pick(['cmp_eq', 'cmp_ne', 'cmp_gt', 'cmp_lt', 'cmp_ge', 'cmp_le', 'cmp_rng']);
             else if (t.startsWith('math')) pick(['math_add', 'math_sub', 'math_mul', 'math_div']);
@@ -427,6 +474,12 @@ class LibiPanel extends HTMLElement {
                 <p style="font-size:13px; color:#757575; margin:0;">The automations, scripts and scenes this project compiled stay exactly where they are in Home Assistant and keep running. Only the .libi file is removed, so the ladder is gone and the YAML is not.</p>
                 <div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button><button class="btn danger" id="projDeleteOk">Delete the drawing</button></div>
             </div></div>`;
+        } else if (this._modal === 'entity_picker') {
+            modalHtml = this._epDialogHtml();
+        } else if (this._modal === 'rename_entity') {
+            modalHtml = this._renameDialogHtml();
+        } else if (this._modal === 'helper_new') {
+            modalHtml = this._hkDialogHtml();
         } else if (this._modal === 'pick_level') {
             // [ADDED v3.5.0] A new net says what kind of logic it is before it exists, because the kind
             // decides which rules the linter applies and which file the net is compiled into.
@@ -547,10 +600,11 @@ class LibiPanel extends HTMLElement {
                     </div>
                     <div class="sidebar-rail-tag">LIBI</div>
                     <div class="sidebar-content">${sidebarHtml}</div>
-                    ${this._varsDrawerHtml()}
                 </div>
             </div>
+            ${this._varsBarHtml()}
         </div>
+        ${this._ctxMenuHtml()}
         ${fanMenuHtml}
         ${modalHtml}
         <svg id="dragOverlay" style="position:fixed; top:0; left:0; width:100vw; height:100vh; pointer-events:none; z-index:9999; display:none;">
@@ -609,6 +663,7 @@ class LibiPanel extends HTMLElement {
                         <option value="contact_n" ${el.type === 'contact_n' ? 'selected' : ''}>Negative Edge (N)</option>
                         <option value="coil" ${el.type === 'coil' ? 'selected' : ''}>Coil (Output)</option>
                         <option value="coil_s" ${el.type === 'coil_s' ? 'selected' : ''}>Set Coil (S)</option>
+                        <option value="coil_t" ${el.type === 'coil_t' ? 'selected' : ''}>Toggle Coil (T)</option>
                         <option value="coil_r" ${el.type === 'coil_r' ? 'selected' : ''}>Reset Coil (R)</option>
                         <option value="timer_ton" ${el.type === 'timer_ton' ? 'selected' : ''}>Timer (TON)</option>
                         <option value="timer_toff" ${el.type === 'timer_toff' ? 'selected' : ''}>Timer (TOF)</option>
@@ -646,6 +701,630 @@ class LibiPanel extends HTMLElement {
                 <button class="btn btn-danger" id="propDelete">🗑 Delete Element</button>
             </div>
         `;
+    }
+
+    // [ADDED v3.24.0] The service a coil calls. The list is the services of the entity's own domain,
+    // so a cover offers closing, opening and stopping. Changing it also changes which coil is drawn,
+    // because closing latches and stopping releases.
+    _serviceField(el) {
+        const wrap = document.createElement('div');
+        wrap.className = 'fgrp';
+        const entity = String(el.label || '').replace(/\s*\+\d+$/, '').trim();
+        const domain = entity.includes('.') ? entity.split('.')[0] : '';
+        const table = this.core.COIL_SERVICES();
+        const list = (table[domain] || ['turn_on', 'turn_off', 'toggle']).slice();
+        const current = String(el.service || '');
+        if (current && !list.includes(current.split('.').pop())) list.unshift(current.split('.').pop());
+        const dom = domain || (current.includes('.') ? current.split('.')[0] : 'homeassistant');
+        wrap.innerHTML = `<label id="lbl_service">Action</label>
+            <select id="inp_service">${list.map(s => {
+                const full = `${dom}.${s}`;
+                return `<option value="${full}" ${full === current ? 'selected' : ''}>${full}</option>`;
+            }).join('')}</select>`;
+        const sel = wrap.querySelector('#inp_service');
+        sel.addEventListener('change', (e) => {
+            el.service = e.target.value;
+            // The symbol follows the verb, so close becomes (S) and stop becomes (R).
+            const next = this.core.coilForService(el.service);
+            if (next) el.type = next;
+            this.core.pushHistory();
+            this._render();
+        });
+        return wrap;
+    }
+
+    // [ADDED v3.24.0] continue_on_error, with the drawing it produces spelled out.
+    _coeField(el) {
+        const wrap = document.createElement('div');
+        wrap.className = 'fgrp checkbox-grp';
+        wrap.innerHTML = `<input type="checkbox" id="inp_coe" ${el.continueOnError ? 'checked' : ''} />
+            <label style="margin:0;">Continue on error
+                <span style="display:block; font-weight:400; font-size:11px; color:#757575;">Draws a bypass around this block. The rung carries on to the next checks even if the action fails or the entity is unavailable.</span>
+            </label>`;
+        wrap.querySelector('#inp_coe').addEventListener('change', (e) => {
+            el.continueOnError = e.target.checked;
+            this.core.pushHistory();
+            this._render();
+        });
+        return wrap;
+    }
+
+    // [ADDED v3.32.0] ------------------------------------------------------------------
+    // The entity chooser. Home Assistant sorts the things you can point at two ways: where they
+    // are, and what they are. Both are built here from the registries the panel already holds, so
+    // choosing a variable never means remembering an entity id.
+
+    EP_ICONS() {
+        return {
+            air_quality:'🜁', battery:'🔋', button:'⏻', calendar:'📅', climate:'🌡', counter:'#',
+            cover:'🪟', door:'🚪', fan:'🌀', gate:'⛩', humidity:'💧', illuminance:'☀',
+            blind:'🪟', curtain:'🪟', shade:'🪟', shutter:'🪟', awning:'🪟', garage:'🚗', window:'🪟',
+            smoke:'🔥', gas:'☁', problem:'⚠', safety:'🛡', connectivity:'📶', presence:'🏠',
+            energy:'⚡', voltage:'⚡', current:'⚡', pressure:'📉', signal_strength:'📶',
+            light:'💡', lock:'🔒', media_player:'📺', moisture:'💦', motion:'🏃', occupancy:'🏠',
+            power:'⚡', remote:'📱', scene:'🎬', schedule:'🗓', select:'☰', siren:'📢', sun:'☼',
+            switch:'🔘', temperature:'🌡', text:'T', timer:'⏱', update:'⬆', vacuum:'🧹',
+            valve:'🚰', water_heater:'♨', person:'👤', device_tracker:'📍', binary_sensor:'◐',
+            sensor:'📈', automation:'⚡', script:'📜', input_boolean:'⏼', input_number:'↔',
+            input_text:'T', input_select:'☰', input_datetime:'🕐', input_button:'⏻',
+            number:'↔', device:'🔌', area:'▦', label:'🏷', helper:'🧩', entity:'◈',
+            scene:'🎬', zone:'📍',
+        };
+    }
+
+    EP_TYPE_NAMES() {
+        return {
+            air_quality:'Air Quality', battery:'Battery', button:'Button', calendar:'Calendar',
+            climate:'Climate', counter:'Counter', cover:'Cover', door:'Door', fan:'Fan', gate:'Gate',
+            humidity:'Humidity', illuminance:'Illuminance', light:'Light', lock:'Lock',
+            media_player:'Media player', moisture:'Moisture', motion:'Motion', occupancy:'Occupancy',
+            power:'Power', remote:'Remote', scene:'Scene', schedule:'Schedule', select:'Select',
+            siren:'Siren', sun:'Sun', switch:'Switch', temperature:'Temperature', text:'Text',
+            timer:'Timer', update:'Update', vacuum:'Vacuum', valve:'Valve',
+            water_heater:'Water heater', person:'Person', device_tracker:'Device tracker',
+            binary_sensor:'Binary sensor', sensor:'Sensor', automation:'Automation', script:'Script',
+            number:'Number', input_boolean:'Toggle', input_number:'Number', input_text:'Text',
+            input_select:'Dropdown', input_datetime:'Date and time', input_button:'Button',
+            // The classes a cover or a valve declares, which Home Assistant lists in their own right.
+            blind:'Blind', curtain:'Curtain', shade:'Shade', shutter:'Shutter', awning:'Awning',
+            damper:'Damper', garage:'Garage', window:'Window',
+            // And the ones a binary sensor declares.
+            smoke:'Smoke', gas:'Gas', problem:'Problem', safety:'Safety', tamper:'Tamper',
+            connectivity:'Connectivity', presence:'Presence', vibration:'Vibration', sound:'Sound',
+            cold:'Cold', heat:'Heat', running:'Running', plug:'Plug', energy:'Energy',
+            voltage:'Voltage', current:'Current', pressure:'Pressure', signal_strength:'Signal',
+            carbon_dioxide:'Carbon dioxide', carbon_monoxide:'Carbon monoxide', pm25:'Particulates',
+        };
+    }
+
+    // What kind a thing is: its device class when it declares one, otherwise its domain. That is
+    // exactly the split the By type list of Home Assistant shows.
+    _epTypeOf(entityId) {
+        const st = (this._hass && this._hass.states && this._hass.states[entityId]) || null;
+        const dc = st && st.attributes ? st.attributes.device_class : '';
+        const domain = String(entityId).split('.')[0];
+        if (dc && (domain === 'sensor' || domain === 'binary_sensor' || domain === 'cover' || domain === 'valve')) {
+            return String(dc);
+        }
+        return domain;
+    }
+
+    _epMatches(entityId) {
+        const q = String(this._epQuery || '').trim().toLowerCase();
+        if (!q) return true;
+        const nm = (this.core.friendlyName(entityId, this._hass) || '').toLowerCase();
+        return entityId.toLowerCase().includes(q) || nm.includes(q);
+    }
+
+    _epAll() {
+        const states = (this._hass && this._hass.states) || {};
+        return Object.keys(states).filter(e => this._epMatches(e)).sort();
+    }
+
+    _epGroupHtml(key, icon, name, entities, current) {
+        if (!entities.length) return '';
+        const open = !!this._epOpen[key] || !!String(this._epQuery || '').trim();
+        const rows = open ? entities.map(e => {
+            const nm = this.core.friendlyName(e, this._hass) || e.split('.').slice(1).join('.');
+            const st = (this._hass.states || {})[e];
+            return `<div class="ep-item${e === current ? ' cur' : ''} ep-pick" data-eid="${this._esc(e)}">
+                <span class="ico">${this.EP_ICONS()[this._epTypeOf(e)] || '◈'}</span>
+                <span class="txt"><span class="nm" dir="auto">${this._esc(nm)}</span><span class="eid">${this._esc(e)}</span></span>
+                <span class="st">${st ? this._esc(String(st.state).slice(0, 12)) : '—'}</span>
+            </div>`;
+        }).join('') : '';
+        return `<div class="ep-group${open ? ' open' : ''} ep-fold" data-k="${this._esc(key)}">
+                <span class="chev">▶</span><span class="ico">${icon}</span>
+                <span class="nm" dir="auto">${this._esc(name)}</span><span class="ct">${entities.length}</span>
+            </div>${rows}`;
+    }
+
+    // [ADDED v3.33.0] A group that holds other groups rather than entities, so Unassigned, Devices
+    // and the rest fold away like everything else instead of being headings that cannot be closed.
+    _epNestHtml(key, icon, name, count, inner) {
+        if (!count) return '';
+        const open = !!this._epOpen[key] || !!String(this._epQuery || '').trim();
+        return `<div class="ep-group${open ? ' open' : ''} ep-fold" data-k="${this._esc(key)}">
+                <span class="chev">▶</span><span class="ico">${icon}</span>
+                <span class="nm">${this._esc(name)}</span><span class="ct">${count}</span>
+            </div>${open ? `<div style="padding-left:14px;">${inner}</div>` : ''}`;
+    }
+
+    // Which integration brought an entity in. It is what tells a Zigbee light from a Wi-Fi one.
+    _epPlatform(entityId) {
+        const reg = (this._hass && this._hass.entities && this._hass.entities[entityId]) || null;
+        return String((reg && reg.platform) || '');
+    }
+
+    _epByTargetHtml(current) {
+        const h = this._hass || {};
+        const all = this._epAll();
+        const I = this.EP_ICONS();
+        const HELPERS = ['input_boolean','input_number','input_text','input_select','input_datetime','input_button','counter','timer','schedule'];
+        const ZIGBEE = ['zha', 'deconz', 'zigbee2mqtt', 'mqtt'];
+        const WIFI = ['esphome', 'shelly', 'tasmota', 'tuya', 'wled', 'hue', 'tplink', 'yeelight'];
+
+        const byArea = {};
+        const noArea = [];
+        all.forEach(e => {
+            const a = this._areaOfForPicker(e);
+            if (a) (byArea[a] = byArea[a] || []).push(e);
+            else noArea.push(e);
+        });
+
+        let out = '';
+        const areaIds = Object.keys(byArea).sort((a, b) =>
+            String(((h.areas || {})[a] || {}).name || a).localeCompare(String(((h.areas || {})[b] || {}).name || b)));
+        if (areaIds.length) {
+            out += `<div class="ep-sec">Home</div>`;
+            areaIds.forEach(a => {
+                out += this._epGroupHtml(`area:${a}`, I.area, ((h.areas || {})[a] || {}).name || a, byArea[a], current);
+            });
+        }
+
+        // Time and sun. Sun is an entity like any other, the rest are kinds of trigger and are
+        // offered only where a trigger is what is being chosen.
+        const timeItems = this.EP_TRIGGER_KINDS().filter(k => k.section === 'time');
+        out += `<div class="ep-sec">Time and sun</div>`;
+        out += timeItems.map(k => this._epTriggerRowHtml(k)).join('');
+
+        const devIds = Object.keys(h.devices || {}).filter(d =>
+            all.some(e => ((h.entities || {})[e] || {}).device_id === d))
+            .sort((a, b) => String((h.devices[a] || {}).name || a).localeCompare(String((h.devices[b] || {}).name || b)));
+        const labelIds = Object.keys(h.labels || {}).filter(l =>
+            all.some(e => (((h.entities || {})[e] || {}).labels || []).includes(l)));
+
+        const pick = (fn) => all.filter(fn);
+        const helpers = pick(e => HELPERS.includes(e.split('.')[0]));
+        const services = pick(e => ['script', 'scene', 'automation'].includes(e.split('.')[0]));
+        const phones = pick(e => e.split('.')[0] === 'device_tracker' || this._epPlatform(e) === 'mobile_app');
+        const users = pick(e => e.split('.')[0] === 'person');
+        const zigbee = pick(e => ZIGBEE.includes(this._epPlatform(e)));
+        const wifi = pick(e => WIFI.includes(this._epPlatform(e)));
+
+        // Everything under one fold, the way Home Assistant groups what has no area.
+        let inner = '';
+        inner += this._epGroupHtml('all:entities', I.entity, 'Entities', noArea.length ? noArea : all, current);
+        inner += this._epGroupHtml('all:helpers', I.helper, 'Helpers', helpers, current);
+        inner += this._epNestHtml('nest:devices', I.device, 'Devices', devIds.length,
+            devIds.map(d => {
+                const own = all.filter(e => ((h.entities || {})[e] || {}).device_id === d);
+                const dev = h.devices[d] || {};
+                return this._epGroupHtml(`dev:${d}`, I.device, dev.name_by_user || dev.name || d, own, current);
+            }).join(''));
+        inner += this._epGroupHtml('all:services', I.script, 'Services', services, current);
+        inner += this._epGroupHtml('all:phones', I.device_tracker, 'Mobile phones', phones, current);
+        inner += this._epGroupHtml('all:users', I.person, 'Users', users, current);
+        inner += this._epGroupHtml('all:zigbee', '🐝', 'Zigbee', zigbee, current);
+        inner += this._epGroupHtml('all:wifi', '📶', 'Wi-Fi', wifi, current);
+
+        out += this._epNestHtml('nest:unassigned', I.entity, 'Unassigned', all.length, inner);
+
+        if (labelIds.length) {
+            out += `<div class="ep-sec">Labels</div>`;
+            labelIds.forEach(l => {
+                const own = all.filter(e => (((h.entities || {})[e] || {}).labels || []).includes(l));
+                out += this._epGroupHtml(`lab:${l}`, I.label, ((h.labels || {})[l] || {}).name || l, own, current);
+            });
+        }
+
+        // The kinds of trigger that are not entities at all, offered on a block that is a trigger.
+        const generic = this.EP_TRIGGER_KINDS().filter(k => k.section === 'generic');
+        out += `<div class="ep-sec">Generic</div>`;
+        out += generic.map(k => this._epTriggerRowHtml(k)).join('');
+
+        return out || `<div class="ep-empty">Nothing matches that.</div>`;
+    }
+
+    // [ADDED v3.33.0] The entries of the Home Assistant list that are kinds of trigger rather than
+    // things in the house. They are offered plainly, and a block that is not a trigger says so
+    // rather than quietly doing nothing.
+    EP_TRIGGER_KINDS() {
+        return [
+            { id: 'time',     name: 'Time',     icon: '🕐', section: 'time',    node: { trigger: 'time', at: '07:00:00' } },
+            { id: 'sun',      name: 'Sun',      icon: '☼',  section: 'time',    node: { trigger: 'sun', event: 'sunset' } },
+            { id: 'sentence', name: 'Sentence', icon: '🗣', section: 'generic', node: { trigger: 'conversation', command: 'good night' } },
+            { id: 'template', name: 'Template', icon: '{}', section: 'generic', node: { trigger: 'template', value_template: '{{ true }}' } },
+            { id: 'webhook',  name: 'Webhook',  icon: '🪝', section: 'generic', node: { trigger: 'webhook', webhook_id: 'libi_hook' } },
+            { id: 'zone',     name: 'Zone',     icon: '📍', section: 'generic', node: { trigger: 'zone', entity_id: 'person.me', zone: 'zone.home', event: 'enter' } },
+            { id: 'event',    name: 'Event',    icon: '👁', section: 'generic', node: { trigger: 'event', event_type: 'my_event' } },
+        ];
+    }
+
+    _epTriggerRowHtml(kind) {
+        const q = String(this._epQuery || '').trim().toLowerCase();
+        if (q && !kind.name.toLowerCase().includes(q) && !kind.id.includes(q)) return '';
+        return `<div class="ep-item ep-kind" data-k="${kind.id}" style="padding-left:16px;">
+            <span class="ico">${kind.icon}</span>
+            <span class="txt"><span class="nm">${this._esc(kind.name)}</span><span class="eid">a kind of trigger, not an entity</span></span>
+        </div>`;
+    }
+
+    _applyTriggerKind(kindId) {
+        const kind = this.EP_TRIGGER_KINDS().find(k => k.id === kindId);
+        const p = this._ep;
+        if (!kind || !p) return;
+        const el = this.core.findEl(p.netId, p.rungId, p.elId);
+        if (!el) return;
+        if (!el.isTrigger) {
+            alert(`${kind.name} is a kind of trigger. Mark this block as the trigger of the rung first, or pick an entity instead.`);
+            return;
+        }
+        el.raw = JSON.parse(JSON.stringify(kind.node));
+        el.eventKind = kind.node.trigger;
+        el.type = 'contact_p';
+        el.label = kind.id === 'sun' ? 'sun.sun' : `${kind.node.trigger}.${kind.id}`;
+        delete el.service;
+        delete el.targetSpec;
+        this.core.pushHistory();
+        this._ep = null;
+        this._modal = null;
+        this._render();
+    }
+
+    _epByTypeHtml(current) {
+        const all = this._epAll();
+        const I = this.EP_ICONS();
+        const N = this.EP_TYPE_NAMES();
+        const buckets = {};
+        all.forEach(e => { const k = this._epTypeOf(e); (buckets[k] = buckets[k] || []).push(e); });
+        const keys = Object.keys(buckets).sort((a, b) =>
+            String(N[a] || a).localeCompare(String(N[b] || b)));
+        if (!keys.length) return `<div class="ep-empty">Nothing matches that.</div>`;
+        return keys.map(k => this._epGroupHtml(`type:${k}`, I[k] || '◈',
+            N[k] || k.replace(/_/g, ' '), buckets[k], current)).join('');
+    }
+
+    _epDialogHtml() {
+        const current = (this._ep && this._ep.current) || '';
+        const body = this._epTab === 'type' ? this._epByTypeHtml(current) : this._epByTargetHtml(current);
+        return `<div class="modal-overlay" id="modalOverlay"><div class="modal ep-modal">
+            <h2 class="modal-title">Choose an entity</h2>
+            ${current ? `<p class="ep-cur">replacing ${this._esc(current)}</p>` : ''}
+            <div class="ep-top"><input type="text" id="epSearch" placeholder="Search" value="${this._esc(this._epQuery)}" dir="auto" /></div>
+            <div class="ep-tabs">
+                <button class="ep-tab${this._epTab === 'target' ? ' on' : ''}" id="epTabTarget">By target</button>
+                <button class="ep-tab${this._epTab === 'type' ? ' on' : ''}" id="epTabType">By type</button>
+            </div>
+            <div class="ep-body">${body}</div>
+            <div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div>
+        </div></div>`;
+    }
+
+    _areaOfForPicker(entityId) {
+        const h = this._hass || {};
+        const reg = (h.entities || {})[entityId] || null;
+        if (reg && reg.area_id) return reg.area_id;
+        const dev = reg && reg.device_id && h.devices ? h.devices[reg.device_id] : null;
+        return (dev && dev.area_id) || '';
+    }
+
+    // Opened from the block, from the right click menu, or from the inspector.
+    _openEntityPicker(netId, rungId, elId, prop) {
+        const el = this.core.findEl(netId, rungId, elId);
+        if (!el) return;
+        const field = prop || (String(el.type || '').startsWith('cmp') ? 'sourceA'
+                    : (el.type === 'move' ? 'target' : 'label'));
+        this._ep = { netId, rungId, elId, prop: field,
+                     current: String(el[field] || '').replace(/\s*\+\d+$/, '').trim() };
+        this._epQuery = '';
+        this._epOpen = {};
+        this._modal = 'entity_picker';
+        this._render();
+    }
+
+    _applyPickedEntity(entityId) {
+        const p = this._ep;
+        if (!p) return;
+        const el = this.core.findEl(p.netId, p.rungId, p.elId);
+        if (el) {
+            el[p.prop] = entityId;
+            if (p.prop === 'label' || p.prop === 'target') {
+                el.targetSpec = { entity_id: [entityId] };
+                el.targetKind = 'entity';
+                el.targetLabel = entityId;
+            }
+            this.core.pushHistory();
+            this._projectDirty = true;
+        }
+        this._ep = null;
+        this._modal = null;
+        this._render();
+    }
+
+    // [ADDED v3.31.0] The device an entity sits on, and every entity that device offers. A name on
+    // its own is never enough to know which physical thing a block drives, so the inspector shows
+    // the device for every block and lets the entity be picked out of that device.
+    _deviceOfEntity(entityId) {
+        const reg = (this._hass && this._hass.entities && this._hass.entities[entityId]) || null;
+        return (reg && reg.device_id) || '';
+    }
+
+    _entitiesOfDevice(deviceId) {
+        const reg = (this._hass && this._hass.entities) || {};
+        return Object.keys(reg).filter(e => reg[e] && reg[e].device_id === deviceId).sort();
+    }
+
+    // Shown above the entity on every coil, contact and wait: which device this is, and a list of
+    // that device's own entities to choose between.
+    _deviceContextFields(el, entityId) {
+        const out = [];
+        const deviceId = this._deviceOfEntity(entityId);
+
+        out.push(this._picker('device', deviceId, v => {
+            // Picking a different device moves the block to that device's first sensible entity.
+            const list = this._entitiesOfDevice(v);
+            const domain = String(entityId || '').split('.')[0];
+            const next = list.find(e => e.split('.')[0] === domain) || list[0] || '';
+            if (next) {
+                el.label = next;
+                el.targetSpec = { entity_id: [next] };
+                el.targetKind = 'entity';
+                el.targetLabel = next;
+                this.core.pushHistory();
+            }
+            this._render();
+        }, { label: 'Device', id: 'device' }));
+
+        const siblings = this._entitiesOfDevice(deviceId);
+        if (deviceId && siblings.length > 1) {
+            const wrap = document.createElement('div');
+            wrap.className = 'fgrp';
+            wrap.innerHTML = `<label id="lbl_sibling">Entity of this device</label>
+                <select id="inp_sibling">${siblings.map(e => {
+                    const nm = this.core.friendlyName(e, this._hass) || e.split('.').slice(1).join('.');
+                    return `<option value="${this._esc(e)}" ${e === entityId ? 'selected' : ''}>${this._esc(nm)} — ${this._esc(e)}</option>`;
+                }).join('')}</select>`;
+            wrap.querySelector('#inp_sibling').addEventListener('change', (e) => {
+                el.label = e.target.value;
+                el.targetSpec = { entity_id: [e.target.value] };
+                el.targetKind = 'entity';
+                el.targetLabel = e.target.value;
+                this.core.pushHistory();
+                this._render();
+            });
+            out.push(wrap);
+        } else if (!deviceId) {
+            const note = document.createElement('div');
+            note.className = 'fgrp';
+            note.innerHTML = `<div style="font-size:12px; color:#9e9e9e; margin-top:-8px;">This entity does not belong to a device.</div>`;
+            out.push(note);
+        }
+        return out;
+    }
+
+    // [ADDED v3.26.0] What Home Assistant calls this device trigger or action. The wording lives in
+    // the translations of the integration behind the device, which is why a Zigbee button reads
+    // "First button" pressed rather than remote_button_short_press.
+    _deviceAutomationLabel(item) {
+        const dom = item.domain || '';
+        const L = (this._hass && this._hass.localize) ? this._hass.localize.bind(this._hass) : null;
+        const kind = this._dnKind === 'action' ? 'action' : 'trigger';
+        let subtype = item.subtype || '';
+        if (L && subtype) {
+            subtype = L(`component.${dom}.device_automation.${kind}_subtype.${item.subtype}`) || item.subtype;
+        }
+        let text = '';
+        if (L) {
+            text = L(`component.${dom}.device_automation.${kind}_type.${item.type}`,
+                     { entity_name: '', subtype }) || '';
+        }
+        if (!text) {
+            text = [item.type, item.subtype].filter(Boolean).join(' ').replace(/_/g, ' ');
+        }
+        return String(text).replace(/\s+/g, ' ').trim();
+    }
+
+    // The list is asked for once per device and kept, so redrawing the inspector costs nothing.
+    _ensureDeviceAutomations(deviceId, kind) {
+        this._devAuto = this._devAuto || {};
+        const key = `${kind}:${deviceId}`;
+        if (!deviceId || this._devAuto[key] !== undefined) return;
+        this._devAuto[key] = null;   // asked for, still on its way
+        if (!this._hass || !this._hass.connection) { this._devAuto[key] = []; return; }
+        this._hass.connection.sendMessagePromise({
+            type: `device_automation/${kind}/list`, device_id: deviceId,
+        }).then(list => {
+            this._devAuto[key] = Array.isArray(list) ? list : [];
+            this._render();
+        }).catch(() => { this._devAuto[key] = []; this._render(); });
+    }
+
+    // Two entries of the same device can look alike, so the value of an option is the whole node.
+    _devSame(a, b) {
+        const keys = ['domain', 'type', 'subtype', 'entity_id', 'discovery_id'];
+        return keys.every(k => String((a || {})[k] || '') === String((b || {})[k] || ''));
+    }
+
+    _deviceFields(el) {
+        const out = [];
+        const kind = el.deviceNode === 'action' ? 'action' : 'trigger';
+        this._dnKind = kind;
+        const raw = (el.raw && typeof el.raw === 'object') ? el.raw : {};
+        const deviceId = String(el.deviceId || raw.device_id || '');
+
+        out.push(this._picker('device', deviceId, v => {
+            // A different device means the old trigger no longer applies, so only the device is kept
+            // and the list below is asked for again.
+            el.deviceId = v || '';
+            el.raw = Object.assign({}, raw, { device_id: v || '' });
+            delete el.raw.type; delete el.raw.subtype; delete el.raw.domain;
+            el.label = this._devLabelFor(el, null);
+            this.core.pushHistory();
+            this._render();
+        }, { label: 'Device', id: 'device' }));
+
+        this._ensureDeviceAutomations(deviceId, kind);
+        const key = `${kind}:${deviceId}`;
+        const list = (this._devAuto || {})[key];
+
+        const wrap = document.createElement('div');
+        wrap.className = 'fgrp';
+        const title = kind === 'action' ? 'Action' : 'Trigger';
+        if (!deviceId) {
+            wrap.innerHTML = `<label>${title}</label><div style="font-size:12px; color:#757575;">Pick a device first.</div>`;
+            out.push(wrap);
+            return out;
+        }
+        if (list === null || list === undefined) {
+            wrap.innerHTML = `<label>${title}</label><div style="font-size:12px; color:#757575;">Asking Home Assistant what this device offers.</div>`;
+            out.push(wrap);
+            return out;
+        }
+        if (!list.length) {
+            wrap.innerHTML = `<label>${title}</label><div style="font-size:12px; color:#757575;">This device offers no ${kind}s.</div>`;
+            out.push(wrap);
+            return out;
+        }
+
+        const current = list.findIndex(item => this._devSame(item, raw));
+        const options = list.map((item, i) =>
+            `<option value="${i}" ${i === current ? 'selected' : ''}>${this._esc(this._deviceAutomationLabel(item))}</option>`).join('');
+        wrap.innerHTML = `<label id="lbl_devauto">${title}</label>
+            <select id="inp_devauto">${current < 0 ? '<option value="-1" selected>— not in this list —</option>' : ''}${options}</select>`;
+        wrap.querySelector('#inp_devauto').addEventListener('change', (e) => {
+            const item = list[Number(e.target.value)];
+            if (!item) return;
+            // Keep whatever the node carried that the list does not speak for, the trigger id and
+            // the for and the continue_on_error, and lay the chosen one over it.
+            const keep = {};
+            ['id', 'for', 'continue_on_error', 'enabled', 'alias', 'variables'].forEach(k => {
+                if (raw[k] !== undefined) keep[k] = raw[k];
+            });
+            el.raw = Object.assign({ trigger: 'device' }, item, { device_id: deviceId }, keep);
+            if (kind === 'action') { delete el.raw.trigger; el.raw.device_id = deviceId; }
+            el.deviceId = deviceId;
+            el.label = this._devLabelFor(el, item);
+            // [FIXED v3.31.0] Choosing from the list used to leave the block looking exactly as it
+            // was. The symbol follows the kind of action, and the second line follows the node, so
+            // both are set here rather than left to a redraw that had nothing new to read.
+            el.service = '';
+            if (kind === 'action' && String(el.type || '').startsWith('coil')) {
+                const type = String(item.type || '');
+                el.type = type === 'toggle' ? 'coil_t'
+                        : type === 'turn_off' ? 'coil_r'
+                        : type === 'press' ? 'coil'
+                        : 'coil_s';
+            }
+            this.core.pushHistory();
+            this._render();
+        });
+        out.push(wrap);
+
+        // What the node really says, under the two fields, the same as for an entity.
+        const note = document.createElement('div');
+        note.className = 'fgrp';
+        const bits = [raw.domain, raw.type, raw.subtype].filter(Boolean).join(' · ');
+        note.innerHTML = bits
+            ? `<div style="font-size:12px; color:#616161; margin-top:-10px; font-family:monospace; word-break:break-all;">${this._esc(bits)}</div>`
+            : '';
+        out.push(note);
+        return out;
+    }
+
+    // The two lines drawn on the block: the device on top, what it does underneath.
+    _devLabelFor(el, item) {
+        return this._devLabelForImpl(el, item);
+    }
+
+    _devLabelForImpl(el, item) {
+        const raw = (el.raw && typeof el.raw === 'object') ? el.raw : {};
+        const dev = this.core.deviceName(String(el.deviceId || raw.device_id || ''), this._hass) || 'device';
+        const slug = String(dev).toLowerCase().trim().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'device';
+        const what = (item && (item.subtype || item.type)) || raw.subtype || raw.type || '';
+        return what ? `${slug}.${what}` : slug;
+    }
+
+    // [ADDED v3.28.0] Right clicking the name of a block offers to rename what it points at. The
+    // name lives in the entity registry of Home Assistant, so renaming here is the same rename as
+    // renaming it anywhere else, and every card and every automation follows.
+    _ctxMenuHtml() {
+        if (!this._ctx) return '';
+        const eid = this._ctx.entityId;
+        const name = this.core.friendlyName(eid, this._hass) || '';
+        return `<div class="ctx-menu" id="ctxMenu" style="left:${this._ctx.x}px; top:${this._ctx.y}px;">
+            <div class="ctx-head">${this._esc(eid)}</div>
+            <button class="ctx-item" id="ctxChange">◈&nbsp; Change the entity</button>
+            <button class="ctx-item" id="ctxRename">✎&nbsp; Rename${name ? ` “${this._esc(name)}”` : ''}</button>
+            <button class="ctx-item" id="ctxMoreInfo">☰&nbsp; Open in Home Assistant</button>
+            <button class="ctx-item" id="ctxCopy">⧉&nbsp; Copy the entity id</button>
+        </div>`;
+    }
+
+    _renameDialogHtml() {
+        const eid = this._renameFor;
+        return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:440px;">
+            <h2 class="modal-title">Rename</h2>
+            <p style="font-size:12px; color:#757575; margin:0 0 10px 0; font-family:monospace; word-break:break-all;">${this._esc(eid)}</p>
+            <div class="fgrp"><label>Name</label>
+                <input type="text" id="renameInput" value="${this._esc(this._renameTo)}" dir="auto" placeholder="חלונות" /></div>
+            <p style="font-size:12px; color:#757575; margin:0;">This is the name Home Assistant shows for this entity everywhere, not only in LIBI. The entity id itself does not change, so nothing that points at it breaks.</p>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="closeModalBtn">Cancel</button>
+                <button class="btn" id="renameOk">Rename</button>
+            </div>
+        </div></div>`;
+    }
+
+    async _doRename() {
+        const eid = this._renameFor;
+        const name = String(this._renameTo || '').trim();
+        if (!eid) return;
+        try {
+            await this._hass.connection.sendMessagePromise({
+                type: 'config/entity_registry/update', entity_id: eid, name: name || null,
+            });
+            this._modal = null;
+            this._renameFor = '';
+            // [FIXED v3.28.1] The registry took the name, but the state object the panel holds is the
+            // one Home Assistant handed over before the change. Drawing now would show the old name
+            // until something else forced a redraw, which is why it needed a page refresh. The new
+            // name is shown straight away and the drawing is repeated when the real one arrives.
+            this.core.nameOverrides = this.core.nameOverrides || {};
+            this.core.nameOverrides[eid] = name;
+            this._render();
+            this._settleRename(eid, name);
+        } catch (err) {
+            alert('Could not rename it: ' + (err && err.message ? err.message : err));
+        }
+    }
+
+    // Waits for Home Assistant to push the renamed entity, then draws once more with the real value
+    // and lets the override go. It gives up after a couple of seconds so it can never spin.
+    _settleRename(entityId, expected) {
+        let tries = 0;
+        const done = () => {
+            if (this.core.nameOverrides) delete this.core.nameOverrides[entityId];
+            this._render();
+        };
+        const tick = () => {
+            const st = this._hass && this._hass.states && this._hass.states[entityId];
+            const live = (st && st.attributes && st.attributes.friendly_name) ? String(st.attributes.friendly_name) : '';
+            const arrived = expected ? live === expected : !!live;
+            if (arrived || ++tries > 14) { done(); return; }
+            setTimeout(tick, 150);
+        };
+        setTimeout(tick, 150);
     }
 
     // [ADDED v3.9.0] The entity id of the element, written under the picker that hides it.
@@ -704,6 +1383,27 @@ class LibiPanel extends HTMLElement {
         const wrap = document.createElement('div');
         wrap.className = 'fgrp';
         if (opts.label) wrap.innerHTML = `<label id="lbl_${opts.id || kind}">${opts.label}</label>`;
+
+        // [ADDED v3.31.0] Home Assistant loads its pickers lazily, so one of them can be missing from
+        // the browser tab a panel is opened in. Creating it anyway produced an element that renders
+        // nothing, which is why the DEVICE field was an empty gap with no way to change anything.
+        const TAG = { device: 'ha-device-picker', area: 'ha-area-picker' }[kind] || 'ha-entity-picker';
+        if (typeof customElements !== 'undefined' && !customElements.get(TAG)) {
+            const box = document.createElement('input');
+            box.type = 'text';
+            box.value = value || '';
+            box.setAttribute('dir', 'auto');
+            box.placeholder = kind === 'device' ? 'device id' : 'domain.entity';
+            if (opts.id) box.id = `inp_${opts.id}`;
+            box.addEventListener('change', () => onValue(box.value.trim()));
+            wrap.appendChild(box);
+            const note = document.createElement('div');
+            note.style.cssText = 'font-size:11px;color:#9e9e9e;margin-top:3px;';
+            note.textContent = `Home Assistant has not loaded ${TAG} in this browser tab, so this is a plain field.`;
+            wrap.appendChild(note);
+            return wrap;
+        }
+
         let node;
         if (kind === 'device') {
             node = document.createElement('ha-device-picker');
@@ -755,12 +1455,41 @@ class LibiPanel extends HTMLElement {
             this._render(); 
         };
 
-        if (['contact_no', 'contact_nc', 'contact_p', 'contact_n', 'coil', 'coil_s', 'coil_r', 'wait'].includes(el.type)) {
-            slot.appendChild(this._picker('entity', el.label, v => { el.label = v; this.core.pushHistory(); this._render(); },
-                { label: el.type.startsWith('coil') ? 'Controlled Entity' : 'Entity / Sensor', id: 'label' }));
+        // [ADDED v3.26.0] A block built from a device node is not an entity, so it gets the two
+        // fields Home Assistant offers for one: the device, and which of its triggers or actions.
+        if (el.deviceNode) {
+            this._deviceFields(el).forEach(node => slot.appendChild(node));
+        } else if (['contact_no', 'contact_nc', 'contact_p', 'contact_n', 'coil', 'coil_s', 'coil_r', 'coil_t', 'wait'].includes(el.type)) {
+            // [ADDED v3.31.0] The device comes first, then which of its entities, then the entity
+            // field itself for anything outside that device.
+            const entityId = String(el.label || '').replace(/\s*\+\d+$/, '').trim();
+            if (/^[a-z_][a-z0-9_]*\.[a-z0-9_]+$/.test(entityId)) {
+                this._deviceContextFields(el, entityId).forEach(n => slot.appendChild(n));
+            }
+            slot.appendChild(this._picker('entity', el.label, v => {
+                el.label = v;
+                el.targetSpec = v ? { entity_id: [v] } : {};
+                el.targetKind = 'entity';
+                el.targetLabel = v;
+                this.core.pushHistory();
+                this._render();
+            }, { label: el.type.startsWith('coil') ? 'Controlled Entity' : 'Entity / Sensor', id: 'label' }));
+            const browse = document.createElement('div');
+            browse.className = 'fgrp';
+            browse.innerHTML = `<button class="btn btn-ghost" id="inp_browse" style="width:100%;">◈ Browse by area, device or type</button>`;
+            browse.querySelector('#inp_browse').addEventListener('click', () => {
+                this._openEntityPicker(this._inspectedEl.netId, this._inspectedEl.rungId, this._inspectedEl.elId, 'label');
+            });
+            slot.appendChild(browse);
             // [ADDED v3.9.0] The Home Assistant picker shows only the friendly name, which is not
             // enough to tell which entity or which device is behind it. The id goes right under it.
             slot.appendChild(this._idNote(el));
+            // [ADDED v3.24.0] Which service the coil calls, and whether the rung carries on when it
+            // fails. Neither could be seen or changed before.
+            if (el.type.startsWith('coil')) {
+                slot.appendChild(this._serviceField(el));
+                slot.appendChild(this._coeField(el));
+            }
             // [CHANGED v3.7.0] The single device field and the single area field are replaced by the
             // native target selector, which is what Home Assistant itself shows and is the only way
             // to express a mixed list such as seventeen targets across devices and entities.
@@ -816,6 +1545,8 @@ class LibiPanel extends HTMLElement {
                 // [CHANGED v3.7.0] A value assignment targets things the same way an action does.
                 const tpm = this._targetPicker(el);
                 if (tpm) slot.appendChild(tpm);
+                // [ADDED v3.24.0] Every action can carry on after an error, not only a coil.
+                slot.appendChild(this._coeField(el));
                 slot.appendChild(this._targetNote(el));
             }
 
@@ -972,7 +1703,7 @@ class LibiPanel extends HTMLElement {
         const errs = { el: false, lbl: false, src: false, tgt: false, srcA: false, srcB: false };
         const isEmpty = (v) => !v || v === '?' || String(v).trim() === '';
         
-        if (['contact_no', 'contact_nc', 'contact_p', 'contact_n', 'coil', 'coil_s', 'coil_r', 'wait'].includes(el.type)) { 
+        if (['contact_no', 'contact_nc', 'contact_p', 'contact_n', 'coil', 'coil_s', 'coil_r', 'coil_t', 'wait'].includes(el.type)) { 
             if (isEmpty(el.label) && !el.raw_trigger) { errs.lbl = true; errs.el = true; } 
         } else if (el.type === 'move') { 
             const mode = el.mode || 'value';
@@ -1194,7 +1925,10 @@ class LibiPanel extends HTMLElement {
         const selClass = (isSelected ? 'selected ' : '') + (errs.el || hasStructErr ? 'has-error ' : '') + isTriggerClass;
         
         const errTooltip = hasStructErr ? `<div class="err-tooltip">⚠️ ${el.structuralError}</div>` : '';
-        const triggerLabelHtml = el.isTrigger ? `<div class="trigger-bottom-lbl">Trigger</div>` : '';
+        // [CHANGED v3.25.0] Both badges sit under the block. A trigger and a continue on error can
+        // never be the same block, so they never collide.
+        const triggerLabelHtml = el.isTrigger ? `<div class="trigger-bottom-lbl">Trigger</div>`
+            : (el.continueOnError ? `<div class="coe-bottom-lbl" title="continue_on_error: the rung carries on to the next checks even if this fails or the entity is unavailable">continue if error</div>` : '');
 
         const ANCHOR = this.core.LAY.ANCHOR;
         const posStyle = pos ? `position:absolute; left:${pos.x}px; top:${pos.y - ANCHOR}px; margin:0; ` : '';
@@ -1279,9 +2013,9 @@ class LibiPanel extends HTMLElement {
     }
 
     // [ADDED v3.12.0] Reads a saved number, clamped, and never throws when storage is unavailable.
-    // [ADDED v3.16.0] Every entity the drawing points at, so the search can say which variables
-    // belong to this project rather than only listing the whole house.
-    _projectEntities() {
+    // [ADDED v3.16.0] Every entity a drawing points at. With no net given it is the whole project,
+    // with one it is just that net, which is what the default view of the bar shows.
+    _netEntities(net) {
         const found = new Set();
         const add = (v) => {
             const s = String(v == null ? '' : v).replace(/\s*\+\d+$/, '').trim();
@@ -1294,105 +2028,574 @@ class LibiPanel extends HTMLElement {
             if (el.type === 'parallel') (el.branches || []).forEach(walk);
             if (el.type === 'repeat') walk(el.sequence);
         });
-        (this.core.nets || []).forEach(n => (n.rungs || []).forEach(r => walk(r.elements)));
+        (net.rungs || []).forEach(r => walk(r.elements));
+        // Variables made for this net but not yet placed on a rung still belong to it.
+        (net.vars || []).forEach(add);
         return found;
     }
 
-    // A row of the search results, or of the variable list.
-    _varRowHtml(entityId, opts = {}) {
+    _projectEntities() {
+        const all = new Set();
+        (this.core.nets || []).forEach(n => this._netEntities(n).forEach(e => all.add(e)));
+        return all;
+    }
+
+    // The net the bar is scoped to: the one holding the selected element, else the first one.
+    _currentNet() {
+        if (this._inspectedEl) {
+            const n = this.core.nets.find(x => x.id === this._inspectedEl.netId);
+            if (n) return n;
+        }
+        if (this._inspectedNetYaml) {
+            const n = this.core.nets.find(x => x.id === this._inspectedNetYaml);
+            if (n) return n;
+        }
+        return (this.core.nets || [])[0] || null;
+    }
+
+    _varsRows() {
+        const states = (this._hass && this._hass.states) || {};
+        const net = this._currentNet();
+        const scoped = this._varsScope === 'net' && net ? this._netEntities(net) : null;
+        const q = String(this._varsQuery || '').trim().toLowerCase();
+
+        let ids = scoped ? [...scoped] : Object.keys(states);
+        if (!scoped && this._varsFilter === 'ALL') {
+            // Showing the whole house with no filter would be thousands of rows, so only the
+            // helpers are listed until a filter or a search narrows it.
+            ids = ids.filter(e => HELPER_DOMAINS.includes(e.split('.')[0]));
+        }
+        return ids
+            .filter(e => this._varsFilter === 'ALL' || varTypeOf(e, this._hass) === this._varsFilter)
+            .filter(e => {
+                if (!q) return true;
+                const nm = (this.core.friendlyName(e, this._hass) || '').toLowerCase();
+                return e.toLowerCase().includes(q) || nm.includes(q);
+            })
+            .sort();
+    }
+
+    _varsRowHtml(entityId) {
         const st = (this._hass && this._hass.states && this._hass.states[entityId]) || null;
         const name = this.core.friendlyName(entityId, this._hass) || entityId.split('.').slice(1).join('.');
         const domain = entityId.split('.')[0];
-        const removable = HELPER_DOMAINS.includes(domain);
-        const stored = removable && this._helperIds[domain] && this._helperIds[domain][entityId.split('.').slice(1).join('.')];
-        const del = removable
-            ? `<button class="del vars-del" data-eid="${this._esc(entityId)}" ${stored ? '' : 'disabled'} title="${stored ? 'Delete this variable' : 'Defined in YAML, so it cannot be removed from here'}">🗑</button>`
-            : '';
-        return `<div class="vars-row vars-copy" data-eid="${this._esc(entityId)}" title="Click to copy ${this._esc(entityId)}">
-            <div class="txt"><div class="nm" dir="auto">${this._esc(name)}</div><div class="eid">${this._esc(entityId)}</div></div>
-            <span class="st">${st ? this._esc(String(st.state).slice(0, 12)) : '—'}</span>${del}
+        const type = varTypeOf(entityId, this._hass);
+        const objectId = entityId.split('.').slice(1).join('.');
+        const stored = HELPER_DOMAINS.includes(domain) && this._helperIds[domain] && this._helperIds[domain][objectId];
+        const typeCell = type === 'HA'
+            ? `<span class="type-tag type-HA" title="An ordinary Home Assistant entity, not a variable LIBI can change">HA</span>`
+            : `<select class="vars-type" data-eid="${this._esc(entityId)}" ${stored ? '' : 'disabled'} title="${stored ? 'Change the type of this variable' : 'Written in YAML, so LIBI cannot change it'}">
+                    ${VAR_TYPE_KEYS.map(k => `<option value="${k}" ${k === type ? 'selected' : ''}>${k}</option>`).join('')}
+               </select>`;
+        return `<tr class="vars-drag" draggable="true" data-eid="${this._esc(entityId)}" title="Drag onto a pin or a block to use it there">
+            <td class="grab">⠿</td>
+            <td class="c-name" dir="auto">${this._esc(name)}</td>
+            <td class="c-eid">${this._esc(entityId)}</td>
+            <td>${typeCell}</td>
+            <td class="c-val">${st ? this._esc(String(st.state).slice(0, 16)) : '—'}</td>
+            <td class="c-act"><button class="vars-del" data-eid="${this._esc(entityId)}" ${stored ? '' : 'disabled'} title="${stored ? 'Delete this variable' : 'Written in YAML, so it cannot be removed from here'}">🗑</button></td>
+        </tr>`;
+    }
+
+    _varsBarHtml() {
+        const net = this._currentNet();
+        const rows = this._varsRows();
+        const projectCount = this._projectEntities().size;
+
+        const chip = (id, label, on, title) =>
+            `<button class="vars-chip${on ? ' on' : ''}" id="${id}" title="${this._esc(title || '')}">${label}</button>`;
+        const filterChips = ['ALL', ...VAR_TYPE_KEYS, 'HA']
+            .map(k => `<button class="vars-chip vars-filter${this._varsFilter === k ? ' on' : ''}" data-f="${k}" title="${this._esc(k === 'ALL' ? 'Every type' : (VAR_TYPES[k] ? VAR_TYPES[k].title : 'Entities of Home Assistant that are not LIBI variables'))}">${k}</button>`)
+            .join('');
+
+        const table = rows.length
+            ? `<table class="vars-table"><thead><tr>
+                    <th style="width:22px;"></th><th>Name</th><th>Entity</th><th style="width:110px;">Type</th><th style="width:110px;">Value</th><th style="width:44px;"></th>
+               </tr></thead><tbody>${rows.map(e => this._varsRowHtml(e)).join('')}</tbody></table>`
+            : `<div class="vars-empty">${this._varsScope === 'net'
+                    ? (net ? `This net uses no variables yet. Make one below and it is added to ${this._esc(net.name)}.` : 'There is no net to scope to yet.')
+                    : 'Nothing matches. Try another filter or another word.'}</div>`;
+
+        const body = this._varsTab === 'search'
+            ? `<div class="vars-filters">
+                    <input type="text" id="varsQuery" placeholder="Search this project and all of Home Assistant" value="${this._esc(this._varsQuery)}" dir="auto" />
+                    ${this._varsQuery ? '<button class="vars-chip" id="varsClear">Clear</button>' : ''}
+                    <div class="vars-sep"></div>${filterChips}
+               </div>
+               ${(() => {
+                    const q = String(this._varsQuery || '').trim().toLowerCase();
+                    const states = (this._hass && this._hass.states) || {};
+                    const inProj = this._projectEntities();
+                    const match = (e) => {
+                        if (this._varsFilter !== 'ALL' && varTypeOf(e, this._hass) !== this._varsFilter) return false;
+                        if (!q) return true;
+                        const nm = (this.core.friendlyName(e, this._hass) || '').toLowerCase();
+                        return e.toLowerCase().includes(q) || nm.includes(q);
+                    };
+                    const mine = [...inProj].filter(match).sort();
+                    const rest = Object.keys(states).filter(e => !inProj.has(e) && match(e)).sort().slice(0, 120);
+                    const sect = (title, list) => list.length
+                        ? `<div class="vars-group-title" style="font-size:11px;font-weight:800;text-transform:uppercase;color:#9e9e9e;margin:8px 0 2px;">${title} · ${list.length}</div>
+                           <table class="vars-table"><tbody>${list.map(e => this._varsRowHtml(e)).join('')}</tbody></table>` : '';
+                    if (!mine.length && !rest.length) return '<div class="vars-empty">Nothing matches that.</div>';
+                    return sect('In this project', mine) + sect('Everywhere in Home Assistant', rest);
+               })()}`
+            : `<div class="vars-filters">
+                    ${chip('varsScopeNet', net ? `Net · ${this._esc(net.name)}` : 'This net', this._varsScope === 'net', 'Only the variables this net uses')}
+                    ${chip('varsScopeAll', `All of Home Assistant`, this._varsScope === 'all', 'Every variable in the house')}
+                    <div class="vars-sep"></div>${filterChips}
+               </div>
+               ${table}
+               <div class="vars-new">
+                    <input type="text" class="name" id="varsNewName" placeholder="New variable name" value="${this._esc(this._varsNewName)}" dir="auto" />
+                    <select id="varsNewType">${VAR_TYPE_KEYS.map(k => `<option value="${k}" ${this._varsNewType === k ? 'selected' : ''}>${k} · ${VAR_TYPES[k].domain}</option>`).join('')}</select>
+                    <button class="btn" id="varsCreate">Add variable</button>
+                    <div class="note">${net ? `It is created in Home Assistant and listed under ${this._esc(net.name)} straight away.` : 'Make a net first so the variable has somewhere to belong.'}</div>
+               </div>`;
+
+
+        return `<div class="vars-bar${this._varsOpen ? '' : ' rail'}" id="varsBar">
+            <div class="vars-grip" id="varsGrip" title="Drag to resize. Double click to reset."></div>
+            <div class="vars-top">
+                <span class="vars-title">Variables</span>
+                <div class="vars-tabs">
+                    <button class="vars-tab${this._varsTab === 'helper' ? ' on' : ''}" id="varsTabHelper">Helper</button>
+                    <button class="vars-tab${this._varsTab === 'vars' ? ' on' : ''}" id="varsTabVars">Variables<span class="n">${rows.length}</span></button>
+                    <button class="vars-tab${this._varsTab === 'search' ? ' on' : ''}" id="varsTabSearch">Search<span class="n">${projectCount}</span></button>
+                </div>
+                <div class="spacer"></div>
+                <button class="vars-fold" id="varsFold" title="${this._varsOpen ? 'Fold the bar down' : 'Open the bar'}">${this._varsOpen ? '▼' : '▲'}</button>
+            </div>
+            <div class="vars-body">${this._varsTab === 'helper' ? this._helperViewHtml() : body}</div>
         </div>`;
     }
 
-    _varsDrawerHtml() {
-        const q = String(this._varsQuery || '').trim().toLowerCase();
+    // [ADDED v3.21.0] The same rows the helpers page of Home Assistant shows, drawn from state the
+    // panel already has. Nothing is fetched and nothing is loaded, so opening the tab is instant.
+    HELPER_ICONS() {
+        return { input_boolean: '⏼', input_button: '⏻', input_number: '↔', input_text: 'T',
+                 input_select: '☰', input_datetime: '🕐', counter: '#', timer: '⏱', schedule: '📅' };
+    }
+
+    _helperRows() {
         const states = (this._hass && this._hass.states) || {};
-        const inProject = this._projectEntities();
+        const q = String(this._helperQuery || '').trim().toLowerCase();
+        return Object.keys(states)
+            .filter(e => HELPER_DOMAINS.includes(e.split('.')[0]))
+            .filter(e => {
+                if (!q) return true;
+                const nm = (this.core.friendlyName(e, this._hass) || '').toLowerCase();
+                return e.toLowerCase().includes(q) || nm.includes(q);
+            })
+            .sort((a, b) => (this.core.friendlyName(a, this._hass) || a)
+                .localeCompare(this.core.friendlyName(b, this._hass) || b));
+    }
 
-        const matches = (eid) => {
-            if (!q) return true;
-            const nm = (this.core.friendlyName(eid, this._hass) || '').toLowerCase();
-            return eid.toLowerCase().includes(q) || nm.includes(q);
+    _helperAreaName(entityId) {
+        const h = this._hass || {};
+        const reg = (h.entities || {})[entityId] || null;
+        let areaId = reg && reg.area_id;
+        if (!areaId && reg && reg.device_id && h.devices) {
+            const dev = h.devices[reg.device_id];
+            areaId = dev && dev.area_id;
+        }
+        const area = areaId && h.areas ? h.areas[areaId] : null;
+        return (area && area.name) || '';
+    }
+
+    _helperViewHtml() {
+        const icons = this.HELPER_ICONS();
+        const rows = this._helperRows();
+        const body = rows.length
+            ? `<table class="helper-table"><thead><tr>
+                    <th style="width:30px;"></th><th>Name</th><th style="width:150px;">Type</th>
+                    <th style="width:150px;">Area</th><th>Entity</th><th style="width:110px;">Value</th>
+               </tr></thead><tbody>${rows.map(e => {
+                    const domain = e.split('.')[0];
+                    const st = (this._hass.states || {})[e];
+                    return `<tr class="helper-row" data-eid="${this._esc(e)}" title="Open the Home Assistant settings for this helper">
+                        <td class="h-ico">${icons[domain] || '•'}</td>
+                        <td class="h-name" dir="auto">${this._esc(this.core.friendlyName(e, this._hass) || e.split('.').slice(1).join('.'))}</td>
+                        <td>${domain}</td>
+                        <td class="h-area" dir="auto">${this._esc(this._helperAreaName(e) || '—')}</td>
+                        <td class="h-eid">${this._esc(e)}</td>
+                        <td class="h-val">${st ? this._esc(String(st.state).slice(0, 16)) : '—'}</td>
+                    </tr>`;
+               }).join('')}</tbody></table>`
+            : `<div class="vars-empty">${this._helperQuery ? 'No helper matches that.' : 'There are no helpers yet.'}</div>`;
+
+        return `<div class="helper-view">
+            <div class="helper-top">
+                <input type="text" id="helperSearch" placeholder="Search helpers" value="${this._esc(this._helperQuery)}" dir="auto" />
+                ${this._helperQuery ? '<button class="vars-chip" id="helperClear">Clear</button>' : ''}
+                <span class="helper-count">${rows.length} helper${rows.length === 1 ? '' : 's'}</span>
+            </div>
+            <div class="helper-scroll">${body}</div>
+            <div class="helper-foot">
+                <button class="btn" id="helperCreate">＋ Create helper</button>
+                <span class="note">Opens the dialog of Home Assistant. Clicking a row opens its settings, also the dialog of Home Assistant.</span>
+            </div>
+        </div>`;
+    }
+
+    // Clicking a helper opens the settings dialog of Home Assistant for it. hass-more-info is a
+    // first class event of the frontend: the root element listens for it and loads the dialog
+    // itself, so this works from a custom panel with nothing embedded and nothing duplicated.
+    _openHelperSettings(entityId) {
+        this.dispatchEvent(new CustomEvent('hass-more-info', {
+            bubbles: true, composed: true, detail: { entityId },
+        }));
+    }
+
+    // [CHANGED v3.22.0] Home Assistant's own dialog first, always. It is registered as
+    // dialog-helper-detail, and when it has been loaded in this browser tab that is what opens.
+    // Its module sits behind a file name carrying a build hash, so nothing outside its frontend can
+    // import it on demand, and a panel opened straight at /libi will usually not have it. Rather
+    // than throw the user out of LIBI to press the same button again on another page, the dialog
+    // below is LIBI's own, built to the same shape.
+    _openCreateHelper() {
+        const TAG = 'dialog-helper-detail';
+        if (typeof customElements !== 'undefined' && customElements.get(TAG)) {
+            this.dispatchEvent(new CustomEvent('show-dialog', {
+                bubbles: true, composed: true,
+                detail: {
+                    dialogTag: TAG,
+                    dialogImport: () => Promise.resolve(),
+                    dialogParams: { dialogClosedCallback: () => this._render() },
+                },
+            }));
+            return;
+        }
+        this._hkPick = null;
+        this._hkForm = {};
+        this._hkQuery = '';
+        this._modal = 'helper_new';
+        this._render();
+    }
+
+    // [CHANGED v3.23.0] The whole Create helper list of Home Assistant, in its own order. The first
+    // nine are kept in a stored collection and any client can create them, so LIBI builds them here
+    // with the settings each one really takes. The rest are built by a setup flow of their own and
+    // cannot be created from outside the Home Assistant frontend, so they are listed and handed over
+    // rather than half made.
+    HELPER_KINDS() {
+        return [
+            { domain: 'input_button',   name: 'Button',           icon: '⏻', fields: ['icon'] },
+            { domain: 'switch_as_x',    name: 'Change device type of a switch', icon: '⇄', flow: true },
+            { domain: 'min_max',        name: 'Combine the state of several sensors', icon: '±', flow: true },
+            { domain: 'counter',        name: 'Counter',          icon: '#',  fields: ['icon', 'initial', 'minimum', 'maximum', 'step', 'restore'] },
+            { domain: 'input_datetime', name: 'Date and/or time', icon: '🕐', fields: ['icon', 'has_date', 'has_time'] },
+            { domain: 'derivative',     name: 'Derivative sensor', icon: 'ƒ', flow: true },
+            { domain: 'input_select',   name: 'Dropdown',         icon: '☰',  fields: ['icon', 'options', 'initial_option'] },
+            { domain: 'filter',         name: 'Filter',           icon: '⏷', flow: true },
+            { domain: 'generic_hygrostat', name: 'Generic hygrostat', icon: '💧', flow: true },
+            { domain: 'generic_thermostat', name: 'Generic thermostat', icon: '🌡', flow: true },
+            { domain: 'group',          name: 'Group',            icon: '◎', flow: true },
+            { domain: 'history_stats',  name: 'History Stats',    icon: '📈', flow: true },
+            { domain: 'integration',    name: 'Integral sensor',  icon: '∫', flow: true },
+            { domain: 'mold_indicator', name: 'Mold Indicator',   icon: '☂', flow: true },
+            { domain: 'input_number',   name: 'Number',           icon: '↔',  fields: ['icon', 'min', 'max', 'initial', 'step', 'mode_number', 'unit_of_measurement'] },
+            { domain: 'totp',           name: 'One-Time Password (OTP)', icon: '🔐', flow: true },
+            { domain: 'random',         name: 'Random',           icon: '🎲', flow: true },
+            { domain: 'schedule',       name: 'Schedule',         icon: '📅', fields: ['icon', 'week'] },
+            { domain: 'statistics',     name: 'Statistics',       icon: '📊', flow: true },
+            { domain: 'template',       name: 'Template',         icon: '{}', flow: true },
+            { domain: 'input_text',     name: 'Text',             icon: 'T',  fields: ['icon', 'min', 'max', 'initial_text', 'pattern', 'mode_text'] },
+            { domain: 'threshold',      name: 'Threshold Sensor', icon: '⚖', flow: true },
+            { domain: 'timer',          name: 'Timer',            icon: '⏱', fields: ['icon', 'duration', 'restore'] },
+            { domain: 'tod',            name: 'Times of the Day Sensor', icon: '🕓', flow: true },
+            { domain: 'input_boolean',  name: 'Toggle',           icon: '⏼', fields: ['icon'] },
+            { domain: 'trend',          name: 'Trend',            icon: '📉', flow: true },
+            { domain: 'utility_meter',  name: 'Utility Meter',    icon: '⏲', flow: true },
+        ];
+    }
+
+    // What each setting is called, what it looks like and what it starts as. The key that is sent to
+    // Home Assistant is the key here, except where a suffix keeps two different fields apart.
+    HELPER_FIELD_SPEC() {
+        return {
+            icon:                { label: 'Icon', type: 'text', def: '', hint: 'mdi:lightbulb', optional: true },
+            min:                 { label: 'Minimum', type: 'number', def: 0 },
+            max:                 { label: 'Maximum', type: 'number', def: 100 },
+            step:                { label: 'Step size', type: 'number', def: 1 },
+            minimum:             { label: 'Minimum', type: 'number', def: 0 },
+            maximum:             { label: 'Maximum', type: 'number', def: 100 },
+            initial:             { label: 'Initial value', type: 'number', def: 0 },
+            initial_text:        { label: 'Initial value', type: 'text', def: '', key: 'initial', optional: true },
+            initial_option:      { label: 'Initial option', type: 'text', def: '', key: 'initial', optional: true },
+            restore:             { label: 'Restore the value after a restart', type: 'bool', def: true },
+            has_date:            { label: 'Has date', type: 'bool', def: true },
+            has_time:            { label: 'Has time', type: 'bool', def: true },
+            options:             { label: 'Options, one per line', type: 'lines', def: 'Option 1' },
+            duration:            { label: 'Duration', type: 'text', def: '00:01:00', hint: 'hh:mm:ss' },
+            pattern:             { label: 'Regex pattern', type: 'text', def: '', optional: true },
+            unit_of_measurement: { label: 'Unit of measurement', type: 'text', def: '', hint: '°C, %, kWh', optional: true },
+            mode_number:         { label: 'Display mode', type: 'select', def: 'box', key: 'mode',
+                                   choices: [['box', 'Input field'], ['slider', 'Slider']] },
+            mode_text:           { label: 'Display mode', type: 'select', def: 'text', key: 'mode',
+                                   choices: [['text', 'Text'], ['password', 'Password']] },
+            week:                { label: 'Days', type: 'week', def: null },
         };
+    }
 
-        // Group one: what this project already uses. Group two: everything else in the house.
-        const mine = [...inProject].filter(matches).sort();
-        const helpers = Object.keys(states).filter(e => HELPER_DOMAINS.includes(e.split('.')[0]) && matches(e) && !inProject.has(e)).sort();
-        const rest = q
-            ? Object.keys(states).filter(e => matches(e) && !inProject.has(e) && !HELPER_DOMAINS.includes(e.split('.')[0])).sort().slice(0, 60)
-            : [];
+    WEEK_DAYS() {
+        return [['monday', 'Mon'], ['tuesday', 'Tue'], ['wednesday', 'Wed'], ['thursday', 'Thu'],
+                ['friday', 'Fri'], ['saturday', 'Sat'], ['sunday', 'Sun']];
+    }
 
-        const group = (title, list, cap) => {
-            if (!list.length) return '';
-            const shown = cap ? list.slice(0, cap) : list;
-            return `<div class="vars-group-title">${title} <span class="n">${list.length}</span></div>
-                <div class="vars-list">${shown.map(e => this._varRowHtml(e)).join('')}</div>
-                ${list.length > shown.length ? `<div class="vars-empty">and ${list.length - shown.length} more, keep typing to narrow it down</div>` : ''}`;
-        };
+    _hkPickKind(domain) {
+        const kind = this.HELPER_KINDS().find(k => k.domain === domain);
+        if (!kind) return;
+        this._hkPick = domain;
+        this._hkForm = { name: '' };
+        if (kind.flow) {
+            // A setup flow of its own. If Home Assistant has its flow dialog loaded, start it there
+            // and nothing more is needed from LIBI.
+            if (this._startConfigFlow(domain)) { this._modal = null; this._hkPick = null; this._render(); return; }
+            this._render();
+            return;
+        }
+        const spec = this.HELPER_FIELD_SPEC();
+        (kind.fields || []).forEach(f => { this._hkForm[f] = spec[f].def; });
+        if ((kind.fields || []).includes('week')) {
+            // Every day off to begin with, the same as a new schedule in Home Assistant.
+            this._hkForm.week = {};
+            this.WEEK_DAYS().forEach(([d]) => { this._hkForm.week[d] = { on: false, from: '08:00', to: '17:00' }; });
+        }
+        this._render();
+    }
 
-        const typeOpts = HELPER_TYPES.map(h =>
-            `<option value="${h.domain}" ${this._varsNewType === h.domain ? 'selected' : ''}>${h.label}</option>`).join('');
-        const chosen = HELPER_TYPES.find(h => h.domain === this._varsNewType) || HELPER_TYPES[0];
-        let extraHtml = '';
-        if (chosen.extra === 'number') {
-            extraHtml = `<div class="line"><input type="number" id="varsMin" placeholder="min" value="${this._varsExtra.min ?? 0}" /><input type="number" id="varsMax" placeholder="max" value="${this._varsExtra.max ?? 100}" /><input type="number" id="varsStep" placeholder="step" value="${this._varsExtra.step ?? 1}" /></div>`;
-        } else if (chosen.extra === 'options') {
-            extraHtml = `<div class="line"><input type="text" id="varsOptions" placeholder="Options, separated by commas" value="${this._esc(this._varsExtra.options || 'Option 1')}" dir="auto" /></div>`;
-        } else if (chosen.extra === 'duration') {
-            extraHtml = `<div class="line"><input type="text" id="varsDuration" placeholder="hh:mm:ss" value="${this._esc(this._varsExtra.duration || '00:01:00')}" /></div>`;
+    // The very call the Create helper dialog of Home Assistant makes for a helper that has a setup
+    // flow. It works whenever that dialog has been loaded in this browser tab.
+    _startConfigFlow(handler) {
+        const TAG = 'dialog-data-entry-flow';
+        if (typeof customElements === 'undefined' || !customElements.get(TAG)) return false;
+        this.dispatchEvent(new CustomEvent('show-dialog', {
+            bubbles: true, composed: true,
+            detail: {
+                dialogTag: TAG,
+                dialogImport: () => Promise.resolve(),
+                dialogParams: { startFlowHandler: handler, showAdvanced: false,
+                                dialogClosedCallback: () => this._render() },
+            },
+        }));
+        return true;
+    }
+
+    async _hkCreate() {
+        const kind = this.HELPER_KINDS().find(k => k.domain === this._hkPick);
+        if (!kind || kind.flow) return;
+        const name = String(this._hkForm.name || '').trim();
+        if (!name) { alert('A helper needs a name.'); return; }
+        const spec = this.HELPER_FIELD_SPEC();
+        const msg = { type: `${kind.domain}/create`, name };
+
+        for (const f of (kind.fields || [])) {
+            const s = spec[f];
+            const key = s.key || f;
+            let v = this._hkForm[f];
+            if (s.type === 'week') {
+                this.WEEK_DAYS().forEach(([d]) => {
+                    const row = (v || {})[d] || {};
+                    msg[d] = row.on ? [{ from: `${row.from}:00`, to: `${row.to}:00` }] : [];
+                });
+                continue;
+            }
+            if (s.type === 'number') v = Number(v);
+            else if (s.type === 'bool') v = !!v;
+            else if (s.type === 'lines') {
+                v = String(v || '').split('\n').map(x => x.trim()).filter(Boolean);
+                if (!v.length) v = ['Option 1'];
+            } else v = String(v == null ? '' : v).trim();
+            // An optional field that was left blank is not sent at all, because Home Assistant
+            // treats an empty string as a value and would store it.
+            if (s.optional && (v === '' || (Array.isArray(v) && !v.length))) continue;
+            msg[key] = v;
         }
 
-        const total = mine.length + helpers.length + rest.length;
-        return `<div class="vars-drawer${this._varsOpen ? ' open' : ''}" id="varsDrawer">
-            <div class="vars-head" id="varsHead">
-                <span class="chev">▶</span> Local variables
-                <span class="count">${this._varsOpen ? total : ''}</span>
-            </div>
-            <div class="vars-body">
-                <div class="vars-search">
-                    <input type="text" id="varsQuery" placeholder="Search this project and all of Home Assistant" value="${this._esc(this._varsQuery)}" dir="auto" />
-                    ${this._varsQuery ? '<button class="btn btn-ghost" id="varsClear" style="padding:0 10px;">✕</button>' : ''}
-                </div>
-                ${group('In this project', mine)}
-                ${group('Variables in Home Assistant', helpers, 40)}
-                ${group('Everything else', rest, 40)}
-                ${total === 0 ? `<div class="vars-empty">${q ? 'Nothing matches that.' : 'No variables yet. Make one below.'}</div>` : ''}
-                <div class="vars-new">
-                    <div class="line">
-                        <input type="text" class="name" id="varsNewName" placeholder="New variable name" value="${this._esc(this._varsNewName)}" dir="auto" />
-                        <select class="type" id="varsNewType">${typeOpts}</select>
-                    </div>
-                    ${extraHtml}
-                    <div class="line"><button class="btn" id="varsCreate" style="flex:1;">Create variable</button></div>
-                </div>
-            </div>
-        </div>`;
+        if (kind.domain === 'input_number') {
+            if (!(msg.max > msg.min)) { alert('The maximum has to be above the minimum.'); return; }
+            if (msg.initial !== undefined && (msg.initial < msg.min || msg.initial > msg.max)) {
+                alert('The initial value has to sit between the minimum and the maximum.'); return;
+            }
+        }
+        if (kind.domain === 'counter' && !(msg.maximum > msg.minimum)) {
+            alert('The maximum has to be above the minimum.'); return;
+        }
+        if (kind.domain === 'input_text' && msg.max === undefined) msg.max = 100;
+        if (kind.domain === 'input_select' && msg.initial && !(msg.options || []).includes(msg.initial)) {
+            alert('The initial option has to be one of the options.'); return;
+        }
+
+        try {
+            await this._hass.connection.sendMessagePromise(msg);
+            this._modal = null;
+            this._hkPick = null;
+            this._hkForm = {};
+            this._render();
+        } catch (err) {
+            alert('Could not create the helper: ' + (err && err.message ? err.message : err));
+        }
     }
 
-    // Home Assistant hands out its own id for a stored helper. Reading the list is what tells us
-    // which helpers can be deleted at all: one written into YAML by hand is not in the collection.
+    _hkDialogHtml() {
+        const spec = this.HELPER_FIELD_SPEC();
+
+        // Step two: the settings for the kind that was picked.
+        if (this._hkPick) {
+            const kind = this.HELPER_KINDS().find(k => k.domain === this._hkPick);
+
+            if (kind.flow) {
+                return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:460px;">
+                    <button class="hk-back" id="hkBack">‹ All helpers</button>
+                    <h2 class="modal-title">${kind.icon}&nbsp; ${this._esc(kind.name)}</h2>
+                    <p class="hk-flow">This one is not stored as a simple helper. Home Assistant builds it with a setup flow of its own, which asks for entities, templates or ranges and validates each answer against the integration behind it. That flow only exists inside the Home Assistant frontend, so LIBI cannot run it and will not pretend to.</p>
+                    <p class="hk-note">Open the helpers page once and press Create helper there. From then on this button opens the real dialog of Home Assistant inside LIBI, for this kind and every other.</p>
+                    <div class="modal-actions">
+                        <button class="btn btn-ghost" id="closeModalBtn">Cancel</button>
+                        <button class="btn" id="hkMore">Open the helpers page</button>
+                    </div>
+                </div></div>`;
+            }
+
+            const field = (f) => {
+                const s = spec[f];
+                const v = this._hkForm[f];
+                if (s.type === 'week') return this._hkWeekHtml();
+                if (s.type === 'bool') {
+                    return `<div class="fgrp checkbox-grp"><input type="checkbox" class="hk-f" data-k="${f}" ${v ? 'checked' : ''} />
+                            <label style="margin:0;">${s.label}</label></div>`;
+                }
+                if (s.type === 'lines') {
+                    return `<div class="fgrp"><label>${s.label}</label>
+                            <textarea class="hk-f" data-k="${f}" rows="4" dir="auto">${this._esc(v)}</textarea></div>`;
+                }
+                if (s.type === 'select') {
+                    return `<div class="fgrp"><label>${s.label}</label><select class="hk-f" data-k="${f}">
+                            ${s.choices.map(([val, lab]) => `<option value="${val}" ${v === val ? 'selected' : ''}>${lab}</option>`).join('')}
+                            </select></div>`;
+                }
+                return `<div class="fgrp"><label>${s.label}${s.optional ? ' <span style="font-weight:400;color:#9e9e9e;">optional</span>' : ''}</label>
+                        <input type="${s.type === 'number' ? 'number' : 'text'}" class="hk-f" data-k="${f}" value="${this._esc(v)}" placeholder="${this._esc(s.hint || '')}" dir="auto" /></div>`;
+            };
+
+            // Two numbers that belong together sit on one line, the way the dialog of Home Assistant
+            // lays them out.
+            const fields = (kind.fields || []).slice();
+            const out = [];
+            while (fields.length) {
+                const f = fields.shift();
+                const pair = { min: 'max', minimum: 'maximum' }[f];
+                if (pair && fields[0] === pair) {
+                    fields.shift();
+                    out.push(`<div class="hk-row">${field(f)}${field(pair)}</div>`);
+                } else out.push(field(f));
+            }
+
+            return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:470px;">
+                <button class="hk-back" id="hkBack">‹ All helpers</button>
+                <h2 class="modal-title">${kind.icon}&nbsp; ${this._esc(kind.name)}</h2>
+                <div class="hk-form">
+                    <div class="fgrp"><label>Name</label><input type="text" id="hkName" value="${this._esc(this._hkForm.name || '')}" dir="auto" placeholder="Boiler on" /></div>
+                    ${out.join('')}
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-ghost" id="closeModalBtn">Cancel</button>
+                    <button class="btn" id="hkCreate">Create</button>
+                </div>
+            </div></div>`;
+        }
+
+        // Step one: the list, in the order Home Assistant lists them.
+        const q = String(this._hkQuery || '').trim().toLowerCase();
+        const all = this.HELPER_KINDS().filter(k => !q || k.name.toLowerCase().includes(q) || k.domain.includes(q));
+        const items = all.map(k => `<div class="hk-item hk-kind${k.flow ? ' flow' : ''}" data-d="${k.domain}" title="${k.flow ? 'Built by a setup flow of Home Assistant' : 'Created straight away'}">
+                <span class="i">${k.icon}</span><span class="n">${this._esc(k.name)}</span><span class="c">›</span>
+            </div>`).join('');
+        return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:470px;">
+            <h2 class="modal-title">Create helper</h2>
+            <div class="fgrp"><input type="text" id="hkSearch" placeholder="Search for a helper" value="${this._esc(this._hkQuery)}" dir="auto" /></div>
+            <div class="hk-list">${items || '<div class="vars-empty" style="padding:16px;">Nothing matches that.</div>'}</div>
+            <div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Close</button></div>
+        </div></div>`;
+    }
+
+    // [ADDED v3.23.0] The week of a Schedule: a row per day with a switch and a span of time.
+    _hkWeekHtml() {
+        const week = this._hkForm.week || {};
+        return `<div class="fgrp"><label>Days</label><div class="hk-days">
+            ${this.WEEK_DAYS().map(([key, label]) => {
+                const row = week[key] || { on: false, from: '08:00', to: '17:00' };
+                return `<div class="hk-day${row.on ? '' : ' off'}">
+                    <input type="checkbox" class="hk-day-on" data-d="${key}" ${row.on ? 'checked' : ''} />
+                    <span class="d">${label}</span>
+                    <input type="time" class="hk-day-t" data-d="${key}" data-e="from" value="${this._esc(row.from)}" />
+                    <span class="to">to</span>
+                    <input type="time" class="hk-day-t" data-d="${key}" data-e="to" value="${this._esc(row.to)}" />
+                </div>`;
+            }).join('')}
+        </div></div>`;
+    }
+
+    _applyVarsSize() {
+        const host = this.shadowRoot && this.shadowRoot.querySelector('.panel-layout');
+        if (host) host.style.setProperty('--libi-vars-h', this._varsH + 'px');
+        const bar = this.shadowRoot && this.shadowRoot.getElementById('varsBar');
+        if (bar) bar.classList.toggle('rail', !this._varsOpen);
+    }
+
+    _saveVars() {
+        try {
+            localStorage.setItem('libi_vars_h', String(this._varsH));
+            localStorage.setItem('libi_vars_open', this._varsOpen ? '1' : '0');
+        } catch (err) { /* storage unavailable */ }
+    }
+
+    // The grip sits on the top edge, so dragging up makes the bar taller.
+    _bindVarsGrip() {
+        const sr = this.shadowRoot;
+        const grip = sr.getElementById('varsGrip');
+        const bar = sr.getElementById('varsBar');
+        if (!grip || !bar) return;
+        let startY = 0, startH = 0;
+        const move = (ev) => {
+            const next = startH + (startY - ev.clientY);
+            this._varsH = Math.min(Math.round(window.innerHeight * 0.78), Math.max(120, Math.round(next)));
+            this._applyVarsSize();
+        };
+        const up = (ev) => {
+            grip.classList.remove('active');
+            bar.classList.remove('dragging');
+            try { grip.releasePointerCapture(ev.pointerId); } catch (err) { /* already released */ }
+            grip.removeEventListener('pointermove', move);
+            grip.removeEventListener('pointerup', up);
+            grip.removeEventListener('pointercancel', up);
+            this._saveVars();
+        };
+        grip.addEventListener('pointerdown', (ev) => {
+            if (!this._varsOpen) return;
+            ev.preventDefault();
+            startY = ev.clientY; startH = this._varsH;
+            grip.classList.add('active');
+            bar.classList.add('dragging');
+            try { grip.setPointerCapture(ev.pointerId); } catch (err) { /* fall back to bubbling */ }
+            grip.addEventListener('pointermove', move);
+            grip.addEventListener('pointerup', up);
+            grip.addEventListener('pointercancel', up);
+        });
+        grip.addEventListener('dblclick', () => { this._varsH = 280; this._saveVars(); this._applyVarsSize(); });
+    }
+
     async _varsRefreshIds() {
         if (!this._hass || !this._hass.connection) return;
         const next = {};
         await Promise.all(HELPER_DOMAINS.map(async (domain) => {
+            next[domain] = {};
             try {
                 const res = await this._hass.connection.sendMessagePromise({ type: `${domain}/list` });
                 const items = Array.isArray(res) ? res : (res && res.items) || [];
-                next[domain] = {};
                 items.forEach(it => { if (it && it.id) next[domain][String(it.id)] = String(it.id); });
-            } catch (err) {
-                next[domain] = {};
-            }
+            } catch (err) { /* the domain is not loaded in this installation */ }
         }));
         this._helperIds = next;
     }
@@ -1400,20 +2603,13 @@ class LibiPanel extends HTMLElement {
     async _varsCreate() {
         const name = String(this._varsNewName || '').trim();
         if (!name) { alert('A variable needs a name.'); return; }
-        const type = HELPER_TYPES.find(h => h.domain === this._varsNewType) || HELPER_TYPES[0];
-        const payload = { type: `${type.domain}/create`, name, ...type.defaults };
-        if (type.extra === 'number') {
-            payload.min = Number(this._varsExtra.min ?? 0);
-            payload.max = Number(this._varsExtra.max ?? 100);
-            payload.step = Number(this._varsExtra.step ?? 1);
-        } else if (type.extra === 'options') {
-            const opts = String(this._varsExtra.options || 'Option 1').split(',').map(s => s.trim()).filter(Boolean);
-            payload.options = opts.length ? opts : ['Option 1'];
-        } else if (type.extra === 'duration') {
-            payload.duration = String(this._varsExtra.duration || '00:01:00');
-        }
+        const spec = VAR_TYPES[this._varsNewType] || VAR_TYPES.BOOL;
         try {
-            await this._hass.connection.sendMessagePromise(payload);
+            await this._hass.connection.sendMessagePromise({ type: `${spec.domain}/create`, name, ...(spec.defaults || {}) });
+            // Remember it against the net that is open, so it is listed there before it is placed.
+            const net = this._currentNet();
+            const guessed = `${spec.domain}.${name.toLowerCase().trim().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')}`;
+            if (net) { net.vars = net.vars || []; if (!net.vars.includes(guessed)) net.vars.push(guessed); this._projectDirty = true; }
             this._varsNewName = '';
             await this._varsRefreshIds();
             this._render();
@@ -1422,24 +2618,95 @@ class LibiPanel extends HTMLElement {
         }
     }
 
+    // Changing the type. Within one domain this is a real update and the entity keeps its id and its
+    // history. Across domains Home Assistant has no such thing as a conversion, so the only way is to
+    // remove and remake, which gives a new entity id and breaks whatever pointed at the old one. That
+    // is said plainly before anything happens rather than discovered afterwards.
+    async _varsChangeType(entityId, nextKey) {
+        const current = varTypeOf(entityId, this._hass);
+        if (current === nextKey) return;
+        const spec = VAR_TYPES[nextKey];
+        const domain = entityId.split('.')[0];
+        const objectId = entityId.split('.').slice(1).join('.');
+        const name = this.core.friendlyName(entityId, this._hass) || objectId;
+
+        if (spec.domain === domain) {
+            try {
+                await this._hass.connection.sendMessagePromise({
+                    type: `${domain}/update`, [`${domain}_id`]: objectId, name, ...(spec.defaults || {}),
+                });
+                this._render();
+                return;
+            } catch (err) {
+                alert('Could not change the type: ' + (err && err.message ? err.message : err));
+                this._render();
+                return;
+            }
+        }
+
+        const ok = confirm(
+            `${name} is a ${current} and you are asking for a ${nextKey}.\n\n` +
+            `Home Assistant cannot convert one kind of helper into another. LIBI would have to delete ` +
+            `${entityId} and create a new one, which means a new entity id, no history, and every ` +
+            `rung or automation still pointing at the old id would break.\n\nDo it anyway?`);
+        if (!ok) { this._render(); return; }
+        try {
+            for (const key of [`${domain}_id`, 'item_id', 'id']) {
+                try { await this._hass.connection.sendMessagePromise({ type: `${domain}/delete`, [key]: objectId }); break; }
+                catch (err) { if (key === 'id') throw err; }
+            }
+            await this._hass.connection.sendMessagePromise({ type: `${spec.domain}/create`, name, ...(spec.defaults || {}) });
+            await this._varsRefreshIds();
+            this._render();
+        } catch (err) {
+            alert('The change did not finish: ' + (err && err.message ? err.message : err));
+            await this._varsRefreshIds();
+            this._render();
+        }
+    }
+
     async _varsDelete(entityId) {
         const domain = entityId.split('.')[0];
         const objectId = entityId.split('.').slice(1).join('.');
         const nm = this.core.friendlyName(entityId, this._hass) || entityId;
         if (!confirm(`Delete ${nm}?\n\nThis removes the variable from Home Assistant. Anything still pointing at it will break.`)) return;
-        // The name of the id field differs between Home Assistant versions, so the likely spellings
-        // are tried in turn and the real error is shown only if all of them are refused.
         const keys = [`${domain}_id`, 'item_id', 'id'];
         let lastErr = null;
         for (const key of keys) {
             try {
                 await this._hass.connection.sendMessagePromise({ type: `${domain}/delete`, [key]: objectId });
+                (this.core.nets || []).forEach(n => { if (n.vars) n.vars = n.vars.filter(v => v !== entityId); });
                 await this._varsRefreshIds();
                 this._render();
                 return;
             } catch (err) { lastErr = err; }
         }
         alert('Could not delete the variable: ' + (lastErr && lastErr.message ? lastErr.message : lastErr));
+    }
+
+    // Dropping a variable onto a block. A pin takes it in that pin's own field, and the block itself
+    // takes it wherever that kind of block keeps its entity.
+    _applyDroppedVar(entityId, netId, rungId, elId, prop) {
+        const el = this.core.findEl(netId, rungId, elId);
+        if (!el) return false;
+        const type = String(el.type || '');
+        let field = prop;
+        if (!field) {
+            if (type.startsWith('coil') || type.startsWith('contact') || type === 'wait') field = 'label';
+            else if (type.startsWith('cmp')) field = 'sourceA';
+            else if (type === 'move') field = (el.mode || 'value') === 'value' ? 'target' : 'target';
+            else if (type === 'ctu') field = 'source';
+            else field = 'label';
+        }
+        el[field] = entityId;
+        if (field === 'label' || field === 'target') {
+            el.targetSpec = { entity_id: [entityId] };
+            el.targetKind = 'entity';
+            el.targetLabel = entityId;
+        }
+        this.core.pushHistory();
+        this._projectDirty = true;
+        return true;
     }
 
     // [ADDED v3.14.0] The name of the open workspace, or a note that none is open.
@@ -1917,16 +3184,137 @@ class LibiPanel extends HTMLElement {
         // redraw, and the button flips between the saved width and the 40 pixel rail.
         this._applySidebarSize();
         this._bindSidebarGrip();
-        // [ADDED v3.16.0] The drawer of local variables.
-        this._bindGroup('local variables', () => {
-            on('varsHead', 'click', () => {
+        this._applyVarsSize();
+        this._bindVarsGrip();
+        // [CHANGED v3.17.0] The bar of variables along the bottom: two tabs, the scope and type
+        // filters, editing a type in the table, and dragging a row onto a block.
+        // [ADDED v3.32.0] The entity chooser.
+        this._bindGroup('entity picker', () => {
+            on('epTabTarget', 'click', (e) => { e.stopPropagation(); this._epTab = 'target'; this._render(); });
+            on('epTabType', 'click', (e) => { e.stopPropagation(); this._epTab = 'type'; this._render(); });
+            all('.ep-fold', 'click', e => {
+                e.stopPropagation();
+                const k = e.currentTarget.getAttribute('data-k');
+                this._epOpen[k] = !this._epOpen[k];
+                // [FIXED v3.33.0] Opening a group rebuilt the list and threw the view back to the
+                // top, so the group that had just been opened was off screen and had to be scrolled
+                // back to. The position is carried across the redraw.
+                const body = sr.querySelector('.ep-body');
+                this._epScroll = body ? body.scrollTop : 0;
+                this._render();
+            });
+            all('.ep-pick', 'click', e => {
+                e.stopPropagation();
+                this._applyPickedEntity(e.currentTarget.getAttribute('data-eid'));
+            });
+            all('.ep-kind', 'click', e => {
+                e.stopPropagation();
+                this._applyTriggerKind(e.currentTarget.getAttribute('data-k'));
+            });
+            // Put the view back where it was before the redraw.
+            const epBody = sr.querySelector('.ep-body');
+            if (epBody && this._epScroll) { epBody.scrollTop = this._epScroll; this._epScroll = 0; }
+
+            const es = sr.getElementById('epSearch');
+            if (es) {
+                es.addEventListener('click', e => e.stopPropagation());
+                es.addEventListener('input', (e) => {
+                    this._epQuery = e.target.value;
+                    clearTimeout(this._epTimer);
+                    this._epTimer = setTimeout(() => {
+                        this._render();
+                        const box = this.shadowRoot.getElementById('epSearch');
+                        if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+                    }, 200);
+                });
+                es.focus();
+            }
+            // Clicking the name written above a block opens the chooser for that block.
+            all('.el-lbl', 'click', e => {
+                const block = e.currentTarget.closest('.libi-el');
+                if (!block) return;
+                e.stopPropagation();
+                this._openEntityPicker(block.getAttribute('data-nid'),
+                    block.getAttribute('data-rid'), block.getAttribute('data-eid'), null);
+            });
+        });
+
+        // [ADDED v3.28.0] The right click menu on the name of a block.
+        this._bindGroup('rename menu', () => {
+            all('.el-lbl', 'contextmenu', e => {
+                const block = e.currentTarget.closest('.libi-el');
+                if (!block) return;
+                const el = this.core.findEl(block.getAttribute('data-nid'),
+                    block.getAttribute('data-rid'), block.getAttribute('data-eid'));
+                const eid = String((el && (el.label || el.target)) || '').replace(/\s*\+\d+$/, '').trim();
+                if (!/^[a-z_][a-z0-9_]*\.[a-z0-9_]+$/.test(eid)) return;  // nothing to rename
+                e.preventDefault();
+                e.stopPropagation();
+                this._ctx = { entityId: eid, x: Math.min(e.clientX, window.innerWidth - 210), y: e.clientY,
+                              netId: block.getAttribute('data-nid'), rungId: block.getAttribute('data-rid'),
+                              elId: block.getAttribute('data-eid') };
+                this._render();
+            });
+            on('ctxChange', 'click', (e) => {
+                e.stopPropagation();
+                const c = this._ctx;
+                this._ctx = null;
+                if (c) this._openEntityPicker(c.netId, c.rungId, c.elId, null);
+            });
+            on('ctxRename', 'click', (e) => {
+                e.stopPropagation();
+                this._renameFor = this._ctx ? this._ctx.entityId : '';
+                this._renameTo = this.core.friendlyName(this._renameFor, this._hass) || '';
+                this._ctx = null;
+                this._modal = 'rename_entity';
+                this._render();
+            });
+            on('ctxMoreInfo', 'click', (e) => {
+                e.stopPropagation();
+                const eid = this._ctx ? this._ctx.entityId : '';
+                this._ctx = null;
+                this._render();
+                if (eid) this.dispatchEvent(new CustomEvent('hass-more-info', {
+                    bubbles: true, composed: true, detail: { entityId: eid } }));
+            });
+            on('ctxCopy', 'click', (e) => {
+                e.stopPropagation();
+                try { navigator.clipboard.writeText(this._ctx.entityId); } catch (err) { /* refused */ }
+                this._ctx = null;
+                this._render();
+            });
+            const ri = sr.getElementById('renameInput');
+            if (ri) {
+                ri.addEventListener('input', ev => { this._renameTo = ev.target.value; });
+                ri.addEventListener('keydown', ev => { if (ev.key === 'Enter') this._doRename(); });
+                ri.focus();
+            }
+            on('renameOk', 'click', (e) => { e.stopPropagation(); this._doRename(); });
+        });
+
+        this._bindGroup('variables bar', () => {
+            on('varsFold', 'click', (e) => {
+                e.stopPropagation();
                 this._varsOpen = !this._varsOpen;
-                try { localStorage.setItem('libi_vars_open', this._varsOpen ? '1' : '0'); } catch (err) { /* no storage */ }
+                this._saveVars();
                 if (this._varsOpen) this._varsRefreshIds().then(() => this._render());
                 else this._render();
             });
+            on('varsTabHelper', 'click', (e) => { e.stopPropagation(); this._varsTab = 'helper'; this._varsOpen = true; this._saveVars(); this._render(); });
+            on('varsTabVars', 'click', (e) => { e.stopPropagation(); this._varsTab = 'vars'; this._varsOpen = true; this._saveVars(); this._render(); });
+            on('varsTabSearch', 'click', (e) => { e.stopPropagation(); this._varsTab = 'search'; this._varsOpen = true; this._saveVars(); this._render(); });
+            on('varsScopeNet', 'click', (e) => { e.stopPropagation(); this._varsScope = 'net'; this._render(); });
+            on('varsScopeAll', 'click', (e) => { e.stopPropagation(); this._varsScope = 'all'; this._render(); });
+            all('.vars-filter', 'click', e => {
+                e.stopPropagation();
+                this._varsFilter = e.currentTarget.getAttribute('data-f');
+                this._render();
+            });
+            on('varsClear', 'click', (e) => { e.stopPropagation(); this._varsQuery = ''; this._render(); });
+
             const q = sr.getElementById('varsQuery');
             if (q) {
+                q.addEventListener('click', e => e.stopPropagation());
                 q.addEventListener('input', (e) => {
                     this._varsQuery = e.target.value;
                     clearTimeout(this._varsTimer);
@@ -1936,39 +3324,151 @@ class LibiPanel extends HTMLElement {
                         if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
                     }, 220);
                 });
-                q.addEventListener('click', e => e.stopPropagation());
             }
-            on('varsClear', 'click', () => { this._varsQuery = ''; this._render(); });
             const nameBox = sr.getElementById('varsNewName');
             if (nameBox) {
-                nameBox.addEventListener('input', e => { this._varsNewName = e.target.value; });
                 nameBox.addEventListener('click', e => e.stopPropagation());
+                nameBox.addEventListener('input', e => { this._varsNewName = e.target.value; });
                 nameBox.addEventListener('keydown', e => { if (e.key === 'Enter') this._varsCreate(); });
             }
             const typeBox = sr.getElementById('varsNewType');
             if (typeBox) {
                 typeBox.addEventListener('click', e => e.stopPropagation());
-                typeBox.addEventListener('change', e => { this._varsNewType = e.target.value; this._varsExtra = {}; this._render(); });
+                typeBox.addEventListener('change', e => { this._varsNewType = e.target.value; });
             }
-            [['varsMin', 'min'], ['varsMax', 'max'], ['varsStep', 'step'],
-             ['varsOptions', 'options'], ['varsDuration', 'duration']].forEach(([id, key]) => {
-                const box = sr.getElementById(id);
-                if (box) {
-                    box.addEventListener('input', e => { this._varsExtra[key] = e.target.value; });
-                    box.addEventListener('click', e => e.stopPropagation());
-                }
+            on('varsCreate', 'click', (e) => { e.stopPropagation(); this._varsCreate(); });
+            on('helperCreate', 'click', (e) => { e.stopPropagation(); this._openCreateHelper(); });
+
+            // The Create helper dialog of LIBI, shown only when Home Assistant's own is not loaded.
+            all('.hk-kind', 'click', e => { e.stopPropagation(); this._hkPickKind(e.currentTarget.getAttribute('data-d')); });
+            on('hkBack', 'click', (e) => { e.stopPropagation(); this._hkPick = null; this._render(); });
+            on('hkCreate', 'click', (e) => { e.stopPropagation(); this._hkCreate(); });
+            on('hkMore', 'click', (e) => {
+                e.stopPropagation();
+                try { window.open('/config/helpers', '_blank'); } catch (err) { /* popup blocked */ }
             });
-            on('varsCreate', 'click', () => this._varsCreate());
+            const hkq = sr.getElementById('hkSearch');
+            if (hkq) hkq.addEventListener('input', (e) => {
+                this._hkQuery = e.target.value;
+                clearTimeout(this._hkTimer);
+                this._hkTimer = setTimeout(() => {
+                    this._render();
+                    const box = this.shadowRoot.getElementById('hkSearch');
+                    if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+                }, 200);
+            });
+            const hkn = sr.getElementById('hkName');
+            if (hkn) {
+                hkn.addEventListener('input', e => { this._hkForm.name = e.target.value; });
+                hkn.addEventListener('keydown', e => { if (e.key === 'Enter') this._hkCreate(); });
+            }
+            all('.hk-f', 'input', e => {
+                const k = e.currentTarget.getAttribute('data-k');
+                if (e.currentTarget.type !== 'checkbox') this._hkForm[k] = e.currentTarget.value;
+            });
+            all('.hk-f', 'change', e => {
+                const k = e.currentTarget.getAttribute('data-k');
+                this._hkForm[k] = e.currentTarget.type === 'checkbox' ? e.currentTarget.checked : e.currentTarget.value;
+            });
+            all('.hk-day-on', 'change', e => {
+                const d = e.currentTarget.getAttribute('data-d');
+                this._hkForm.week = this._hkForm.week || {};
+                this._hkForm.week[d] = this._hkForm.week[d] || { from: '08:00', to: '17:00' };
+                this._hkForm.week[d].on = e.currentTarget.checked;
+                this._render();
+            });
+            all('.hk-day-t', 'change', e => {
+                const d = e.currentTarget.getAttribute('data-d');
+                const edge = e.currentTarget.getAttribute('data-e');
+                this._hkForm.week = this._hkForm.week || {};
+                this._hkForm.week[d] = this._hkForm.week[d] || { on: false, from: '08:00', to: '17:00' };
+                this._hkForm.week[d][edge] = e.currentTarget.value;
+            });
+            on('helperClear', 'click', (e) => { e.stopPropagation(); this._helperQuery = ''; this._render(); });
+            all('.helper-row', 'click', e => {
+                e.stopPropagation();
+                this._openHelperSettings(e.currentTarget.getAttribute('data-eid'));
+            });
+            const hs = sr.getElementById('helperSearch');
+            if (hs) {
+                hs.addEventListener('click', e => e.stopPropagation());
+                hs.addEventListener('input', (e) => {
+                    this._helperQuery = e.target.value;
+                    clearTimeout(this._helperTimer);
+                    this._helperTimer = setTimeout(() => {
+                        this._render();
+                        const box = this.shadowRoot.getElementById('helperSearch');
+                        if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+                    }, 200);
+                });
+            }
+
+            all('.vars-type', 'click', e => e.stopPropagation());
+            all('.vars-type', 'change', e => {
+                e.stopPropagation();
+                this._varsChangeType(e.currentTarget.getAttribute('data-eid'), e.currentTarget.value);
+            });
             all('.vars-del', 'click', e => {
                 e.stopPropagation();
                 if (e.currentTarget.hasAttribute('disabled')) return;
                 this._varsDelete(e.currentTarget.getAttribute('data-eid'));
             });
-            all('.vars-copy', 'click', e => {
-                const eid = e.currentTarget.getAttribute('data-eid');
-                try { navigator.clipboard.writeText(eid); } catch (err) { /* clipboard refused */ }
-                e.currentTarget.classList.add('copied');
-                setTimeout(() => e.currentTarget.classList.remove('copied'), 600);
+
+            // Dragging a row out of the table and onto the ladder.
+            all('.vars-drag', 'dragstart', e => {
+                this._draggedVar = e.currentTarget.getAttribute('data-eid');
+                this._draggedEl = null;
+                e.currentTarget.classList.add('dragging');
+                if (e.dataTransfer) {
+                    e.dataTransfer.effectAllowed = 'copy';
+                    e.dataTransfer.setData('text/plain', this._draggedVar);
+                }
+            });
+            all('.vars-drag', 'dragend', e => {
+                e.currentTarget.classList.remove('dragging');
+                this._draggedVar = null;
+            });
+        });
+
+        // The blocks accept a dropped variable. A pin takes it in its own field, the block itself
+        // takes it wherever that kind of block keeps its entity.
+        this._bindGroup('variable drop targets', () => {
+            const over = (e) => {
+                if (!this._draggedVar) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+                e.currentTarget.classList.add('var-drop');
+            };
+            const leave = (e) => e.currentTarget.classList.remove('var-drop');
+
+            all('.pin-val', 'dragover', over);
+            all('.pin-val', 'dragleave', leave);
+            all('.pin-val', 'drop', e => {
+                e.currentTarget.classList.remove('var-drop');
+                if (!this._draggedVar) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const block = e.currentTarget.closest('.libi-el');
+                if (!block) return;
+                const done = this._applyDroppedVar(this._draggedVar,
+                    block.getAttribute('data-nid'), block.getAttribute('data-rid'),
+                    block.getAttribute('data-eid'), e.currentTarget.getAttribute('data-prop'));
+                this._draggedVar = null;
+                if (done) this._render();
+            });
+
+            all('.libi-el', 'dragover', over);
+            all('.libi-el', 'dragleave', leave);
+            all('.libi-el', 'drop', e => {
+                e.currentTarget.classList.remove('var-drop');
+                if (!this._draggedVar) return;
+                e.preventDefault();
+                const done = this._applyDroppedVar(this._draggedVar,
+                    e.currentTarget.getAttribute('data-nid'), e.currentTarget.getAttribute('data-rid'),
+                    e.currentTarget.getAttribute('data-eid'), null);
+                this._draggedVar = null;
+                if (done) this._render();
             });
         });
 
@@ -2033,6 +3533,7 @@ class LibiPanel extends HTMLElement {
         });
         
         sr.addEventListener('click', () => { 
+            if (this._ctx) { this._ctx = null; this._render(); return; }
             sr.querySelectorAll('.net-menu-dropdown.show').forEach(d => d.classList.remove('show')); 
             // [ADDED v3.13.0] The overflow menu of the header closes the same way the net menus do.
             if (this._hdrMenu) {
@@ -2541,6 +4042,7 @@ class LibiPanel extends HTMLElement {
         });
 
         all('.libi-el', 'dragstart', e => { 
+            this._draggedVar = null;
             this._draggedEl = { 
                 netId: e.currentTarget.getAttribute('data-nid'), 
                 rungId: e.currentTarget.getAttribute('data-rid'), 
