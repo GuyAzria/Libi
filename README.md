@@ -8,7 +8,7 @@
 > **⚠️ IMPORTANT NOTE: BETA SOFTWARE**
 > 
 > LIBI is currently in BETA. It is not recommended to install this on a production system unless you are deeply curious, willing to experiment, and want to help test and improve the project.
-
+![LIBI Interface](image/LIBI2.png)
 ![LIBI Interface](image/LIBI1.png)
 
 ## **Not a Node-RED Replacement**
