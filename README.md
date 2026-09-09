@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="image/icon2.png" alt="LIBI Logo" />
+  <img src="image/icon2.png" alt="LIBI Logo" width="115" />
 </div>
 
 # **LIBI (Ladder Interface & Building Intelligence)**
@@ -38,5 +38,4 @@ The software is built upon the **IEC 61131-3** standard, the international stand
 
 * **AI-Powered Logic Generation:** One of our upcoming milestones is integrating AI capabilities. Users will be able to generate LADDER logic simply by writing a natural language query and selecting the relevant variables.
 
- 
-<p align="center">Made with ❤️ for the Home Assistant community by Guy Azria</p> 
+<p align="center">Made with ❤️ for the Home Assistant community by Guy Azria</p>
