@@ -4,6 +4,17 @@
 
 # **LIBI (Ladder Interface & Building Intelligence)**
 
+<p align="center">
+  <a href="https://github.com/GuyAzria/Libi/releases"><img src="https://img.shields.io/github/v/release/GuyAzria/Libi?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/GuyAzria/Libi/blob/main/LICENSE"><img src="https://img.shields.io/github/license/GuyAzria/Libi?style=flat-square&cacheSeconds=3600" alt="License"></a>
+  <a href="https://hacs.xyz/docs/faq/custom_repositories/"><img src="https://img.shields.io/badge/HACS-Custom-orange.svg?style=flat-square" alt="HACS Custom"></a>
+</p>
+<p align="center">
+  <img src="https://img.shields.io/badge/Cloud_AI-Google_Gemini-blue.svg?style=flat-square" alt="Google Gemini">
+  <img src="https://img.shields.io/badge/Cloud_AI-OpenAI-412991.svg?style=flat-square" alt="OpenAI">
+  <img src="https://img.shields.io/badge/Cloud_AI-OpenAI--compatible-555555.svg?style=flat-square" alt="OpenAI-compatible">
+  <img src="https://img.shields.io/badge/Local_AI-Ollama-black.svg?style=flat-square" alt="Ollama">
+</p>
 
 ![LIBI Interface](image/LIBI2.png)
 ![LIBI Interface](image/LIBI1.png)
