@@ -14,12 +14,15 @@
  */
 /**
  * LIBI Panel - AI chat
- * v3.36.0
+ * v3.37.0
  */
 // [ADDED v3.36.0 | 2026-10-26] Purpose: The AI chat under the Inspector. The user describes the
 //   logic, picks the devices from lists LIBI found in Home Assistant (several per role), answers the
 //   questions, and gets a DRAFT net to add to the canvas. Nothing here writes to Home Assistant; the
 //   net is saved by the ordinary SAVE & COMPILE.
+//
+// [ADDED v3.37.0 | 2026-10-26] Purpose: A privacy line under the first hint names the service the
+//   request goes to and what is sent.
 //
 // SECURITY: every text in here - the model's replies, device names, YAML - is untrusted and is put
 // on the page with textContent or as a text node, never as HTML (CLAUDE.md RULE 15).
@@ -158,6 +161,14 @@ export class LibiAiChat {
         this.render();
     }
 
+    _privacyText() {
+        const s = this.status || {};
+        const names = { gemini: 'Google Gemini', openai: 'OpenAI', custom: 'your AI service', ollama: 'your AI server' };
+        const where = names[s.provider] || 'the AI service';
+        return `Your messages and the names of the devices you pick are sent to ${where}. `
+            + 'Your automations, device states and the full list of your devices are not.';
+    }
+
     _errText(err) {
         if (err && err.code === 'not_configured') return 'AI is not set up yet.';
         return (err && err.message) ? err.message : String(err);
@@ -246,6 +257,8 @@ export class LibiAiChat {
         if (!this.log.length) {
             log.appendChild(h('div', { class: 'ai-hint', dir: 'auto',
                 text: 'Describe what should happen, for example: "pressing a button turns the living room light on for 10 minutes". LIBI shows you the matching devices to pick; nothing is saved until you press SAVE & COMPILE.' }));
+            // [ADDED v3.37.0] Privacy: say where the request goes before the first one is sent.
+            log.appendChild(h('div', { class: 'ai-note ai-privacy', dir: 'auto', text: this._privacyText() }));
         }
         for (const entry of this.log) log.appendChild(this._entry(entry));
         if (this.plan) log.appendChild(this._planView());

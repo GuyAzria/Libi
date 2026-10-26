@@ -10,7 +10,7 @@
       },
       "local": {
         "title": "Local AI",
-        "description": "The address and model of a local LLM server, for example Ollama.",
+        "description": "The address and model of a local LLM server, for example Ollama. When you use the AI Chat, your request and the names of the devices you pick are sent to this server, and stay in your network as long as the server does.",
         "data": {
           "local_url": "Server URL",
           "local_model": "Model",
@@ -19,7 +19,7 @@
       },
       "cloud": {
         "title": "Cloud AI",
-        "description": "A cloud AI service that offers the OpenAI chat completions API: Google Gemini, OpenAI, or another compatible service.",
+        "description": "A cloud AI service that offers the OpenAI chat completions API: Google Gemini, OpenAI, or another compatible service. When you use the AI Chat, your request and the names of the devices you pick are sent to this service. Your automations, device states and the full list of your devices are never sent.",
         "data": {
           "cloud_provider": "Provider",
           "cloud_api_key": "API key",
@@ -35,7 +35,10 @@
     "error": {
       "invalid_url": "Enter the address.",
       "invalid_model": "Enter a model name.",
-      "invalid_key": "Enter the API key."
+      "invalid_key": "Enter the API key.",
+      "cannot_connect": "LIBI could not reach the AI server. Check the address and that the server is running.",
+      "invalid_auth": "The AI service rejected the API key.",
+      "model_not_found": "The AI server does not have this model. Check the model name."
     },
     "abort": {
       "single_instance_allowed": "LIBI is already set up. Only one instance is allowed."
@@ -52,7 +55,7 @@
       },
       "local": {
         "title": "Local AI",
-        "description": "The address and model of a local LLM server, for example Ollama.",
+        "description": "The address and model of a local LLM server, for example Ollama. When you use the AI Chat, your request and the names of the devices you pick are sent to this server, and stay in your network as long as the server does.",
         "data": {
           "local_url": "Server URL",
           "local_model": "Model",
@@ -64,7 +67,7 @@
       },
       "cloud": {
         "title": "Cloud AI",
-        "description": "A cloud AI service that offers the OpenAI chat completions API: Google Gemini, OpenAI, or another compatible service.",
+        "description": "A cloud AI service that offers the OpenAI chat completions API: Google Gemini, OpenAI, or another compatible service. When you use the AI Chat, your request and the names of the devices you pick are sent to this service. Your automations, device states and the full list of your devices are never sent.",
         "data": {
           "cloud_provider": "Provider",
           "cloud_api_key": "API key",
@@ -81,7 +84,10 @@
     "error": {
       "invalid_url": "Enter the address.",
       "invalid_model": "Enter a model name.",
-      "invalid_key": "Enter the API key."
+      "invalid_key": "Enter the API key.",
+      "cannot_connect": "LIBI could not reach the AI server. Check the address and that the server is running.",
+      "invalid_auth": "The AI service rejected the API key.",
+      "model_not_found": "The AI server does not have this model. Check the model name."
     }
   },
   "selector": {

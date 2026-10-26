@@ -11,6 +11,7 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
+# [ADDED v3.37.0 | 2026-10-26] Purpose: The registry imports moved to the top of the module.
 # [ADDED v3.34.0 | 2026-10-26] Purpose: Removed an unused local in the service branch.
 # [ADDED v1.69.0] Backend parser updated to correctly map native device/state triggers into isTrigger=True Contacts and CMPs without using proprietary blocks.
 # [ADDED v3.6.0 | 2026-08-24] Purpose: Three rules that the import now keeps without exception.
@@ -30,6 +31,12 @@
 #      NATIVE block that shows a service name and a target only, and keeps its original node in raw.
 import logging
 import re
+
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import floor_registry as fr
+from homeassistant.helpers import label_registry as lr
 
 from .tpl_part import parse_template, label_of, text_of, CMP_OPS, MATH_OPS as TPL_MATH_OPS
 
@@ -141,7 +148,6 @@ def resolve_entity(ids, value):
     if hass is None:
         return value
     try:
-        from homeassistant.helpers import entity_registry as er
         reg = er.async_get(hass)
         try:
             resolved = er.async_resolve_entity_id(reg, val)
@@ -174,14 +180,11 @@ def _registry_name(ids, kind, value):
         return ""
     try:
         if kind == "area":
-            from homeassistant.helpers import area_registry as reg_mod
-            entry = reg_mod.async_get(hass).async_get_area(value)
+            entry = ar.async_get(hass).async_get_area(value)
         elif kind == "label":
-            from homeassistant.helpers import label_registry as reg_mod
-            entry = reg_mod.async_get(hass).async_get_label(value)
+            entry = lr.async_get(hass).async_get_label(value)
         elif kind == "floor":
-            from homeassistant.helpers import floor_registry as reg_mod
-            entry = reg_mod.async_get(hass).async_get_floor(value)
+            entry = fr.async_get(hass).async_get_floor(value)
         else:
             return ""
         if entry:
@@ -198,7 +201,6 @@ def entity_of_device(ids, device_id, domain_hint=""):
     if hass is None or not device_id:
         return ""
     try:
-        from homeassistant.helpers import entity_registry as er
         reg = er.async_get(hass)
         entries = [e for e in er.async_entries_for_device(reg, device_id, include_disabled_entities=True)]
         if not entries:
@@ -356,7 +358,6 @@ def resolve_device(ids, device_id):
     if hass is None or not device_id:
         return str(device_id or "")
     try:
-        from homeassistant.helpers import device_registry as dr
         reg = dr.async_get(hass)
         dev = reg.async_get(device_id)
         if dev:
@@ -430,7 +431,7 @@ def norm_entity(node):
 
 def domain_of(entity_id):
     s = str(entity_id or "")
-    return s.split(".")[0] if "." in s else ""
+    return s.split(".", maxsplit=1)[0] if "." in s else ""
 
 
 def is_boolean_state(entity_id, state):
@@ -916,7 +917,7 @@ def for_to_hms(value):
     parts = text.split(":")
     if len(parts) == 3:
         try:
-            return "{:02d}:{:02d}:{:02d}".format(int(parts[0]), int(parts[1]), int(float(parts[2])))
+            return f"{int(parts[0]):02d}:{int(parts[1]):02d}:{int(float(parts[2])):02d}"
         except (TypeError, ValueError):
             return text
     return text

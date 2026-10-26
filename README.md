@@ -93,6 +93,8 @@ Under the Inspector, the **AI Chat** builds ladder logic from a sentence, in you
 
 **The AI never chooses or controls a device on its own.** It only ever sees roles like "the buttons" and "the lights"; the entities are the ones *you* ticked. LIBI rejects any draft that names another entity, a device or area id, or a service outside a safe list, and Home Assistant's own validator checks it too. Nothing is written until you press **SAVE & COMPILE**, and drafts that control locks, alarms, covers, valves or sirens are flagged.
 
+**Privacy:** what you type in the chat and the *names* of the devices you pick are sent to the AI model you choose. Your automations, the states of your devices and the full list of your devices are never sent. With **Local AI**, everything stays on your own server.
+
 **Setup:** Settings ▸ Devices & services ▸ LIBI ▸ **Configure**, then choose:
 
 * **Local AI** — an [Ollama](https://ollama.com) server address and model; nothing leaves your home.

@@ -107,7 +107,9 @@ Home Organizer tools (copied 2026-10-26). They are generic; if one is improved
 in either project, copy it to the other.
 
 For Home Assistant integration changes, hassfest and the HACS Action run as
-two workflows, `.github/workflows/hassfest.yml` and `.github/workflows/hacs.yml`
+two workflows, `.github/workflows/hassfest.yml` ("Hassfest") and
+`.github/workflows/validate.yml` ("Validate", the HACS Action) - byte-for-byte the
+same files as Home Organizer's; keep the two projects identical here
 (the hacs/default pull request links to a run of each) - but only on GitHub,
 after a push. Locally they do not run; say so in the report rather than
 implying they ran.
@@ -138,8 +140,10 @@ Never replace a failing validation with a weaker validation.
 
 Measured 2026-10-26 after the HACS-readiness work (gate v1.0.6):
 **BLOCKER 0, ERROR 0, HOT_WARN 0, WARN 1, INFO 3.** ruff: clean.
-pytest: 48 passed. Panel behaviour (`tools/run_frontend_tests.py`): 35 passed.
-(Updated 2026-10-26 with the AI chat, LIBI_VERSION 3.36.0.)
+pytest: 73 passed. Panel behaviour (`tools/run_frontend_tests.py`): 37 passed.
+(Updated 2026-10-26, LIBI_VERSION 3.37.0.) `verify_round_trip` is strict since 3.37.0:
+both directions, identity keys skipped only at the top level. Keep it that way - the
+lenient version hid a template trigger written into the conditions.
 
 The remaining WARN is deliberate: `yaml` is not listed in the manifest
 requirements because PyYAML ships with Home Assistant itself, and declaring it

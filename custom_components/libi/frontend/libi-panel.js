@@ -14,22 +14,20 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.36.0
+ * v3.37.0
  */
-// [ADDED v3.35.0 | 2026-10-26] Purpose: Dark mode. The panel sets [dark] from hass.themes.darkMode and
-//   the styles switch to a dark colour set; secondary text uses the theme colour. The header logo is
-//   the brand icon instead of the inline SVG, whose hand-drawn lettering rendered misaligned.
 // [ADDED v3.36.0 | 2026-10-26] Purpose: The AI chat (libi-ai.js) under the Inspector. It is mounted
 //   after every render and adds the draft net it gets from the backend like any new net.
-import { LibiCore } from './libi-core.js?v=3.36.0';
-import { getStyles } from './libi-css.js?v=3.36.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.36.0';
-import { LibiOnline } from './libi-online.js?v=3.36.0';
-import { LibiAiChat } from './libi-ai.js?v=3.36.0';
+// [ADDED v3.37.0 | 2026-10-26] Purpose: Imports at 3.37.0, for the chat's privacy line.
+import { LibiCore } from './libi-core.js?v=3.37.0';
+import { getStyles } from './libi-css.js?v=3.37.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.37.0';
+import { LibiOnline } from './libi-online.js?v=3.37.0';
+import { LibiAiChat } from './libi-ai.js?v=3.37.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.36.0';
+export const LIBI_BUILD = '3.37.0';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 

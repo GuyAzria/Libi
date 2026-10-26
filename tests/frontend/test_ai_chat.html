@@ -33,7 +33,7 @@ const BUILD = {
   round_trip: { ok: true, issues: [] },
   net: { id: 'n_libi_ai_1', ha_id: 'libi_ai_1', name: 'Salon 10 min', level: 'automation', rungs: [] },
 };
-let responses = { 'libi/ai_status': { configured: true, provider: 'gemini', model: 'gemini-x' },
+let responses = { 'libi/ai_status': { configured: true, mode: 'cloud', provider: 'gemini', model: 'gemini-x' },
                   'libi/ai_plan': PLAN, 'libi/ai_build': BUILD };
 const calls = [];
 const panel = {
@@ -55,6 +55,8 @@ try {
   check('mount marked open', mount.classList.contains('ai-open'));
   check('status shows model', root().querySelector('.ai-model')?.textContent === 'gemini-x');
   check('hint before first message', !!root().querySelector('.ai-hint'));
+  check('privacy line names the provider', root().querySelector('.ai-privacy')?.textContent.includes('Google Gemini'));
+  check('privacy line says what is not sent', root().querySelector('.ai-privacy')?.textContent.includes('device states'));
 
   chat.draft = 'button turns salon light on for 10 minutes';
   await chat.send();

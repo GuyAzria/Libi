@@ -12,12 +12,13 @@
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
 """Config flow for LIBI integration."""
-# v3.36.0
-# [ADDED v3.11.0 | 2026-08-25] Purpose: Domain is now libi, so the classes drop the ha prefix.
+# v3.37.0
 # [ADDED v3.36.0 | 2026-10-26] Purpose: The AI settings for the chat. The cloud step chooses a
 #   provider (Gemini, OpenAI or any OpenAI-compatible address), secrets use the password selector,
 #   and the options flow can switch the AI mode and actually takes effect: its result is stored in
 #   the entry's options, which the AI reads on top of the data, so no reload is needed.
+# [ADDED v3.37.0 | 2026-10-26] Purpose: The AI settings are tested before they are saved: the server
+#   must answer, accept the key and list the model (test-before-configure).
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -31,6 +32,7 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
+from .ai import async_test_connection
 from .const import (
     DOMAIN,
     CONF_AI_MODE,
@@ -132,6 +134,8 @@ class LibiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             errors = _local_errors(user_input)
             if not errors:
+                errors = await self._test({**self._user_input, **user_input})
+            if not errors:
                 self._user_input.update(user_input)
                 return self.async_create_entry(title="LIBI (Local AI)", data=self._user_input)
         return self.async_show_form(step_id="local", data_schema=_local_schema({}), errors=errors)
@@ -143,9 +147,16 @@ class LibiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             errors = _cloud_errors(user_input, have_key=False)
             if not errors:
+                errors = await self._test({**self._user_input, **user_input})
+            if not errors:
                 self._user_input.update(user_input)
                 return self.async_create_entry(title="LIBI (Cloud API)", data=self._user_input)
         return self.async_show_form(step_id="cloud", data_schema=_cloud_schema({}, True), errors=errors)
+
+    async def _test(self, settings: dict) -> dict:
+        """[ADDED v3.37.0] test-before-configure: the server answers, the key works, the model exists."""
+        problem = await async_test_connection(self.hass, settings)
+        return {"base": problem} if problem else {}
 
     @staticmethod
     @callback
@@ -168,6 +179,10 @@ class LibiOptionsFlow(config_entries.OptionsFlow):
     def _current(self) -> dict:
         return {**self.config_entry.data, **self.config_entry.options}
 
+    async def _test(self, settings: dict) -> dict:
+        problem = await async_test_connection(self.hass, settings)
+        return {"base": problem} if problem else {}
+
     async def async_step_init(self, user_input=None):
         """Choose the AI mode."""
         if user_input is not None:
@@ -189,6 +204,8 @@ class LibiOptionsFlow(config_entries.OptionsFlow):
             if not errors:
                 if not user_input.get(CONF_LOCAL_API_KEY) and cur.get(CONF_LOCAL_API_KEY):
                     user_input[CONF_LOCAL_API_KEY] = cur[CONF_LOCAL_API_KEY]
+                errors = await self._test({**self._new, **user_input})
+            if not errors:
                 return self.async_create_entry(title="", data={**self._new, **user_input})
         return self.async_show_form(step_id="local", data_schema=_local_schema(cur), errors=errors)
 
@@ -202,6 +219,8 @@ class LibiOptionsFlow(config_entries.OptionsFlow):
             if not errors:
                 if not user_input.get(CONF_CLOUD_API_KEY) and have_key:
                     user_input[CONF_CLOUD_API_KEY] = cur[CONF_CLOUD_API_KEY]
+                errors = await self._test({**self._new, **user_input})
+            if not errors:
                 return self.async_create_entry(title="", data={**self._new, **user_input})
         return self.async_show_form(step_id="cloud", data_schema=_cloud_schema(cur, not have_key),
                                     errors=errors)

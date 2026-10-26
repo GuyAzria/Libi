@@ -106,6 +106,62 @@ def ai_status(settings: dict) -> dict:
     return {"configured": False, "mode": "none", "provider": "", "model": ""}
 
 
+TEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
+
+
+def _model_listed(model: str, names: list[str]) -> bool:
+    """Ollama lists "llama3:latest" for "llama3"; Gemini lists "models/gemini-x" for "gemini-x"."""
+    model = model.strip()
+    for name in names:
+        name = str(name or "")
+        if name in (model, f"{model}:latest") or name.endswith(f"/{model}") or name.split(":", 1)[0] == model:
+            return True
+    return False
+
+
+async def async_test_connection(hass: HomeAssistant, settings: dict) -> str | None:
+    """[ADDED v3.37.0] Asks the model server whether it answers, accepts the key and has the model.
+    Returns a config flow error key, or None when everything checks out. A server that offers no
+    model list is not an error, because that does not prove the model is wrong."""
+    session = async_get_clientsession(hass)
+    mode = settings.get(CONF_AI_MODE, AI_MODE_NONE)
+    if mode == AI_MODE_LOCAL:
+        url = str(settings.get(CONF_LOCAL_URL, "")).rstrip("/") + "/api/tags"
+        headers = ({"Authorization": f"Bearer {settings[CONF_LOCAL_API_KEY]}"}
+                   if settings.get(CONF_LOCAL_API_KEY) else {})
+        model = str(settings.get(CONF_LOCAL_MODEL, ""))
+    elif mode == AI_MODE_CLOUD:
+        provider = settings.get(CONF_CLOUD_PROVIDER, CLOUD_PROVIDER_OPENAI)
+        base = (settings.get(CONF_CLOUD_BASE_URL) or CLOUD_BASE_URLS.get(provider) or "").rstrip("/")
+        url = base + "/models"
+        headers = {"Authorization": f"Bearer {settings.get(CONF_CLOUD_API_KEY, '')}"}
+        model = str(settings.get(CONF_CLOUD_MODEL, ""))
+    else:
+        return None
+    try:
+        async with session.get(url, headers=headers, timeout=TEST_TIMEOUT) as resp:
+            if resp.status in (401, 403):
+                return "invalid_auth"
+            if resp.status in (404, 405, 501):
+                return None  # no model list on this server; the chat will tell if the model is wrong
+            if resp.status >= 400:
+                return "cannot_connect"
+            data = await resp.json(content_type=None)
+    except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+        _LOGGER.debug("[libi] AI connection test failed: %s", _sanitize(err))
+        return "cannot_connect"
+    data = data if isinstance(data, dict) else {}
+    if mode == AI_MODE_LOCAL:
+        names = [m.get("name") or m.get("model") for m in data.get("models") or [] if isinstance(m, dict)]
+    else:
+        names = [m.get("id") for m in data.get("data") or data.get("models") or [] if isinstance(m, dict)]
+        names += [m.get("name") for m in data.get("models") or [] if isinstance(m, dict)]
+    names = [n for n in names if n]
+    if names and not _model_listed(model, names):
+        return "model_not_found"
+    return None
+
+
 # ---------------------------------------------------------------------------------------- the LLM
 
 def _sanitize(text: str) -> str:
@@ -706,7 +762,7 @@ def _clean_card(draft: _Draft, card: Any, depth: int = 0) -> Any:
                     ids = draft.entity_list(v)
                     out[k] = ids[0] if len(ids) == 1 else ids
             elif k in _CARD_SERVICE_KEYS and isinstance(v, str):
-                out[k] = draft.service(v, card.get("target") and {"target": card["target"]} or card)
+                out[k] = draft.service(v, (card.get("target") and {"target": card["target"]}) or card)
             else:
                 out[k] = _clean_card(draft, v, depth + 1)
         return out

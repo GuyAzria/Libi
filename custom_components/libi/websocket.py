@@ -25,7 +25,7 @@ import os
 import re
 import threading
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 import voluptuous as vol
 import yaml
@@ -83,12 +83,12 @@ def valid_project_slug(slug: str) -> bool:
             and not _UNSAFE_IN_FILENAME.search(slug))
 
 
-def _read_project_sync(hass: HomeAssistant, slug: str) -> Optional[dict]:
+def _read_project_sync(hass: HomeAssistant, slug: str) -> dict | None:
     path = _project_path(hass, slug)
     if not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except Exception as err:  # noqa: BLE001
         _LOGGER.error("[libi] project %s could not be read: %s", slug, err)
@@ -180,7 +180,7 @@ _LEVEL_BODY_KEY = {"automation": "actions", "script": "sequence", "scene": "enti
 def _read_ast_sync(hass: HomeAssistant) -> dict:
     path = _get_ast_path(hass)
     if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f: return json.load(f)
+        with open(path, encoding="utf-8") as f: return json.load(f)
     return {"nets": []}
 
 def _read_target_sync(path: str, empty):
@@ -190,7 +190,7 @@ def _read_target_sync(path: str, empty):
     if not os.path.exists(path):
         return type(empty)()
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
     except Exception as err:  # noqa: BLE001
         _LOGGER.error("[libi] %s could not be read, leaving it untouched: %s", path, err)
@@ -210,7 +210,7 @@ def _write_if_changed_sync(path: str, data, skip_when_empty: bool) -> bool:
     new_text = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
     if os.path.exists(path):
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 if f.read() == new_text:
                     return False
         except Exception:  # noqa: BLE001
@@ -263,7 +263,7 @@ def _migrate_legacy_file_sync(hass: HomeAssistant) -> None:
     if not os.path.exists(path):
         return
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             if f.read().strip() in ("", "[]"):
                 return
         write_utf8_file_atomic(path, "[]\n")
@@ -439,7 +439,7 @@ def _automations_by_id_sync(hass: HomeAssistant) -> dict:
     if not os.path.exists(path):
         return out
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or []
     except Exception as err:  # noqa: BLE001
         _LOGGER.error("[libi] automations.yaml could not be read while opening a project: %s", err)
@@ -513,7 +513,7 @@ def _get_all_automations(hass: HomeAssistant):
     autos = []
     path = _get_automations_path(hass)
     if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or []
             if isinstance(data, list):
                 for a in data:

@@ -246,7 +246,8 @@ async def test_not_configured(hass, home, config_dir, hass_ws_client):
     assert res["error"]["code"] == "not_configured"
 
 
-async def test_options_flow_switches_to_cloud_and_keeps_the_key(hass, libi_ai):
+async def test_options_flow_switches_to_cloud_and_keeps_the_key(hass, libi_ai, aioclient_mock):
+    aioclient_mock.get("https://api.openai.com/v1/models", json={"data": [{"id": "gpt-4o"}]})
     result = await hass.config_entries.options.async_init(libi_ai.entry_id)
     result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_AI_MODE: AI_MODE_CLOUD})
     assert result["step_id"] == "cloud"

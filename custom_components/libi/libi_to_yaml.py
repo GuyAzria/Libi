@@ -11,6 +11,8 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
+# [ADDED v3.37.0 | 2026-10-26] Purpose: A template trigger is no longer written into the conditions, and a
+#   trigger id LIBI generated is written only when a condition refers to it.
 # [ADDED v3.34.0 | 2026-10-26] Purpose: Removed unused imports; zip(strict=False) made explicit.
 # [ADDED v1.69.0] Output perfectly formed logic for standard triggers, retrieving native YAML dictionary if present via raw_trigger.
 # [ADDED v3.5.0 | 2026-08-24] Purpose: A net now carries a level. automation compiles to the
@@ -23,13 +25,14 @@
 #   3. Nothing is invented. An element that carries raw is emitted from raw with only the fields the
 #      user actually edited patched into it, so templates, ids, titles and media_stream survive.
 #   4. python_script.set_state is never written again.
+import copy
 import logging
 import re
 
 from .yaml_to_libi import (
     norm_service, norm_kind, domain_of, short,
     element_sig, EVENT_TRIGGER_KEYS, target_spec,
-    hms_to_seconds,
+    hms_to_seconds, yaml_to_ast,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,8 +69,7 @@ def slugify(text, fallback="libi_item"):
 def _without_triggers(rungs):
     """A script and a scene never listen to anything. Any leftover flag is cleared on a copy, so the
     compiler reads the element as an ordinary condition and the stored net is not touched."""
-    import copy as _copy
-    out = _copy.deepcopy(rungs or [])
+    out = copy.deepcopy(rungs or [])
 
     def walk(elements):
         for el in elements or []:
@@ -557,7 +559,7 @@ def _move_value_action(el):
     if raw and norm_service(raw):
         out = dict(raw)
         data = dict(out.get("data") or {})
-        key = el.get("valueKey") or next((k for k in data.keys() if k != "entity_id"), None)
+        key = el.get("valueKey") or next((k for k in data if k != "entity_id"), None)
         if key:
             data[key] = value
         out["data"] = data
@@ -936,6 +938,17 @@ def _rung_conditions(head, trig_ids, use_trigger_refs):
     conds = []
     for key, span in _spans(head):
         if key:
+            # [ADDED v3.37.0] A template TRIGGER is drawn as a group too. It is a trigger, so it is
+            # referenced or skipped like any trigger; writing its raw node here put a trigger into
+            # the conditions, which Home Assistant rejects.
+            if any(x.get("isTrigger") for x in span):
+                if all(x.get("autoGate") for x in span):
+                    continue  # drawn only to show what starts the flow, as for one element
+                if use_trigger_refs:
+                    tid = trig_ids.get(_trigger_key(span[0]))
+                    if tid:
+                        conds.append({"condition": "trigger", "id": tid})
+                continue
             cond = _group_condition(span)
             if cond:
                 conds.append(cond)
@@ -1078,7 +1091,6 @@ def _walk(elements):
 
 
 def _path_steps(path):
-    from .yaml_to_libi import norm_kind  # noqa: F401 - keeps the import list stable
     parts = str(path).split(".")
     steps = []
     for i in range(0, len(parts) - 1, 2):
@@ -1137,8 +1149,7 @@ def merge_linked_rungs(net):
     if not links:
         return net.get("rungs", []) or []
 
-    import copy as _copy
-    rungs = _copy.deepcopy(net.get("rungs", []) or [])
+    rungs = copy.deepcopy(net.get("rungs", []) or [])
     by_id = {r.get("id"): r for r in rungs}
     order = [r.get("id") for r in rungs]
     absorbed = set()
@@ -1271,7 +1282,33 @@ def ast_to_automation(hass, net_ast):
         out["variables"] = net["variables"]
     for k, v in (net.get("extra") or {}).items():
         out.setdefault(k, v)
+    _drop_unused_trigger_ids(out, trig_ids)
     return out
+
+
+def _referenced_trigger_ids(node, found):
+    """Every id a condition: trigger refers to, anywhere in the actions and conditions."""
+    if isinstance(node, dict):
+        if node.get("condition") == "trigger":
+            ids = node.get("id")
+            found.update(str(i) for i in (ids if isinstance(ids, list) else [ids]) if i is not None)
+        for v in node.values():
+            _referenced_trigger_ids(v, found)
+    elif isinstance(node, list):
+        for v in node:
+            _referenced_trigger_ids(v, found)
+    return found
+
+
+def _drop_unused_trigger_ids(out, trig_ids):
+    """[ADDED v3.37.0] An id LIBI generated for a trigger (t1, t2 ...) is written only when a
+    condition refers to it. Writing it always added an id to automations the user never touched,
+    so a save rewrote them. An id that came from the user's YAML is always kept."""
+    generated = {tid for key, tid in trig_ids.items() if not key.startswith("id:")}
+    used = _referenced_trigger_ids({"conditions": out.get("conditions"), "actions": out.get("actions")}, set())
+    for trig in out.get("triggers") or []:
+        if isinstance(trig, dict) and trig.get("id") in generated and trig.get("id") not in used:
+            trig.pop("id")
 
 
 def ast_to_script(hass, net_ast):
@@ -1432,7 +1469,6 @@ def _canon(node):
 
 def verify_round_trip(hass, automation_dict):
     """Import then export then compare. Returns ok plus the parts that did not survive."""
-    from .yaml_to_libi import yaml_to_ast
     try:
         net = yaml_to_ast(hass, automation_dict)
         back = ast_to_yaml(hass, net)
@@ -1443,13 +1479,18 @@ def verify_round_trip(hass, automation_dict):
     dst = _canon(back)
     issues = []
 
+    # [CHANGED v3.37.0] Both directions, and the identity keys skipped only at the top. Comparing one
+    # way and skipping every id hid a trigger written into the conditions and an id added to every
+    # trigger, so the gate passed automations a save would have rewritten.
     def compare(a, b, path):
         if isinstance(a, dict) and isinstance(b, dict):
-            for k in a:
-                if k in ("id", "alias", "description"):
+            for k in sorted(set(a) | set(b), key=str):
+                if not path and k in ("id", "alias", "description"):
                     continue
                 if k not in b:
                     issues.append(f"missing {path}.{k}")
+                elif k not in a:
+                    issues.append(f"added {path}.{k}: {short(b[k], 40)}")
                 else:
                     compare(a[k], b[k], f"{path}.{k}")
         elif isinstance(a, list) and isinstance(b, list):
