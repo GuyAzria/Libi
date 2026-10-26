@@ -1,0 +1,131 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>libi-ai behaviour test</title></head>
+<body>
+<div id="mount"></div>
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { LibiAiChat } from '../../custom_components/libi/frontend/libi-ai.js';
+
+const results = [];
+const check = (name, cond, detail = '') => results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+const tick = () => new Promise(r => setTimeout(r, 0));
+
+const XSS = '<img src=x onerror="window.pwned=1">';
+const PLAN = {
+  plan: {
+    reply: 'Pick the buttons <b>and</b> the lights.', level: 'automation', name: 'Salon 10 min',
+    roles: [
+      { id: 'trigger_buttons', label: 'Buttons', purpose: 'trigger', domains: ['input_button'], device_classes: [], keywords: [], area_keywords: [] },
+      { id: 'salon_lights', label: 'Salon lights', purpose: 'target', domains: ['light'], device_classes: [], keywords: [], area_keywords: [] },
+    ],
+    questions: [{ id: 'duration', text: 'How long?', choices: ['10 minutes', '20 minutes'] }],
+  },
+  candidates: {
+    trigger_buttons: { exact: true, items: [
+      { entity_id: 'input_button.a', name: XSS, area: 'Hall', state: 'unknown' },
+      { entity_id: 'input_button.b', name: 'Button B', area: '', state: 'unknown' } ] },
+    salon_lights: { exact: true, items: [{ entity_id: 'light.salon', name: 'Salon', area: 'Salon', state: 'off' }] },
+  },
+};
+const BUILD = {
+  ok: true, errors: [], level: 'automation', reply: 'Built it.', notes: ['Check the delay.'],
+  yaml: 'alias: x\n</pre><img src=x onerror="window.pwned=1">', card_yaml: 'type: entities\n', sensitive: [],
+  round_trip: { ok: true, issues: [] },
+  net: { id: 'n_libi_ai_1', ha_id: 'libi_ai_1', name: 'Salon 10 min', level: 'automation', rungs: [] },
+};
+let responses = { 'libi/ai_status': { configured: true, provider: 'gemini', model: 'gemini-x' },
+                  'libi/ai_plan': PLAN, 'libi/ai_build': BUILD };
+const calls = [];
+const panel = {
+  _hass: { connection: { sendMessagePromise: async (m) => { calls.push(JSON.parse(JSON.stringify(m)));
+    const r = responses[m.type]; if (r instanceof Error) throw r; return JSON.parse(JSON.stringify(r)); } } },
+  core: { nets: [], nid: 5, pushed: 0,
+    duplicateNet(n) { const c = JSON.parse(JSON.stringify(n)); c.id = 'n' + this.nid++; c.name = n.name + ' COPY'; c.ha_id = n.ha_id + '_copy'; return c; },
+    syncCounters() {}, pushHistory() { this.pushed++; } },
+  _projectDirty: false, rendered: 0, _render() { this.rendered++; }, shadowRoot: document,
+};
+
+try {
+  localStorage.removeItem('libi_ai_open');
+  const chat = new LibiAiChat(panel);
+  const mount = document.getElementById('mount');
+  chat.attach(mount); await tick(); await tick();
+  const root = () => mount.querySelector('.ai-chat');
+  check('mounted once', mount.children.length === 1);
+  check('mount marked open', mount.classList.contains('ai-open'));
+  check('status shows model', root().querySelector('.ai-model')?.textContent === 'gemini-x');
+  check('hint before first message', !!root().querySelector('.ai-hint'));
+
+  chat.draft = 'button turns salon light on for 10 minutes';
+  await chat.send();
+  check('plan request sent with the message', calls.some(c => c.type === 'libi/ai_plan' && c.messages[0].content.startsWith('button')));
+  check('reply shown as text, not HTML', [...root().querySelectorAll('.ai-msg.ai')].some(m => m.textContent.includes('<b>and</b>')) && !root().querySelector('.ai-msg.ai b'));
+  check('two role lists', root().querySelectorAll('.ai-role').length === 2);
+  check('device name with HTML shown as text', [...root().querySelectorAll('.ai-item-name')].some(n => n.textContent === XSS));
+  check('single exact light preselected', chat.selections.salon_lights.has('light.salon'));
+  const build = () => root().querySelector('.ai-build');
+  check('build disabled until buttons picked', build().disabled === true);
+
+  root().querySelector('.ai-list[data-role="trigger_buttons"] input[value="input_button.b"]').click();
+  check('tick selects', chat.selections.trigger_buttons.has('input_button.b'));
+  check('build enabled after picking', build().disabled === false);
+  check('count updates', root().querySelector('.ai-role .ai-count').textContent === '1 / 2');
+  [...root().querySelectorAll('.ai-chip')].find(c => c.textContent === '20 minutes').click();
+  check('chip answers the question', chat.answers.duration === '20 minutes');
+  check('chosen chip marked', [...root().querySelectorAll('.ai-chip.on')].map(c => c.textContent).join() === '20 minutes');
+
+  build().click(); await tick(); await tick(); await tick();
+  const b = calls.find(c => c.type === 'libi/ai_build');
+  check('build sends selections as arrays', b && JSON.stringify(b.selections) === JSON.stringify({ trigger_buttons: ['input_button.b'], salon_lights: ['light.salon'] }), b && JSON.stringify(b.selections));
+  check('build sends answers', b && b.answers.duration === '20 minutes');
+  check('plan cleared after a good build', chat.plan === null && !root().querySelector('.ai-plan'));
+  check('yaml shown as text', root().querySelector('.ai-yaml pre')?.textContent.includes('</pre><img'));
+  check('card yaml shown', root().querySelector('.ai-card pre')?.textContent === 'type: entities\n');
+
+  root().querySelector('.ai-add').click();
+  check('net added to the canvas', panel.core.nets.length === 1);
+  check('net keeps its name and ha_id', panel.core.nets[0].name === 'Salon 10 min' && panel.core.nets[0].ha_id === 'libi_ai_1', JSON.stringify(panel.core.nets[0]));
+  check('net gets a fresh canvas id', panel.core.nets[0].id === 'n5');
+  check('history pushed, project dirty, panel rendered', panel.core.pushed === 1 && panel._projectDirty === true && panel.rendered === 1);
+  check('add button disabled after adding', root().querySelector('.ai-add').disabled === true);
+
+  // rejected draft
+  responses['libi/ai_build'] = { ok: false, errors: ['The draft names light.kitchen, which you did not pick.'] };
+  chat.draft = 'also the kitchen'; await chat.send();
+  build().click(); await tick(); await tick(); await tick();
+  check('rejected draft shows the reasons', [...root().querySelectorAll('.ai-msg.error li')].some(li => li.textContent.includes('light.kitchen')));
+  check('rejected draft adds nothing', panel.core.nets.length === 1);
+
+  // transport error
+  responses['libi/ai_plan'] = Object.assign(new Error('The AI could not be reached.'), { code: 'ai_error' });
+  chat.draft = 'again'; await chat.send();
+  check('ws error shown', [...root().querySelectorAll('.ai-msg.error')].some(m => m.textContent.includes('could not be reached')));
+  check('not busy after error', chat.busy === '' && root().querySelector('.ai-send').disabled === false);
+
+  // re-render of the panel moves, not rebuilds
+  const before = root();
+  const mount2 = document.createElement('div'); document.body.appendChild(mount2);
+  chat.attach(mount2);
+  check('same root moved to the new mount', mount2.firstChild === before && mount.children.length === 0);
+
+  // collapse
+  chat._toggle();
+  check('collapsed hides the body', !before.querySelector('.ai-body') && !mount2.classList.contains('ai-open'));
+  check('collapse remembered', localStorage.getItem('libi_ai_open') === '0');
+  chat._toggle();
+
+  // not configured
+  responses['libi/ai_status'] = { configured: false };
+  const chat2 = new LibiAiChat(panel); const m3 = document.createElement('div'); document.body.appendChild(m3);
+  chat2.attach(m3); await tick(); await tick();
+  check('not configured shows the settings path', m3.querySelector('.ai-path')?.textContent.includes('Configure'));
+  check('not configured has no input', !m3.querySelector('.ai-input'));
+
+  check('no HTML injected anywhere', document.querySelectorAll('img').length === 0 && window.pwned === undefined);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

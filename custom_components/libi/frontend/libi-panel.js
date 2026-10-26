@@ -14,21 +14,24 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.34.0
+ * v3.36.0
  */
-// [ADDED v3.5.0 | 2026-08-20] Purpose: Integrated the full SVG logo with the original house, electronic circuit traces, 3-rung ladder, and aligned text into the header title.
-// [ADDED v3.34.0 | 2026-10-26] Purpose: Every value from the user's YAML that reaches HTML is escaped
-//   (automation aliases, net names, ids, message text, the YAML preview). Form fields are appended with
-//   insertAdjacentHTML instead of innerHTML +=, which destroyed the pickers appended before them. A save
-//   or delete the backend refused is no longer reported as done.
-import { LibiCore } from './libi-core.js?v=3.34.0';
-import { getStyles } from './libi-css.js?v=3.34.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.34.0';
-import { LibiOnline } from './libi-online.js?v=3.34.0';
+// [ADDED v3.35.0 | 2026-10-26] Purpose: Dark mode. The panel sets [dark] from hass.themes.darkMode and
+//   the styles switch to a dark colour set; secondary text uses the theme colour. The header logo is
+//   the brand icon instead of the inline SVG, whose hand-drawn lettering rendered misaligned.
+// [ADDED v3.36.0 | 2026-10-26] Purpose: The AI chat (libi-ai.js) under the Inspector. It is mounted
+//   after every render and adds the draft net it gets from the backend like any new net.
+import { LibiCore } from './libi-core.js?v=3.36.0';
+import { getStyles } from './libi-css.js?v=3.36.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.36.0';
+import { LibiOnline } from './libi-online.js?v=3.36.0';
+import { LibiAiChat } from './libi-ai.js?v=3.36.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.34.0';
+export const LIBI_BUILD = '3.36.0';
+// [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
+const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
 // [ADDED v3.16.0] Every helper Home Assistant can create from a stored collection, which is what a
 // ladder programmer means by a local variable: a bit, a word, a timer, a counter. The other kind of
@@ -82,6 +85,9 @@ class LibiPanel extends HTMLElement {
         this.attachShadow({ mode: 'open' }); 
         this.core = new LibiCore();
         this.online = new LibiOnline();
+        // [ADDED v3.36.0] The AI chat keeps its own DOM, so a render of the panel never loses what
+        // the user typed or ticked; it is only moved into the new sidebar.
+        this.aiChat = new LibiAiChat(this);
         this._editMode = true; 
         this._initialized = false; 
         this._astLoaded = false;
@@ -136,6 +142,9 @@ class LibiPanel extends HTMLElement {
 
     set hass(hass) { 
         this._hass = hass; 
+        // [ADDED v3.35.0] The colour tokens in libi-css.js switch on [dark]. It follows the theme the
+        // user picked in Home Assistant, which can differ from the operating system's setting.
+        this.toggleAttribute('dark', !!(hass && hass.themes && hass.themes.darkMode));
         // [ADDED v3.9.0] The core resolves names while it measures the label boxes, so it needs the
         // same hass the panel has.
         if (this.core) this.core.hass = hass; 
@@ -452,11 +461,11 @@ class LibiPanel extends HTMLElement {
         let modalHtml = '';
         if (this._modal === 'list_automations') {
             const items = this._automationList.map(a => `<div class="auto-item" data-id="${this._esc(a.id)}"><div class="auto-item-name">${this._esc(a.name)}</div><div class="auto-item-id">ID: ${this._esc(a.id)}</div></div>`).join('');
-            modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 500px;"><h2 class="modal-title">Select HA Automation</h2><p style="font-size:13px; color:#757575; margin:0;">Choose an automation to load into this Net.</p><div class="auto-list" style="max-height:50vh;">${items || '<div style="padding:16px;text-align:center;">No automations found.</div>'}</div><div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div></div></div>`;
+            modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 500px;"><h2 class="modal-title">Select HA Automation</h2><p style="font-size:13px; color:var(--secondary-text-color, #757575); margin:0;">Choose an automation to load into this Net.</p><div class="auto-list" style="max-height:50vh;">${items || '<div style="padding:16px;text-align:center;">No automations found.</div>'}</div><div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div></div></div>`;
         } else if (this._modal === 'project_new') {
             modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:460px;">
                 <h2 class="modal-title">New project</h2>
-                <p style="font-size:13px; color:#757575; margin:0 0 12px 0;">A project is a workspace of its own. It holds its nets and remembers which automation each one was loaded from, and it is stored as a .libi file in the configuration folder.</p>
+                <p style="font-size:13px; color:var(--secondary-text-color, #757575); margin:0 0 12px 0;">A project is a workspace of its own. It holds its nets and remembers which automation each one was loaded from, and it is stored as a .libi file in the configuration folder.</p>
                 <div class="fgrp"><label>Project name</label><input type="text" id="projNewName" placeholder="Garden" dir="auto" /></div>
                 <div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button><button class="btn" id="projNewOk">Create</button></div>
             </div></div>`;
@@ -467,8 +476,8 @@ class LibiPanel extends HTMLElement {
             </div>`).join('');
             modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:520px;">
                 <h2 class="modal-title">Open project</h2>
-                ${items ? `<p style="font-size:13px; color:#757575; margin:0;">Everything comes back as it was left, unfinished nets included.</p><div class="auto-list" style="max-height:60vh;">${items}</div>`
-                        : `<p style="font-size:13px; color:#757575;">There are no projects yet. Make one from New project.</p>`}
+                ${items ? `<p style="font-size:13px; color:var(--secondary-text-color, #757575); margin:0;">Everything comes back as it was left, unfinished nets included.</p><div class="auto-list" style="max-height:60vh;">${items}</div>`
+                        : `<p style="font-size:13px; color:var(--secondary-text-color, #757575);">There are no projects yet. Make one from New project.</p>`}
                 <div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div>
             </div></div>`;
         } else if (this._modal === 'project_delete') {
@@ -476,7 +485,7 @@ class LibiPanel extends HTMLElement {
             modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:480px;">
                 <h2 class="modal-title">Delete project</h2>
                 <p style="font-size:14px; margin:0 0 8px 0;" dir="auto">This deletes <b>${this._esc(nm)}</b>, the drawing only.</p>
-                <p style="font-size:13px; color:#757575; margin:0;">The automations, scripts and scenes this project compiled stay exactly where they are in Home Assistant and keep running. Only the .libi file is removed, so the ladder is gone and the YAML is not.</p>
+                <p style="font-size:13px; color:var(--secondary-text-color, #757575); margin:0;">The automations, scripts and scenes this project compiled stay exactly where they are in Home Assistant and keep running. Only the .libi file is removed, so the ladder is gone and the YAML is not.</p>
                 <div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button><button class="btn danger" id="projDeleteOk">Delete the drawing</button></div>
             </div></div>`;
         } else if (this._modal === 'entity_picker') {
@@ -494,7 +503,7 @@ class LibiPanel extends HTMLElement {
                 { id: 'scene', icon: '\uD83C\uDFAC', title: 'Scene', desc: 'A snapshot. Value assignments only, applied at once. No triggers, no timing, no conditions.' },
             ];
             const items = levels.map(l => `<div class="auto-item level-item" data-level="${l.id}"><div class="auto-item-name">${l.icon} ${l.title}</div><div class="auto-item-id">${l.desc}</div></div>`).join('');
-            modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 540px;"><h2 class="modal-title">What kind of logic do you want to create?</h2><p style="font-size:13px; color:#757575; margin:0;">The kind cannot be guessed later, so LIBI asks for it now.</p><div class="auto-list" style="max-height:60vh;">${items}</div><div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div></div></div>`;
+            modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 540px;"><h2 class="modal-title">What kind of logic do you want to create?</h2><p style="font-size:13px; color:var(--secondary-text-color, #757575); margin:0;">The kind cannot be guessed later, so LIBI asks for it now.</p><div class="auto-list" style="max-height:60vh;">${items}</div><div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div></div></div>`;
         } else if (this._modal === 'logs') {
             modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 800px; max-width: 95vw;"><h2 class="modal-title">🐞 System Logs & AST Terminal</h2><textarea readonly rows="20" style="width:100%; font-family:monospace; font-size:12px; padding:12px; box-sizing:border-box; background:#1e1e1e; color:#00ff00; border:none; border-radius:4px; outline:none; resize:none;">${JSON.stringify(this.core.nets, null, 2)}</textarea><div class="modal-actions"><button class="btn btn-primary" id="closeModalBtn">Close Terminal</button></div></div></div>`;
         }
@@ -505,64 +514,10 @@ class LibiPanel extends HTMLElement {
         <div class="panel-layout">
             <div class="header">
                 <div class="header-title" style="display: flex; align-items: center;">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 350 110" style="height: 38px; width: auto;">
-                        <defs>
-                            <linearGradient id="logoBgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-                                <stop offset="0%" stop-color="#11b3fa" />
-                                <stop offset="100%" stop-color="#0050d2" />
-                            </linearGradient>
-                            <filter id="logoShadow" x="-20%" y="-20%" width="140%" height="140%">
-                                <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#001133" flood-opacity="0.3"/>
-                            </filter>
-                            <style>
-                                .logo-text-main { fill: #212121; font-weight: 900; font-family: system-ui, -apple-system, sans-serif; }
-                                .logo-text-sub { fill: #555555; font-weight: 800; font-family: system-ui, -apple-system, sans-serif; }
-                                @media (prefers-color-scheme: dark) {
-                                    .logo-text-main { fill: #ffffff; }
-                                    .logo-text-sub { fill: #cccccc; }
-                                }
-                            </style>
-                        </defs>
-                        
-                        <!-- House & Electronics Graphic -->
-                        <g transform="translate(5, 5) scale(0.65)">
-                            <path d="M 200 25 L 75 116 A 10 10 0 0 0 70 124 L 70 255 A 15 15 0 0 0 85 270 L 315 270 A 15 15 0 0 0 330 255 L 330 124 A 10 10 0 0 0 325 116 L 305 101 L 305 55 L 280 55 L 280 83 Z" fill="url(#logoBgGrad)" />
-                            <g stroke="#001133" stroke-width="4.5" fill="transparent" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M 105 115 L 125 130 L 163 130" /><circle cx="105" cy="115" r="7" />
-                                <path d="M 85 165 L 120 165 L 140 185 L 157 185" /><circle cx="85" cy="165" r="7" />
-                                <path d="M 105 220 L 130 220 L 145 205 L 153 205" /><circle cx="105" cy="220" r="7" />
-                                <path d="M 295 115 L 275 130 L 237 130" /><circle cx="295" cy="115" r="7" />
-                                <path d="M 315 165 L 280 165 L 260 185 L 243 185" /><circle cx="315" cy="165" r="7" />
-                                <path d="M 295 220 L 270 220 L 255 205 L 247 205" /><circle cx="295" cy="220" r="7" />
-                            </g>
-                            <g filter="url(#logoShadow)" fill="#ffffff">
-                                <polygon points="178,50 148,270 160,270 190,50" />
-                                <polygon points="222,50 252,270 240,270 210,50" />
-                                <polygon points="171,100 229,100 227,110 169,110" />
-                                <polygon points="163,160 237,160 235,170 161,170" />
-                                <polygon points="155,220 245,220 243,230 153,230" />
-                            </g>
-                        </g>
-
-                        <!-- LIBI Typography -->
-                        <g transform="translate(130, 48)">
-                            <!-- L -->
-                            <path d="M 0 0 L 11 0 L 11 27 L 27 27 L 27 36 L 0 36 Z" class="logo-text-main" />
-                            <!-- I -->
-                            <rect x="35" y="0" width="11" height="36" class="logo-text-main" />
-                            <!-- B -->
-                            <path d="M 52 0 L 73 0 C 85 0 89 6 89 14 C 89 20 83 23 76 25 C 84 27 89 31 89 38 C 89 45 83 45 73 45 L 52 45 Z M 62 8 L 62 17 L 72 17 C 76 17 78 15 78 12 C 78 9 76 8 72 8 Z M 62 25 L 62 37 L 73 37 C 78 37 80 34 80 31 C 80 28 78 25 73 25 Z" class="logo-text-main" fill-rule="evenodd" />
-                            <!-- i (body) -->
-                            <rect x="97" y="14" width="11" height="22" class="logo-text-main" />
-                            <!-- i (blue dot) -->
-                            <rect x="97" y="0" width="11" height="9" rx="2" fill="#11b3fa" />
-                            
-                            <!-- Subtitle aligned precisely to the bottom baseline -->
-                            <text x="0" y="47" font-size="7.5" letter-spacing="0.5" class="logo-text-sub">
-                                LADDER INTERFACE <tspan fill="#11b3fa">&amp;</tspan> BUILDING INTELLIGENCE
-                            </text>
-                        </g>
-                    </svg>
+                    <!-- [CHANGED v3.35.0] The logo is the brand icon (brand/dark_icon@2x.png with its
+                         background made transparent), so it reads on a light and a dark header alike. -->
+                    <img class="hdr-logo" src="${LOGO_URL}" alt="" width="36" height="38" />
+                    <span class="hdr-wordmark">LIBI</span>
                     ${this._projectChipHtml()}
                 </div>
                 <!-- [CHANGED v3.13.0] The header follows the automation editor of Home Assistant:
@@ -605,6 +560,7 @@ class LibiPanel extends HTMLElement {
                     </div>
                     <div class="sidebar-rail-tag">LIBI</div>
                     <div class="sidebar-content">${sidebarHtml}</div>
+                    <div class="ai-mount" id="aiChatMount"></div>
                 </div>
             </div>
             ${this._varsBarHtml()}
@@ -620,6 +576,7 @@ class LibiPanel extends HTMLElement {
         this._bindEvents();
         this._injectNativePickers(); 
         this._paintOnline();
+        this.aiChat.attach(this.shadowRoot.getElementById('aiChatMount'));
     }
 
     _paintOnline() {
@@ -642,11 +599,11 @@ class LibiPanel extends HTMLElement {
         if (this._inspectedNetYaml) {
             const net = this.core.nets.find(n => n.id === this._inspectedNetYaml);
             if (!net) return '';
-            return `<div class="sidebar-hdr">Net YAML: ${this._esc(net.name)}</div><div class="sidebar-body" style="padding:0; display:flex; flex-direction:column; background:#1e1e1e;"><textarea class="yaml-preview-box" readonly>${this._esc(this._previewYamlContent)}</textarea><div style="padding: 16px;"><button class="btn btn-ghost" id="closeYamlSidebar" style="width:100%; color:white; border-color:#555;">Close YAML Preview</button></div></div>`;
+            return `<div class="sidebar-hdr">Net YAML: ${this._esc(net.name)}</div><div class="sidebar-body" style="padding:0; display:flex; flex-direction:column; background:#1e1e1e;"><textarea class="yaml-preview-box" readonly>${this._esc(this._previewYamlContent)}</textarea><div style="padding: 16px;"><button class="btn btn-ghost" id="closeYamlSidebar" style="width:100%; color:white; border-color:var(--secondary-text-color, #555);">Close YAML Preview</button></div></div>`;
         }
 
         if (!this._inspectedEl) {
-            return `<div class="sidebar-hdr">Inspector</div><div class="sidebar-body"><p style="color:#757575;">Select any element on the canvas to view and edit its properties.</p></div>`;
+            return `<div class="sidebar-hdr">Inspector</div><div class="sidebar-body"><p style="color:var(--secondary-text-color, #757575);">Select any element on the canvas to view and edit its properties.</p></div>`;
         }
         
         const el = this.core.findEl(this._inspectedEl.netId, this._inspectedEl.rungId, this._inspectedEl.elId);
@@ -697,7 +654,7 @@ class LibiPanel extends HTMLElement {
                 </div>
                 ` : ''}
                 ${elLevel !== 'automation' ? `
-                <div class="fgrp" style="font-size:12px; color:#757575;">
+                <div class="fgrp" style="font-size:12px; color:var(--secondary-text-color, #757575);">
                     A ${elLevel} is never started by the house, so there is no trigger to set here.
                 </div>
                 ` : ''}
@@ -744,7 +701,7 @@ class LibiPanel extends HTMLElement {
         wrap.className = 'fgrp checkbox-grp';
         wrap.innerHTML = `<input type="checkbox" id="inp_coe" ${el.continueOnError ? 'checked' : ''} />
             <label style="margin:0;">Continue on error
-                <span style="display:block; font-weight:400; font-size:11px; color:#757575;">Draws a bypass around this block. The rung carries on to the next checks even if the action fails or the entity is unavailable.</span>
+                <span style="display:block; font-weight:400; font-size:11px; color:var(--secondary-text-color, #757575);">Draws a bypass around this block. The rung carries on to the next checks even if the action fails or the entity is unavailable.</span>
             </label>`;
         wrap.querySelector('#inp_coe').addEventListener('change', (e) => {
             el.continueOnError = e.target.checked;
@@ -1112,7 +1069,7 @@ class LibiPanel extends HTMLElement {
         } else if (!deviceId) {
             const note = document.createElement('div');
             note.className = 'fgrp';
-            note.innerHTML = `<div style="font-size:12px; color:#9e9e9e; margin-top:-8px;">This entity does not belong to a device.</div>`;
+            note.innerHTML = `<div style="font-size:12px; color:var(--secondary-text-color, #9e9e9e); margin-top:-8px;">This entity does not belong to a device.</div>`;
             out.push(note);
         }
         return out;
@@ -1187,17 +1144,17 @@ class LibiPanel extends HTMLElement {
         wrap.className = 'fgrp';
         const title = kind === 'action' ? 'Action' : 'Trigger';
         if (!deviceId) {
-            wrap.innerHTML = `<label>${title}</label><div style="font-size:12px; color:#757575;">Pick a device first.</div>`;
+            wrap.innerHTML = `<label>${title}</label><div style="font-size:12px; color:var(--secondary-text-color, #757575);">Pick a device first.</div>`;
             out.push(wrap);
             return out;
         }
         if (list === null || list === undefined) {
-            wrap.innerHTML = `<label>${title}</label><div style="font-size:12px; color:#757575;">Asking Home Assistant what this device offers.</div>`;
+            wrap.innerHTML = `<label>${title}</label><div style="font-size:12px; color:var(--secondary-text-color, #757575);">Asking Home Assistant what this device offers.</div>`;
             out.push(wrap);
             return out;
         }
         if (!list.length) {
-            wrap.innerHTML = `<label>${title}</label><div style="font-size:12px; color:#757575;">This device offers no ${kind}s.</div>`;
+            wrap.innerHTML = `<label>${title}</label><div style="font-size:12px; color:var(--secondary-text-color, #757575);">This device offers no ${kind}s.</div>`;
             out.push(wrap);
             return out;
         }
@@ -1241,7 +1198,7 @@ class LibiPanel extends HTMLElement {
         note.className = 'fgrp';
         const bits = [raw.domain, raw.type, raw.subtype].filter(Boolean).join(' · ');
         note.innerHTML = bits
-            ? `<div style="font-size:12px; color:#616161; margin-top:-10px; font-family:monospace; word-break:break-all;">${this._esc(bits)}</div>`
+            ? `<div style="font-size:12px; color:var(--secondary-text-color, #616161); margin-top:-10px; font-family:monospace; word-break:break-all;">${this._esc(bits)}</div>`
             : '';
         out.push(note);
         return out;
@@ -1280,10 +1237,10 @@ class LibiPanel extends HTMLElement {
         const eid = this._renameFor;
         return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:440px;">
             <h2 class="modal-title">Rename</h2>
-            <p style="font-size:12px; color:#757575; margin:0 0 10px 0; font-family:monospace; word-break:break-all;">${this._esc(eid)}</p>
+            <p style="font-size:12px; color:var(--secondary-text-color, #757575); margin:0 0 10px 0; font-family:monospace; word-break:break-all;">${this._esc(eid)}</p>
             <div class="fgrp"><label>Name</label>
                 <input type="text" id="renameInput" value="${this._esc(this._renameTo)}" dir="auto" placeholder="חלונות" /></div>
-            <p style="font-size:12px; color:#757575; margin:0;">This is the name Home Assistant shows for this entity everywhere, not only in LIBI. The entity id itself does not change, so nothing that points at it breaks.</p>
+            <p style="font-size:12px; color:var(--secondary-text-color, #757575); margin:0;">This is the name Home Assistant shows for this entity everywhere, not only in LIBI. The entity id itself does not change, so nothing that points at it breaks.</p>
             <div class="modal-actions">
                 <button class="btn btn-ghost" id="closeModalBtn">Cancel</button>
                 <button class="btn" id="renameOk">Rename</button>
@@ -1339,8 +1296,8 @@ class LibiPanel extends HTMLElement {
         const id = String(el.label || '').replace(/\s*\+\d+$/, '').trim();
         const name = this.core.friendlyName(id, this._hass);
         wrap.innerHTML = id
-            ? `<div style="font-size:12px; color:#616161; margin-top:-10px; font-family:monospace; word-break:break-all;">`
-              + `${this._esc(id)}${name ? ` <span style="font-family:inherit; color:#9e9e9e;">&nbsp;·&nbsp;${this._esc(name)}</span>` : ''}</div>`
+            ? `<div style="font-size:12px; color:var(--secondary-text-color, #616161); margin-top:-10px; font-family:monospace; word-break:break-all;">`
+              + `${this._esc(id)}${name ? ` <span style="font-family:inherit; color:var(--secondary-text-color, #9e9e9e);">&nbsp;·&nbsp;${this._esc(name)}</span>` : ''}</div>`
             : '';
         return wrap;
     }
@@ -1354,7 +1311,7 @@ class LibiPanel extends HTMLElement {
         if (!names.length) { wrap.innerHTML = ''; return wrap; }
         const rows = names.map(n => `<li style="margin:1px 0;">${this._esc(n)}</li>`).join('');
         wrap.innerHTML = `<label>Resolved targets (${names.length})</label>`
-            + `<ul style="margin:0; padding-inline-start:18px; font-size:12px; color:#616161; max-height:190px; overflow:auto;" dir="auto">${rows}</ul>`;
+            + `<ul style="margin:0; padding-inline-start:18px; font-size:12px; color:var(--secondary-text-color, #616161); max-height:190px; overflow:auto;" dir="auto">${rows}</ul>`;
         return wrap;
     }
 
@@ -1367,7 +1324,7 @@ class LibiPanel extends HTMLElement {
         const wrap = document.createElement('div');
         wrap.className = 'fgrp';
         const count = this.core.specCount(el.targetSpec);
-        wrap.innerHTML = `<label id="lbl_target_spec">Targets &nbsp;<span style="font-weight:600; color:#757575;">`
+        wrap.innerHTML = `<label id="lbl_target_spec">Targets &nbsp;<span style="font-weight:600; color:var(--secondary-text-color, #757575);">`
             + `${count ? count + ' selected' : 'entities, devices, areas, labels'}</span></label>`;
         const node = document.createElement('ha-selector');
         node.hass = this._hass;
@@ -1403,7 +1360,7 @@ class LibiPanel extends HTMLElement {
             box.addEventListener('change', () => onValue(box.value.trim()));
             wrap.appendChild(box);
             const note = document.createElement('div');
-            note.style.cssText = 'font-size:11px;color:#9e9e9e;margin-top:3px;';
+            note.style.cssText = 'font-size:11px;color:var(--secondary-text-color, #9e9e9e);margin-top:3px;';
             note.textContent = `Home Assistant has not loaded ${TAG} in this browser tab, so this is a plain field.`;
             wrap.appendChild(note);
             return wrap;
@@ -1531,7 +1488,7 @@ class LibiPanel extends HTMLElement {
                 // the field says so rather than calling it a value.
                 const isAction = el.moveKind === 'action';
                 slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_source">${isAction ? 'Action (Home Assistant service)' : 'Value or Template'}</label><textarea id="inp_source" rows="${isAction ? 1 : 3}" style="font-family:monospace;">${this._esc(el.source || '')}</textarea></div>`);
-                if (isAction) slot.insertAdjacentHTML('beforeend', `<div class="fgrp" style="font-size:12px; color:#757575; margin-top:-6px;">OUT is a summary of the targets below. It is not read back, the targets are.</div>`);
+                if (isAction) slot.insertAdjacentHTML('beforeend', `<div class="fgrp" style="font-size:12px; color:var(--secondary-text-color, #757575); margin-top:-6px;">OUT is a summary of the targets below. It is not read back, the targets are.</div>`);
             } else {
                 if (mode !== 'tts') {
                     slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_source">Message</label><textarea id="inp_source" rows="2">${this._esc(el.source || '')}</textarea></div>`);
@@ -1794,7 +1751,7 @@ class LibiPanel extends HTMLElement {
                     </div>
                 </div>
                 <div class="net-hdr-r">
-                    <span class="chevron" style="font-size:12px; color:#888;">${net.collapsed ? '▼' : '▲'}</span>
+                    <span class="chevron" style="font-size:12px; color:var(--secondary-text-color, #888);">${net.collapsed ? '▼' : '▲'}</span>
                 </div>
             </div>
             <div class="net-body" style="flex-direction:column;">
@@ -2140,7 +2097,7 @@ class LibiPanel extends HTMLElement {
                     const mine = [...inProj].filter(match).sort();
                     const rest = Object.keys(states).filter(e => !inProj.has(e) && match(e)).sort().slice(0, 120);
                     const sect = (title, list) => list.length
-                        ? `<div class="vars-group-title" style="font-size:11px;font-weight:800;text-transform:uppercase;color:#9e9e9e;margin:8px 0 2px;">${this._esc(title)} · ${list.length}</div>
+                        ? `<div class="vars-group-title" style="font-size:11px;font-weight:800;text-transform:uppercase;color:var(--secondary-text-color, #9e9e9e);margin:8px 0 2px;">${this._esc(title)} · ${list.length}</div>
                            <table class="vars-table"><tbody>${list.map(e => this._varsRowHtml(e)).join('')}</tbody></table>` : '';
                     if (!mine.length && !rest.length) return '<div class="vars-empty">Nothing matches that.</div>';
                     return sect('In this project', mine) + sect('Everywhere in Home Assistant', rest);
@@ -2480,7 +2437,7 @@ class LibiPanel extends HTMLElement {
                             ${s.choices.map(([val, lab]) => `<option value="${val}" ${v === val ? 'selected' : ''}>${lab}</option>`).join('')}
                             </select></div>`;
                 }
-                return `<div class="fgrp"><label>${s.label}${s.optional ? ' <span style="font-weight:400;color:#9e9e9e;">optional</span>' : ''}</label>
+                return `<div class="fgrp"><label>${s.label}${s.optional ? ' <span style="font-weight:400;color:var(--secondary-text-color, #9e9e9e);">optional</span>' : ''}</label>
                         <input type="${s.type === 'number' ? 'number' : 'text'}" class="hk-f" data-k="${f}" value="${this._esc(v)}" placeholder="${this._esc(s.hint || '')}" dir="auto" /></div>`;
             };
 

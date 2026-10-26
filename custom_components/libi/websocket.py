@@ -11,17 +11,13 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.15.0 | 2026-08-26] Purpose: Opening a project reloads. A net anchored to an automation is
-#   read fresh out of automations.yaml and converted to ladder again, so whichever project is opened
-#   always shows the newest version and the same automation may sit in several projects without any
-#   of them going stale. A net with no anchor is a draft that no YAML could hold, so it comes back
-#   from the drawing saved in the .libi file, and so does an anchored net whose automation has since
-#   been deleted from Home Assistant, which is then flagged as orphaned.
 # [ADDED v3.34.0 | 2026-10-26] Purpose: Every command is admin only and has a strict schema, a
 #   project slug can no longer name a path outside the projects folder, a save refuses to write
 #   anything when one of Home Assistant's files cannot be read, files are written atomically under
 #   one lock, and deleting an automation follows the same read, merge and reload rules as a save.
 #   Saving a project with a script net no longer writes the project under the script's name.
+# [ADDED v3.36.0 | 2026-10-26] Purpose: The AI chat commands ai_status, ai_plan and ai_build. They
+#   only ever return a DRAFT net; writing it to Home Assistant stays the ordinary save. See ai.py.
 import asyncio
 import json
 import logging
@@ -38,6 +34,7 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util.file import write_utf8_file_atomic
 
+from . import ai
 from .libi_to_yaml import ast_to_yaml, verify_round_trip, net_level, slugify
 from .yaml_to_libi import yaml_to_ast
 
@@ -548,6 +545,7 @@ def async_register_websockets(hass: HomeAssistant) -> None:
         ws_handle_get_automation, ws_handle_delete_automation, ws_handle_verify_automation,
         ws_handle_project_list, ws_handle_project_open, ws_handle_project_create,
         ws_handle_project_delete, ws_handle_preview_yaml,
+        ws_handle_ai_status, ws_handle_ai_plan, ws_handle_ai_build,
     ):
         websocket_api.async_register_command(hass, handler)
     _LOGGER.debug("[libi] WebSocket commands registered")
@@ -779,3 +777,94 @@ async def ws_handle_preview_yaml(hass: HomeAssistant, connection: websocket_api.
         connection.send_result(msg["id"], {"yaml": yaml_str})
     except Exception as err:  # noqa: BLE001
         connection.send_error(msg["id"], "preview_error", str(err))
+
+
+# [ADDED v3.36.0] ------------------------------------------------------------------- AI chat
+# The model only drafts. Every entity comes from the user's own picks, every service and trigger is
+# checked against an allow list and against Home Assistant's validator in ai.py, and the result is a
+# net on the canvas that is written only when the user presses SAVE & COMPILE.
+
+@websocket_api.websocket_command({vol.Required("type"): "libi/ai_status"})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_ai_status(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    connection.send_result(msg["id"], ai.ai_status(ai.ai_settings(hass)))
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/ai_plan",
+    vol.Required("messages"): [dict],
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_ai_plan(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Step 1: the model turns the request into roles and questions; LIBI finds the candidates."""
+    settings = ai.ai_settings(hass)
+    if not ai.ai_status(settings)["configured"]:
+        connection.send_error(msg["id"], "not_configured", "AI is not set up.")
+        return
+    messages = ai.clean_messages(msg["messages"])
+    if not messages or messages[-1]["role"] != "user":
+        connection.send_error(msg["id"], "invalid_format", "The last message must be the user's.")
+        return
+    try:
+        raw = await ai.async_llm_json(hass, settings, ai.PLAN_SYSTEM, messages, ai.PLAN_SCHEMA)
+    except ai.AiError as err:
+        connection.send_error(msg["id"], "ai_error", str(err))
+        return
+    plan = ai.clean_plan(hass, raw)
+    candidates = {}
+    for role in plan["roles"]:
+        candidates[role["id"]] = ai.find_candidates(hass, role)
+        await asyncio.sleep(0)
+    connection.send_result(msg["id"], {"plan": plan, "candidates": candidates})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/ai_build",
+    vol.Required("messages"): [dict],
+    vol.Required("plan"): dict,
+    vol.Required("selections"): dict,
+    vol.Optional("answers", default={}): dict,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_ai_build(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Step 2: the user picked the entities; the model writes the logic with role references only,
+    and LIBI validates it and draws it. Nothing is written to Home Assistant here."""
+    settings = ai.ai_settings(hass)
+    if not ai.ai_status(settings)["configured"]:
+        connection.send_error(msg["id"], "not_configured", "AI is not set up.")
+        return
+    # The plan comes back from the browser, so it is cleaned again rather than trusted.
+    plan = ai.clean_plan(hass, msg["plan"])
+    selections, problems = ai.clean_selections(hass, plan, msg["selections"])
+    if problems:
+        connection.send_result(msg["id"], {"ok": False, "errors": problems})
+        return
+    answers = {str(k)[:40]: str(v)[:200] for k, v in msg["answers"].items()}
+    messages = ai.clean_messages(msg["messages"])
+    messages.append({"role": "user", "content": ai.build_context(plan, selections, answers, hass)})
+    try:
+        raw = await ai.async_llm_json(hass, settings, ai.BUILD_SYSTEM, messages, ai.BUILD_SCHEMA)
+    except ai.AiError as err:
+        connection.send_error(msg["id"], "ai_error", str(err))
+        return
+    draft = await ai.async_build_draft(hass, plan, selections, raw)
+    result = {key: draft[key] for key in ("ok", "errors", "level", "yaml", "card_yaml",
+                                           "sensitive", "reply", "notes")}
+    if draft["ok"]:
+        try:
+            net = yaml_to_ast(hass, draft["auto"])
+        except Exception as err:  # noqa: BLE001
+            result.update(ok=False, errors=[f"The draft could not be drawn: {ai._sanitize(err)}"])
+            connection.send_result(msg["id"], result)
+            return
+        net["level"] = draft["level"]
+        net["name"] = draft["auto"]["alias"]
+        net["source"] = "draft"
+        net["source_note"] = "Drafted by the AI chat. Review it, then SAVE & COMPILE to write it."
+        result["net"] = net
+        report = verify_round_trip(hass, draft["auto"]) if draft["level"] == "automation" else {"ok": True}
+        result["round_trip"] = {"ok": bool(report.get("ok")), "issues": report.get("issues", [])[:10]}
+    connection.send_result(msg["id"], result)

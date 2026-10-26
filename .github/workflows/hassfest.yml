@@ -1,0 +1,22 @@
+# Hassfest, Home Assistant's own validation of an integration, the second check HACS requires for
+# integrations. It runs the newest image built from Home Assistant's development branch, so it can
+# turn red without a change here - the daily run shows that early.
+name: Hassfest
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hassfest
+        uses: home-assistant/actions/hassfest@master

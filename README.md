@@ -33,20 +33,42 @@ The software is built upon the **IEC 61131-3** standard, the international stand
 
 ## **Installation**
 
-**Requirements:** Home Assistant 2025.1 or newer, and an administrator account. LIBI edits your automations, so like Home Assistant's own automation editor it is available to administrators only.
+**Requirements:** Home Assistant 2025.1 or newer, [HACS](https://hacs.xyz/), and an administrator account. LIBI edits your automations, so like Home Assistant's own automation editor it is available to administrators only.
 
-### With HACS
+> [!TIP]
+> **No YAML configuration is needed.** LIBI is set up entirely from the Home Assistant UI. You do not add anything to `configuration.yaml`, and there is no `!include` line to write: LIBI works with the `automations.yaml`, `scripts.yaml` and `scenes.yaml` that every Home Assistant installation already has.
 
-1. In HACS, open the menu (⋮) and choose **Custom repositories**.
-2. Add `https://github.com/GuyAzria/Libi` with the type **Integration**.
-3. Search for **LIBI**, download it, and restart Home Assistant.
-4. Go to **Settings ▸ Devices & services ▸ Add integration** and add **LIBI**.
+### With HACS (recommended)
 
-LIBI then appears in the sidebar.
+The quickest way is the two buttons below. Each one opens the right page in your own Home Assistant:
+
+[![Open LIBI in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=GuyAzria&repository=Libi&category=integration)
+[![Add the LIBI integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=libi)
+
+Or step by step:
+
+1. **Add the repository to HACS.** LIBI is a custom repository, so HACS needs to be told where it is once.
+   - Open **HACS** in the sidebar.
+   - Open the menu (**⋮**, top right) and choose **Custom repositories**.
+   - In **Repository**, enter `https://github.com/GuyAzria/Libi`.
+   - In **Type**, choose **Integration**, and click **Add**.
+2. **Download LIBI.**
+   - In HACS, search for **LIBI** and open it.
+   - Click **Download** (bottom right), keep the latest version, and click **Download** again.
+3. **Restart Home Assistant.** Go to **Settings ▸ System**, click the power icon (top right), and choose **Restart Home Assistant**. HACS also shows a *Restart required* notice under **Settings**.
+4. **Add the integration.**
+   - Go to **Settings ▸ Devices & services**, click **Add integration**, and search for **LIBI**.
+   - When asked for the **AI mode**, choose **No AI**. The AI features are not released yet; this can be changed later.
+
+**LIBI** now appears in the sidebar. Open it, and your existing automations are ready to be loaded as ladder diagrams.
+
+### Updating
+
+When a new version is released, HACS shows it under **Settings** as an available update. Install it there and restart Home Assistant. Your projects in `config/libi/` and your automations are kept.
 
 ### Manually
 
-Download `libi.zip` from the [latest release](https://github.com/GuyAzria/Libi/releases/latest), unpack it into `config/custom_components/libi/`, restart Home Assistant, and add the integration as in step 4.
+Download `libi.zip` from the [latest release](https://github.com/GuyAzria/Libi/releases/latest), unpack it into `config/custom_components/libi/`, restart Home Assistant, and add the integration as in step 4. With a manual install, HACS does not tell you about updates.
 
 ## **What LIBI changes in your configuration**
 
@@ -55,8 +77,19 @@ Download `libi.zip` from the [latest release](https://github.com/GuyAzria/Libi/r
 * If one of those files cannot be read (for example because it contains a syntax error), LIBI saves nothing and tells you why.
 * Projects are stored as `.libi` files in `config/libi/`, so they are part of your Home Assistant backup.
 
-## **🚀 Future Roadmap**
+## **🤖 AI Chat (beta)**
 
-* **AI-Powered Logic Generation:** One of our upcoming milestones is integrating AI capabilities. Users will be able to generate LADDER logic simply by writing a natural language query and selecting the relevant variables.
+Under the Inspector, the **AI Chat** builds ladder logic from a sentence, in your own language — for example *"pressing a button turns the living room light on for 10 minutes"*.
+
+1. LIBI asks the AI what the logic needs, then **searches your Home Assistant itself** and shows you the matching devices — every button, every light in the living room. You pick them, several at once if you like.
+2. You answer the few questions it asks (how long, which days, whether you want a dashboard card).
+3. You get a **draft NET** to add to the canvas, plus a dashboard card to copy if you asked for one.
+
+**The AI never chooses or controls a device on its own.** It only ever sees roles like "the buttons" and "the lights"; the entities are the ones *you* ticked. LIBI rejects any draft that names another entity, a device or area id, or a service outside a safe list, and Home Assistant's own validator checks it too. Nothing is written until you press **SAVE & COMPILE**, and drafts that control locks, alarms, covers, valves or sirens are flagged.
+
+**Setup:** Settings ▸ Devices & services ▸ LIBI ▸ **Configure**, then choose:
+
+* **Local AI** — an [Ollama](https://ollama.com) server address and model; nothing leaves your home.
+* **Cloud API** — Google Gemini, OpenAI, or any OpenAI-compatible service, with its API key and model.
 
 <p align="center">Made with ❤️ for the Home Assistant community by Guy Azria</p>

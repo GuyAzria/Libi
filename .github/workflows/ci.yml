@@ -45,3 +45,11 @@ jobs:
         run: pip install -r requirements_test.txt
       - name: Pytest
         run: python -m pytest -q
+
+  frontend:
+    name: Panel behaviour (headless Chrome)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Browser tests
+        run: python3 tools/run_frontend_tests.py

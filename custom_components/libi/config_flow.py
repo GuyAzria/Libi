@@ -12,13 +12,24 @@
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
 """Config flow for LIBI integration."""
-# v3.3.0
-# [ADDED v3.3.0 | 2026-08-20] Purpose: Renamed config flow classes from LadderHA to HaLibi to match the domain.
+# v3.36.0
 # [ADDED v3.11.0 | 2026-08-25] Purpose: Domain is now libi, so the classes drop the ha prefix.
+# [ADDED v3.36.0 | 2026-10-26] Purpose: The AI settings for the chat. The cloud step chooses a
+#   provider (Gemini, OpenAI or any OpenAI-compatible address), secrets use the password selector,
+#   and the options flow can switch the AI mode and actually takes effect: its result is stored in
+#   the entry's options, which the AI reads on top of the data, so no reload is needed.
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import callback
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import (
     DOMAIN,
@@ -26,12 +37,66 @@ from .const import (
     AI_MODES,
     AI_MODE_NONE,
     AI_MODE_LOCAL,
-    AI_MODE_CLOUD,
+    CLOUD_PROVIDER_CUSTOM,
+    CLOUD_PROVIDER_GEMINI,
+    CLOUD_PROVIDERS,
+    CONF_CLOUD_BASE_URL,
+    CONF_CLOUD_PROVIDER,
+    CONF_LOCAL_API_KEY,
     CONF_LOCAL_URL,
     CONF_LOCAL_MODEL,
     CONF_CLOUD_API_KEY,
     CONF_CLOUD_MODEL,
 )
+
+_PASSWORD = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
+_URL = TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
+_TEXT = TextSelector()
+_PROVIDER = SelectSelector(SelectSelectorConfig(
+    options=CLOUD_PROVIDERS, mode=SelectSelectorMode.DROPDOWN, translation_key="cloud_provider"))
+
+
+def _mode_schema(current: str) -> vol.Schema:
+    return vol.Schema({vol.Required(CONF_AI_MODE, default=current): vol.In(AI_MODES)})
+
+
+def _local_schema(cur: dict) -> vol.Schema:
+    return vol.Schema({
+        vol.Required(CONF_LOCAL_URL, default=cur.get(CONF_LOCAL_URL, "http://localhost:11434")): _URL,
+        vol.Required(CONF_LOCAL_MODEL, default=cur.get(CONF_LOCAL_MODEL, "llama3")): _TEXT,
+        vol.Optional(CONF_LOCAL_API_KEY): _PASSWORD,
+    })
+
+
+def _cloud_schema(cur: dict, key_required: bool) -> vol.Schema:
+    key = vol.Required(CONF_CLOUD_API_KEY) if key_required else vol.Optional(CONF_CLOUD_API_KEY)
+    return vol.Schema({
+        vol.Required(CONF_CLOUD_PROVIDER, default=cur.get(CONF_CLOUD_PROVIDER, CLOUD_PROVIDER_GEMINI)): _PROVIDER,
+        key: _PASSWORD,
+        vol.Required(CONF_CLOUD_MODEL, default=cur.get(CONF_CLOUD_MODEL, "")): _TEXT,
+        vol.Optional(CONF_CLOUD_BASE_URL, default=cur.get(CONF_CLOUD_BASE_URL, "")): _TEXT,
+    })
+
+
+def _local_errors(user_input: dict) -> dict:
+    errors = {}
+    if not str(user_input.get(CONF_LOCAL_URL, "")).strip():
+        errors[CONF_LOCAL_URL] = "invalid_url"
+    if not str(user_input.get(CONF_LOCAL_MODEL, "")).strip():
+        errors[CONF_LOCAL_MODEL] = "invalid_model"
+    return errors
+
+
+def _cloud_errors(user_input: dict, have_key: bool) -> dict:
+    errors = {}
+    if not have_key and not str(user_input.get(CONF_CLOUD_API_KEY, "")).strip():
+        errors[CONF_CLOUD_API_KEY] = "invalid_key"
+    if not str(user_input.get(CONF_CLOUD_MODEL, "")).strip():
+        errors[CONF_CLOUD_MODEL] = "invalid_model"
+    if (user_input.get(CONF_CLOUD_PROVIDER) == CLOUD_PROVIDER_CUSTOM
+            and not str(user_input.get(CONF_CLOUD_BASE_URL, "")).strip()):
+        errors[CONF_CLOUD_BASE_URL] = "invalid_url"
+    return errors
 
 
 class LibiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -53,147 +118,90 @@ class LibiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._user_input[CONF_AI_MODE] = user_input[CONF_AI_MODE]
             # [ADDED v1.5.1 | 2026-08-10] Purpose: Route to correct branch; No AI skips all extra steps.
             if user_input[CONF_AI_MODE] == AI_MODE_NONE:
-                return self.async_create_entry(
-                    title="LIBI",
-                    data=self._user_input,
-                )
+                return self.async_create_entry(title="LIBI", data=self._user_input)
             if user_input[CONF_AI_MODE] == AI_MODE_LOCAL:
                 return await self.async_step_local()
             return await self.async_step_cloud()
 
-        data_schema = vol.Schema(
-            {
-                vol.Required(CONF_AI_MODE, default=AI_MODE_LOCAL): vol.In(AI_MODES),
-            }
-        )
-
-        return self.async_show_form(
-            step_id="user",
-            data_schema=data_schema,
-            errors={},
-        )
+        return self.async_show_form(step_id="user", data_schema=_mode_schema(AI_MODE_LOCAL), errors={})
 
     # [ADDED v1.5.1 | 2026-08-10] Purpose: Collect local Ollama/LLM server URL and model name.
     async def async_step_local(self, user_input=None):
         """Handle the Local AI configuration step."""
         errors = {}
-
         if user_input is not None:
-            if not user_input.get(CONF_LOCAL_URL, "").strip():
-                errors[CONF_LOCAL_URL] = "invalid_url"
-            if not user_input.get(CONF_LOCAL_MODEL, "").strip():
-                errors[CONF_LOCAL_MODEL] = "invalid_model"
-
+            errors = _local_errors(user_input)
             if not errors:
                 self._user_input.update(user_input)
-                return self.async_create_entry(
-                    title="LIBI (Local AI)",
-                    data=self._user_input,
-                )
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(CONF_LOCAL_URL, default="http://localhost:11434"): str,
-                vol.Required(CONF_LOCAL_MODEL, default="llama3"): str,
-            }
-        )
-
-        return self.async_show_form(
-            step_id="local",
-            data_schema=data_schema,
-            errors=errors,
-        )
+                return self.async_create_entry(title="LIBI (Local AI)", data=self._user_input)
+        return self.async_show_form(step_id="local", data_schema=_local_schema({}), errors=errors)
 
     # [ADDED v1.5.1 | 2026-08-10] Purpose: Collect Cloud API key and cloud model name.
     async def async_step_cloud(self, user_input=None):
         """Handle the Cloud API configuration step."""
         errors = {}
-
         if user_input is not None:
-            if not user_input.get(CONF_CLOUD_API_KEY, "").strip():
-                errors[CONF_CLOUD_API_KEY] = "invalid_key"
-            if not user_input.get(CONF_CLOUD_MODEL, "").strip():
-                errors[CONF_CLOUD_MODEL] = "invalid_model"
-
+            errors = _cloud_errors(user_input, have_key=False)
             if not errors:
                 self._user_input.update(user_input)
-                return self.async_create_entry(
-                    title="LIBI (Cloud API)",
-                    data=self._user_input,
-                )
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(CONF_CLOUD_API_KEY): str,
-                vol.Required(CONF_CLOUD_MODEL, default="gpt-4o"): str,
-            }
-        )
-
-        return self.async_show_form(
-            step_id="cloud",
-            data_schema=data_schema,
-            errors=errors,
-        )
+                return self.async_create_entry(title="LIBI (Cloud API)", data=self._user_input)
+        return self.async_show_form(step_id="cloud", data_schema=_cloud_schema({}, True), errors=errors)
 
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
         """Return the Options Flow handler."""
-        # [ADDED v1.5.1 | 2026-08-10] Purpose: Allow users to reconfigure settings post-setup via Integrations UI.
-        return LibiOptionsFlow(config_entry)
+        return LibiOptionsFlow()
 
 
 class LibiOptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow for LIBI."""
+    """Change the AI mode and its settings after setup.
 
-    def __init__(self, config_entry):
+    [CHANGED v3.36.0] The flow can now switch the mode itself, and what it stores is read: the AI
+    takes the entry's options on top of its data. A secret left empty keeps the one already stored.
+    """
+
+    def __init__(self):
         """Initialise the options flow."""
-        self._config_entry = config_entry
+        self._new: dict = {}
+
+    def _current(self) -> dict:
+        return {**self.config_entry.data, **self.config_entry.options}
 
     async def async_step_init(self, user_input=None):
-        """Manage the options – reconfigure AI mode or credentials."""
-        # [ADDED v1.5.1 | 2026-08-10] Purpose: Clean options schema with only relevant fields, no stray artifacts.
-        errors = {}
-        current_mode = self._config_entry.data.get(CONF_AI_MODE, AI_MODE_NONE)
-
+        """Choose the AI mode."""
         if user_input is not None:
-            return self.async_create_entry(title="LIBI", data=user_input)
-
-        # [ADDED v1.5.1 | 2026-08-10] Purpose: Show empty options form when No AI mode is selected.
-        if current_mode == AI_MODE_NONE:
-            if user_input is not None:
-                return self.async_create_entry(title="LIBI", data={})
-            return self.async_show_form(step_id="init", data_schema=vol.Schema({}))
-
-        if current_mode == AI_MODE_LOCAL:
-            data_schema = vol.Schema(
-                {
-                    vol.Required(
-                        CONF_LOCAL_URL,
-                        default=self._config_entry.data.get(CONF_LOCAL_URL, "http://localhost:11434"),
-                    ): str,
-                    vol.Required(
-                        CONF_LOCAL_MODEL,
-                        default=self._config_entry.data.get(CONF_LOCAL_MODEL, "llama3"),
-                    ): str,
-                }
-            )
-        else:
-            data_schema = vol.Schema(
-                {
-                    vol.Required(
-                        CONF_CLOUD_API_KEY,
-                        default=self._config_entry.data.get(CONF_CLOUD_API_KEY, ""),
-                    ): str,
-                    vol.Required(
-                        CONF_CLOUD_MODEL,
-                        default=self._config_entry.data.get(CONF_CLOUD_MODEL, "gpt-4o"),
-                    ): str,
-                }
-            )
-
+            self._new = {CONF_AI_MODE: user_input[CONF_AI_MODE]}
+            if user_input[CONF_AI_MODE] == AI_MODE_NONE:
+                return self.async_create_entry(title="", data=self._new)
+            if user_input[CONF_AI_MODE] == AI_MODE_LOCAL:
+                return await self.async_step_local()
+            return await self.async_step_cloud()
         return self.async_show_form(
-            step_id="init",
-            data_schema=data_schema,
-            errors=errors,
-        )
+            step_id="init", data_schema=_mode_schema(self._current().get(CONF_AI_MODE, AI_MODE_NONE)))
+
+    async def async_step_local(self, user_input=None):
+        """Local AI settings."""
+        cur = self._current()
+        errors = {}
+        if user_input is not None:
+            errors = _local_errors(user_input)
+            if not errors:
+                if not user_input.get(CONF_LOCAL_API_KEY) and cur.get(CONF_LOCAL_API_KEY):
+                    user_input[CONF_LOCAL_API_KEY] = cur[CONF_LOCAL_API_KEY]
+                return self.async_create_entry(title="", data={**self._new, **user_input})
+        return self.async_show_form(step_id="local", data_schema=_local_schema(cur), errors=errors)
+
+    async def async_step_cloud(self, user_input=None):
+        """Cloud AI settings."""
+        cur = self._current()
+        have_key = bool(cur.get(CONF_CLOUD_API_KEY))
+        errors = {}
+        if user_input is not None:
+            errors = _cloud_errors(user_input, have_key)
+            if not errors:
+                if not user_input.get(CONF_CLOUD_API_KEY) and have_key:
+                    user_input[CONF_CLOUD_API_KEY] = cur[CONF_CLOUD_API_KEY]
+                return self.async_create_entry(title="", data={**self._new, **user_input})
+        return self.async_show_form(step_id="cloud", data_schema=_cloud_schema(cur, not have_key),
+                                    errors=errors)

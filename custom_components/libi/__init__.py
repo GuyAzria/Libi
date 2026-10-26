@@ -39,7 +39,7 @@ _PANEL_JS = "libi-panel.js"
 _PANEL_ELEMENT = "libi-panel"
 # One version number for the whole integration. The panel and every module it imports are served
 # with this string, so the browser can never mix an old file with a new one.
-LIBI_VERSION = "3.34.0"
+LIBI_VERSION = "3.36.0"
 
 # [CHANGED v3.15.2] The frontend used to be served from /local/libi. /local is Home Assistant's own
 # alias for the config/www folder and it is registered before any custom integration, so if a folder

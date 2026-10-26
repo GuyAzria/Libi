@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Set up LIBI",
-        "description": "LIBI adds a ladder logic editor for your automations to the sidebar. Choose whether it may use an AI model.",
+        "description": "LIBI adds a ladder logic editor for your automations to the sidebar. Choose whether its AI chat may use an AI model.",
         "data": {
           "ai_mode": "AI mode"
         }
@@ -13,20 +13,27 @@
         "description": "The address and model of a local LLM server, for example Ollama.",
         "data": {
           "local_url": "Server URL",
-          "local_model": "Model"
+          "local_model": "Model",
+          "local_api_key": "API key (optional)"
         }
       },
       "cloud": {
-        "title": "Cloud API",
-        "description": "The API key and model of a cloud AI service.",
+        "title": "Cloud AI",
+        "description": "A cloud AI service that offers the OpenAI chat completions API: Google Gemini, OpenAI, or another compatible service.",
         "data": {
+          "cloud_provider": "Provider",
           "cloud_api_key": "API key",
-          "cloud_model": "Model"
+          "cloud_model": "Model",
+          "cloud_base_url": "API address"
+        },
+        "data_description": {
+          "cloud_model": "For example gemini-2.5-flash or gpt-4o.",
+          "cloud_base_url": "Only for Other. Leave empty for Gemini and OpenAI."
         }
       }
     },
     "error": {
-      "invalid_url": "Enter the server URL.",
+      "invalid_url": "Enter the address.",
       "invalid_model": "Enter a model name.",
       "invalid_key": "Enter the API key."
     },
@@ -37,13 +44,52 @@
   "options": {
     "step": {
       "init": {
-        "title": "LIBI options",
+        "title": "LIBI AI settings",
+        "description": "The model the AI chat in the LIBI panel uses.",
+        "data": {
+          "ai_mode": "AI mode"
+        }
+      },
+      "local": {
+        "title": "Local AI",
+        "description": "The address and model of a local LLM server, for example Ollama.",
         "data": {
           "local_url": "Server URL",
           "local_model": "Model",
-          "cloud_api_key": "API key",
-          "cloud_model": "Model"
+          "local_api_key": "API key (optional)"
+        },
+        "data_description": {
+          "local_api_key": "Leave empty to keep the key that is already stored."
         }
+      },
+      "cloud": {
+        "title": "Cloud AI",
+        "description": "A cloud AI service that offers the OpenAI chat completions API: Google Gemini, OpenAI, or another compatible service.",
+        "data": {
+          "cloud_provider": "Provider",
+          "cloud_api_key": "API key",
+          "cloud_model": "Model",
+          "cloud_base_url": "API address"
+        },
+        "data_description": {
+          "cloud_api_key": "Leave empty to keep the key that is already stored.",
+          "cloud_model": "For example gemini-2.5-flash or gpt-4o.",
+          "cloud_base_url": "Only for Other. Leave empty for Gemini and OpenAI."
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Enter the address.",
+      "invalid_model": "Enter a model name.",
+      "invalid_key": "Enter the API key."
+    }
+  },
+  "selector": {
+    "cloud_provider": {
+      "options": {
+        "gemini": "Google Gemini",
+        "openai": "OpenAI",
+        "custom": "Other (OpenAI-compatible)"
       }
     }
   }

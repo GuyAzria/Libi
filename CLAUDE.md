@@ -27,7 +27,12 @@ Where the two differ, this file is the authority for LIBI.
 - Projects (groups of nets) are stored as JSON under the Home Assistant config
   folder (`PROJECT_DIR_NAME`), and the parsed tree in `libi_ast.json`.
 - Frontend: `custom_components/libi/frontend/` - `libi-panel.js`,
-  `libi-core.js`, `libi-svg.js`, `libi-css.js`, `libi-online.js`, `i18n.js`.
+  `libi-core.js`, `libi-svg.js`, `libi-css.js`, `libi-online.js`, `libi-ai.js`
+  (the AI chat), `i18n.js`, `libi-logo.png`.
+- AI chat backend: `ai.py` (plan ▸ deterministic candidate search ▸ build ▸
+  validation) and the `libi/ai_status`, `libi/ai_plan`, `libi/ai_build`
+  commands in `websocket.py`. It only ever returns a DRAFT net; RULES 7-11 are
+  implemented there - read its module docstring before changing it.
 - Distributed through HACS as a CUSTOM repository (it is NOT in the HACS
   default store). `hacs.json` has `"zip_release": true`, `"filename":
   "libi.zip"`: HACS installs the `libi.zip` asset attached to a GitHub
@@ -101,9 +106,11 @@ The same gate is in VS Code under *Terminal ▸ Run Task*: **HA: Full Check**
 Home Organizer tools (copied 2026-10-26). They are generic; if one is improved
 in either project, copy it to the other.
 
-For Home Assistant integration changes, hassfest and the HACS Action run in
-`.github/workflows/validate.yml` - but only on GitHub, after a push. Locally
-they do not run; say so in the report rather than implying they ran.
+For Home Assistant integration changes, hassfest and the HACS Action run as
+two workflows, `.github/workflows/hassfest.yml` and `.github/workflows/hacs.yml`
+(the hacs/default pull request links to a run of each) - but only on GitHub,
+after a push. Locally they do not run; say so in the report rather than
+implying they ran.
 
 **Tests** (`tests/`, pytest-homeassistant-custom-component against a real Home
 Assistant; dependencies pinned in `requirements_test.txt`) run in CI on Linux.
@@ -120,14 +127,19 @@ The shims only make Home Assistant importable on Windows (`fcntl`,
 `resource`) and let the Proactor event loop open its socketpair; they are
 never used in CI.
 
+**Panel behaviour tests** (`tests/frontend/test_*.html`) run the real JS
+modules in headless Chrome or Edge, both installed here, against canned
+websocket answers: `python tools/run_frontend_tests.py`. This replaces the Jint
+approach for new frontend code - add a page for every UI behaviour you change.
+
 Never replace a failing validation with a weaker validation.
 
 ## 3-BASELINE — The gate passes
 
 Measured 2026-10-26 after the HACS-readiness work (gate v1.0.6):
-**BLOCKER 0, ERROR 0, HOT_WARN 0, WARN 1, INFO 4.** ruff: 1 finding (F401
-`AI_MODE_CLOUD` in `config_flow.py`, left on purpose - the AI config flow is
-not touched until the AI chat feature is built). pytest: 25 passed.
+**BLOCKER 0, ERROR 0, HOT_WARN 0, WARN 1, INFO 3.** ruff: clean.
+pytest: 48 passed. Panel behaviour (`tools/run_frontend_tests.py`): 35 passed.
+(Updated 2026-10-26 with the AI chat, LIBI_VERSION 3.36.0.)
 
 The remaining WARN is deliberate: `yaml` is not listed in the manifest
 requirements because PyYAML ships with Home Assistant itself, and declaring it
@@ -657,14 +669,13 @@ the brand folder, the missing workflows and tests. Still open:
   white ladder in `icon.png` touches the image edge. Home Assistant 2026.3+
   shows integration icons from this folder; on older versions (down to the
   2025.1 floor) users see no icon.
-- The options flow saves into `entry.options`, but nothing reads
-  `entry.options` - changing the AI settings there has no effect. Left as is
-  until the AI chat feature (the user asked not to touch the AI config yet).
 - The `Deploy LIBI to Home Assistant` task copies with `xcopy` and never
   deletes, so files removed from the repository (the stale copies, the old
   brand images) stay on `H:` until removed there by hand - only on request.
-- The panel has no behavioural (Jint) test; frontend fixes are verified by the
-  gate's tree-sitter scan and the syntax check only.
+- Only the AI chat has a behavioural browser test. The rest of the panel is
+  verified by the gate's tree-sitter scan and the syntax check only.
+- The AI chat has not yet run against a real model; its prompts are untested
+  with Gemini and Ollama and may need tuning.
 
 ---
 
