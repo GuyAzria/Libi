@@ -8,6 +8,12 @@
 ![LIBI Interface](image/LIBI2.png)
 ![LIBI Interface](image/LIBI1.png)
 
+## **Why LIBI**
+
+I have been a PLC programmer and IT professional for 25 years.
+
+When I moved my home to Home Assistant, the one thing I really missed was **Ladder logic**: the language I think in when I design control logic. Home Assistant has YAML, the visual editor and Node-RED, but no Ladder. So I built LIBI.
+
 ## **Not a Node-RED Replacement**
 
 **Please note:** LIBI is *not* intended to replace Node-RED. It is simply an alternative approach to writing automations in Home Assistant. It is specifically designed for electricians, PLC (Programmable Logic Controller) programmers, or anyone who prefers a straightforward, graphical way to learn and write logic.
