@@ -47,6 +47,10 @@ while 17 real unescaped values per panel copy went unreported.
   "main" != the manifest version. It now runs only when GITHUB_REF_TYPE is
   "tag", or when GITHUB_REF_NAME is set by hand with no type.
 
+* JSON.stringify is no longer treated as safe in an HTML template. JSON does
+  not escape < or >, so a value with </textarea> in it broke out of a
+  textarea and ran; the full-panel browser test caught it.
+
 What changed in 1.0.5, and why
 ------------------------------
 Version 1.0.4 reported 66 BLOCKERs, 25 HOT_WARNs and 1 ERROR on a codebase
@@ -148,7 +152,9 @@ UNTRUSTED_EXPR = re.compile(
     r"\s*(?:\??\.(?!(?:id|x|y|w|h|length)\b)|\[)"
     r"|^\s*(?:cleanSubName|translatedZone|translatedSub|subName|zoneName"
     r"|label|title|name|barcode|qty|q|value|text|content|query"
-    r"|full|source|service|alias|entity|entityId|description|desc)\s*$")
+    r"|full|source|service|alias|entity|entityId|description|desc)\s*$"
+    # JSON of anything is data: it does not escape < or >.
+    r"|^\s*JSON\.stringify\(")
 
 # Values that are ours: shipped SVG constants, our own translation strings
 # (which legitimately contain markup for right-to-left layout), and helper
@@ -772,7 +778,7 @@ _HTML_MARKUP = re.compile(rb"<\s*/?\s*[a-zA-Z]")
 _SAFE_CALLEE = re.compile(
     r"(?:^|\.)(?:_?esc|escapeHtml|_escape|escapeAttr|_?t|join|toFixed|getStyles"
     r"|Number|parseInt|parseFloat|Math\.\w+|\w*Html|\w*Icon|\w*Svg"
-    r"|_formatDisplayVal|JSON\.stringify)$")
+    r"|_formatDisplayVal)$")
 _SAFE_MEMBER = re.compile(r"^ICONS\.|^MDI\.|\.length$|SVG|Html$|Icon$|Svg$")
 
 

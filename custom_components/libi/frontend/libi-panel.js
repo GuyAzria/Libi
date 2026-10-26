@@ -14,20 +14,20 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.37.0
+ * v3.38.0
  */
-// [ADDED v3.36.0 | 2026-10-26] Purpose: The AI chat (libi-ai.js) under the Inspector. It is mounted
-//   after every render and adds the draft net it gets from the backend like any new net.
 // [ADDED v3.37.0 | 2026-10-26] Purpose: Imports at 3.37.0, for the chat's privacy line.
-import { LibiCore } from './libi-core.js?v=3.37.0';
-import { getStyles } from './libi-css.js?v=3.37.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.37.0';
-import { LibiOnline } from './libi-online.js?v=3.37.0';
-import { LibiAiChat } from './libi-ai.js?v=3.37.0';
+// [ADDED v3.38.0 | 2026-10-26] Purpose: The Terminal / Logs view escapes the nets it shows. A net name
+//   with </textarea> in it (from an automation alias) closed the box and ran as HTML.
+import { LibiCore } from './libi-core.js?v=3.38.0';
+import { getStyles } from './libi-css.js?v=3.38.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.38.0';
+import { LibiOnline } from './libi-online.js?v=3.38.0';
+import { LibiAiChat } from './libi-ai.js?v=3.38.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.37.0';
+export const LIBI_BUILD = '3.38.0';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -503,7 +503,7 @@ class LibiPanel extends HTMLElement {
             const items = levels.map(l => `<div class="auto-item level-item" data-level="${l.id}"><div class="auto-item-name">${l.icon} ${l.title}</div><div class="auto-item-id">${l.desc}</div></div>`).join('');
             modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 540px;"><h2 class="modal-title">What kind of logic do you want to create?</h2><p style="font-size:13px; color:var(--secondary-text-color, #757575); margin:0;">The kind cannot be guessed later, so LIBI asks for it now.</p><div class="auto-list" style="max-height:60vh;">${items}</div><div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div></div></div>`;
         } else if (this._modal === 'logs') {
-            modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 800px; max-width: 95vw;"><h2 class="modal-title">🐞 System Logs & AST Terminal</h2><textarea readonly rows="20" style="width:100%; font-family:monospace; font-size:12px; padding:12px; box-sizing:border-box; background:#1e1e1e; color:#00ff00; border:none; border-radius:4px; outline:none; resize:none;">${JSON.stringify(this.core.nets, null, 2)}</textarea><div class="modal-actions"><button class="btn btn-primary" id="closeModalBtn">Close Terminal</button></div></div></div>`;
+            modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 800px; max-width: 95vw;"><h2 class="modal-title">🐞 System Logs & AST Terminal</h2><textarea readonly rows="20" style="width:100%; font-family:monospace; font-size:12px; padding:12px; box-sizing:border-box; background:#1e1e1e; color:#00ff00; border:none; border-radius:4px; outline:none; resize:none;">${this._esc(JSON.stringify(this.core.nets, null, 2))}</textarea><div class="modal-actions"><button class="btn btn-primary" id="closeModalBtn">Close Terminal</button></div></div></div>`;
         }
 
         const allCollapsed = this.core.nets.length > 0 && this.core.nets.every(n => n.collapsed);

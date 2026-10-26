@@ -1,0 +1,172 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-10-26] Purpose: XSS behaviour test of the WHOLE panel (CLAUDE.md RULE 15).
+  Every field a user can type into, every name that comes from Home Assistant and every value read
+  back from YAML gets attack strings; after each render nothing may execute and no element or
+  inline handler may appear that the panel did not create itself.
+-->
+<html><head><meta charset="utf-8"><title>libi panel xss test</title></head>
+<body>
+<pre id="out">RUNNING</pre>
+<script type="module">
+// Static import: a dynamic import() never settles under --virtual-time-budget.
+import '../../custom_components/libi/frontend/libi-panel.js';
+const results = [];
+const check = (name, cond, detail = '') => results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+window.__pwn = [];
+// A headless page blocks on a dialog, so the panel's alert/confirm are recorded instead.
+window.__dialogs = [];
+window.alert = (m) => { window.__dialogs.push(String(m)); };
+window.confirm = (m) => { window.__dialogs.push(String(m)); return false; };
+window.prompt = () => null;
+const step = (m) => console.log('[xss-test] ' + m);
+
+const PAYLOADS = [
+  '<img src=x onerror="window.__pwn.push(1)">',
+  '"><svg onload="window.__pwn.push(2)"></svg>',
+  '<script>window.__pwn.push(3)<\/script>',
+  "'><img src=x onerror=window.__pwn.push(4)>",
+  '</textarea><img src=x onerror="window.__pwn.push(5)">',
+];
+const P = PAYLOADS.join(' ');
+
+// Elements the panel itself creates, so they are not reported as injected.
+function injected(root) {
+  const found = [];
+  const walk = (node) => {
+    for (const el of node.querySelectorAll('*')) {
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'script') found.push('script');
+      if (tag === 'img' && !el.classList.contains('hdr-logo')) found.push('img');
+      if (tag === 'iframe' || tag === 'object' || tag === 'embed') found.push(tag);
+      for (const a of el.attributes) if (/^on/i.test(a.name)) found.push(`${tag}[${a.name}]`);
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+  };
+  walk(root);
+  return found;
+}
+
+const states = {
+  'input_boolean.evil': { entity_id: 'input_boolean.evil', state: 'on', attributes: { friendly_name: P }, last_changed: '', last_updated: '' },
+  'light.evil': { entity_id: 'light.evil', state: 'off', attributes: { friendly_name: P }, last_changed: '', last_updated: '' },
+  'sensor.evil': { entity_id: 'sensor.evil', state: P, attributes: { friendly_name: P, unit_of_measurement: P }, last_changed: '', last_updated: '' },
+};
+const hass = {
+  states, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true, name: P }, localize: (k) => k,
+  callService: async () => {},
+  connection: {
+    sendMessagePromise: async (m) => {
+      switch (m.type) {
+        case 'libi/project_list': return { projects: [{ slug: 'evil', name: P, nets: 1, updated: P }] };
+        case 'libi/project_open': return { slug: 'evil', name: P, nets: [], stats: {}, updated: P };
+        case 'libi/load_automation': return { nets: [] };
+        case 'libi/list_automations': return { automations: [{ id: P, name: P }] };
+        case 'libi/preview_yaml': return { yaml: P };
+        case 'libi/ai_status': return { configured: false };
+        default: return [];
+      }
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+
+try {
+  localStorage.clear();
+  step('imported');
+  const panel = document.createElement('libi-panel');
+  document.body.appendChild(panel);
+  step('appended');
+  panel.hass = hass;
+  step('hass set');
+  await sleep(300);
+  step('const sr = panel.shadowRoot;');
+  const sr = panel.shadowRoot;
+  check('panel rendered', !!(sr && sr.querySelector('.header')));
+
+  // A net with an attack string in every field it has.
+  const core = panel.core;
+  const net = core.mkNet(P, P, 'automation');
+  net.ha_id = P;
+  net.rungs[0].comment = P;
+  const els = [];
+  const add = (type, label, extra = {}) => { const e = core.mkEl(type, label); Object.assign(e, extra); els.push(e); return e; };
+  add('contact_no', P, { structuralError: P });
+  add('contact_nc', P);
+  add('cmp_gt', '', { sourceA: P, sourceB: P, isTrigger: true });
+  add('cmp_rng', '', { sourceA: P, sourceB: P, sourceC: P });
+  add('math_add', '', { sourceA: P, sourceB: P, target: P });
+  add('timer_ton', P);
+  add('move', '', { source: P, target: P, mode: 'value' });
+  add('move', '', { source: P, target: P, title: P, tts: P, mode: 'both' });
+  add('coil', P, { service: P });
+  add('coil_s', P);
+  net.rungs[0].elements = els;
+  net.vars = ['input_boolean.evil', 'light.evil', 'sensor.evil'];
+  core.nets = [net];
+  core.syncCounters();
+  panel._project = { slug: 'evil', name: P };
+
+  const scan = (label) => {
+    const bad = injected(sr);
+    check(`${label}: nothing injected`, bad.length === 0, bad.join(', '));
+  };
+
+  step('panel._render(); await sleep(5');
+  panel._render(); await sleep(50);
+  scan('canvas with attack strings');
+  check('attack text is shown as text', sr.textContent.includes('<img src=x onerror'), 'payload not visible');
+
+  for (const e of els) {
+    panel._inspectedEl = { netId: net.id, rungId: net.rungs[0].id, elId: e.id };
+    panel._render(); await sleep(20);
+    scan(`inspector of ${e.type}${e.mode ? ' ' + e.mode : ''}`);
+  }
+  panel._inspectedEl = null;
+
+  step('panel._inspectedNetYaml = net.');
+  panel._inspectedNetYaml = net.id; panel._previewYamlContent = P;
+  panel._render(); await sleep(20);
+  scan('YAML preview');
+  panel._inspectedNetYaml = null;
+
+  step('panel._automationList =');
+  panel._automationList = [{ id: P, name: P }]; panel._modal = 'list_automations';
+  panel._render(); await sleep(20);
+  scan('automation list');
+
+  panel._projectList = [{ slug: 'evil', name: P, nets: 1, updated: P }];
+  for (const modal of ['project_open', 'projects', 'project_list', 'pick_level', 'logs']) {
+    panel._modal = modal; panel._render(); await sleep(20);
+    scan(`modal ${modal}`);
+  }
+  panel._modal = null;
+
+  step('for (const tab of');
+  for (const tab of ['helper', 'vars', 'search', 'ALL']) {
+    panel._varsTab = tab; panel._varsQuery = P; panel._render(); await sleep(20);
+    scan(`variables bar ${tab}`);
+  }
+
+  // A rename through the input, the way a user types it.
+  const nameInput = sr.querySelector('.net-name-input');
+  if (nameInput) {
+    nameInput.value = P; nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+    panel._render(); await sleep(20);
+    scan('after typing a net name');
+  }
+
+  step('await sleep(300);  // let');
+  await sleep(300);  // let any lazily inserted image fire onerror
+  check('no attack string ran anywhere', window.__pwn.length === 0, JSON.stringify(window.__pwn));
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>
