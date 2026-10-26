@@ -1,0 +1,50 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up LIBI",
+        "description": "LIBI adds a ladder logic editor for your automations to the sidebar. Choose whether it may use an AI model.",
+        "data": {
+          "ai_mode": "AI mode"
+        }
+      },
+      "local": {
+        "title": "Local AI",
+        "description": "The address and model of a local LLM server, for example Ollama.",
+        "data": {
+          "local_url": "Server URL",
+          "local_model": "Model"
+        }
+      },
+      "cloud": {
+        "title": "Cloud API",
+        "description": "The API key and model of a cloud AI service.",
+        "data": {
+          "cloud_api_key": "API key",
+          "cloud_model": "Model"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Enter the server URL.",
+      "invalid_model": "Enter a model name.",
+      "invalid_key": "Enter the API key."
+    },
+    "abort": {
+      "single_instance_allowed": "LIBI is already set up. Only one instance is allowed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "LIBI options",
+        "data": {
+          "local_url": "Server URL",
+          "local_model": "Model",
+          "cloud_api_key": "API key",
+          "cloud_model": "Model"
+        }
+      }
+    }
+  }
+}

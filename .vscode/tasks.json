@@ -1,3 +1,4 @@
+// Version 1.1.0
 {
     "version": "2.0.0",
     "tasks": [
@@ -15,6 +16,62 @@
             "group": {
                 "kind": "build",
                 "isDefault": true
+            }
+        },
+        // [ADDED v1.1.0 | 2026-10-26] Purpose: The same Home Assistant checks as Home Organizer -
+        //   tools/ha_full_check.py, copied from that project. PYTHONIOENCODING keeps the report's
+        //   symbols from failing on a Windows console code page.
+        {
+            "label": "HA: Full Check",
+            "type": "shell",
+            "command": "python",
+            "args": ["tools/ha_full_check.py", "--root", ".", "--json", "reports/ha-full-check.json"],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": { "PYTHONIOENCODING": "utf-8" }
+            },
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "HA: Full Check + External Tools",
+            "type": "shell",
+            "command": "python",
+            "args": ["tools/ha_full_check.py", "--root", ".", "--run-external", "--json", "reports/ha-full-check.json"],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": { "PYTHONIOENCODING": "utf-8" }
+            },
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "HA: Full Check + Pytest",
+            "type": "shell",
+            "command": "python",
+            "args": ["tools/ha_full_check.py", "--root", ".", "--run-external", "--run-tests", "--json", "reports/ha-full-check.json"],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": { "PYTHONIOENCODING": "utf-8" }
+            },
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "HA: Full Check (auto on workspace open)",
+            "type": "shell",
+            "command": "python",
+            "args": ["tools/ha_full_check.py", "--root", ".", "--json", "reports/ha-full-check.json"],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": { "PYTHONIOENCODING": "utf-8" }
+            },
+            "problemMatcher": [],
+            "runOptions": {
+                "runOn": "folderOpen"
             }
         }
     ]

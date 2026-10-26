@@ -11,6 +11,7 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
+# [ADDED v3.34.0 | 2026-10-26] Purpose: Removed an unused local in the service branch.
 # [ADDED v1.69.0] Backend parser updated to correctly map native device/state triggers into isTrigger=True Contacts and CMPs without using proprietary blocks.
 # [ADDED v3.6.0 | 2026-08-24] Purpose: Three rules that the import now keeps without exception.
 #   1. No pin is ever left empty and no registry id is ever shown. Every target is resolved through
@@ -1210,7 +1211,6 @@ def _action_to_elements(a, ids, trig_map, src):
     svc = norm_service(a)
     if svc:
         domain = svc.split(".")[0]
-        name = svc.split(".")[-1]
         # [CHANGED v3.6.0] One resolution for every action, so a device, an area or a label target
         # shows a real name instead of leaving the pin empty.
         ent, target_kind = target_label(ids, a, domain_hint=domain)

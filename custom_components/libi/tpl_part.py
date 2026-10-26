@@ -16,6 +16,7 @@
 #   or becomes parallel branches, and becomes a series, a comparison becomes a CMP block and the
 #   arithmetic inside a comparison becomes a MATH block feeding it.
 #   The original text still travels in raw, so an untouched condition compiles back to itself.
+# [ADDED v3.34.0 | 2026-10-26] Purpose: Removed an unused local in parse_args.
 import re
 
 # ---------------------------------------------------------------------------------------
@@ -191,7 +192,6 @@ class _P:
             return None, ""
         args = []
         raw = []
-        depth = 0
         if self.peek()[1] == ")":
             self.take()
             return args, ""

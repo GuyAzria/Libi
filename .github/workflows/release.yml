@@ -1,0 +1,37 @@
+# hacs.json has "zip_release": true, so HACS installs the libi.zip asset of a release and never the
+# repository files. This builds that zip from the integration folder - its CONTENT at the zip root,
+# no __pycache__ - and attaches it to the release that was just published.
+name: Release asset
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  zip:
+    name: Attach libi.zip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches manifest.json
+        run: |
+          version=$(python3 -c "import json;print(json.load(open('custom_components/libi/manifest.json'))['version'])")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "manifest.json version $version does not match tag $GITHUB_REF_NAME"
+            exit 1
+          fi
+      - name: Build libi.zip
+        run: |
+          cd custom_components/libi
+          find . -name __pycache__ -type d -exec rm -rf {} +
+          zip -r -X ../../libi.zip . -x "*.pyc" ".ruff_cache/*"
+          cd ../..
+          unzip -l libi.zip
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" libi.zip --clobber

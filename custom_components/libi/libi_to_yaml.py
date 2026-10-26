@@ -11,6 +11,7 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
+# [ADDED v3.34.0 | 2026-10-26] Purpose: Removed unused imports; zip(strict=False) made explicit.
 # [ADDED v1.69.0] Output perfectly formed logic for standard triggers, retrieving native YAML dictionary if present via raw_trigger.
 # [ADDED v3.5.0 | 2026-08-24] Purpose: A net now carries a level. automation compiles to the
 #   automation schema exactly as before, script compiles to alias plus sequence, and scene
@@ -26,9 +27,9 @@ import logging
 import re
 
 from .yaml_to_libi import (
-    norm_service, norm_entity, norm_kind, domain_of, short,
-    ON_STATES, SET_VALUE_SERVICES, element_sig, EVENT_TRIGGER_KEYS, target_spec,
-    target_summary, hms_to_seconds,
+    norm_service, norm_kind, domain_of, short,
+    element_sig, EVENT_TRIGGER_KEYS, target_spec,
+    hms_to_seconds,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -1454,7 +1455,8 @@ def verify_round_trip(hass, automation_dict):
         elif isinstance(a, list) and isinstance(b, list):
             if len(a) != len(b):
                 issues.append(f"length {path}: {len(a)} to {len(b)}")
-            for i, (x, y) in enumerate(zip(a, b)):
+            # The length difference is reported above; the common part is compared here.
+            for i, (x, y) in enumerate(zip(a, b, strict=False)):
                 compare(x, y, f"{path}[{i}]")
         elif a != b:
             issues.append(f"changed {path}: {short(a, 40)} to {short(b, 40)}")

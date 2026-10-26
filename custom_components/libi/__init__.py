@@ -11,12 +11,21 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v1.0.0 | 2026-08-09] Purpose: Register ladder_ha integration and set up panel/API routes.
-# v3.3.0
+"""The LIBI integration: a ladder editor panel for Home Assistant automations."""
+# v3.34.0
+# [ADDED v3.3.0 | 2026-08-20] Purpose: Renamed LADDER_VERSION to LIBI_VERSION.
+# [ADDED v3.34.0 | 2026-10-26] Purpose: The static path and the websocket commands are registered once
+#   in async_setup, so reloading the config entry no longer fails on a route that already exists. The
+#   panel is admin only and is removed through the frontend API on unload, the entry data lives on
+#   entry.runtime_data, and CONFIG_SCHEMA declares that LIBI is set up from the UI only.
 import logging
 import os
-from homeassistant.core import HomeAssistant
+
+from homeassistant.components import frontend, panel_custom
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN, PANEL_URL, PANEL_TITLE, PANEL_ICON
@@ -24,14 +33,13 @@ from . import websocket as ws_module
 
 _LOGGER = logging.getLogger(__name__)
 
-# [ADDED v1.5.1 | 2026-08-10] Purpose: Filename of the custom panel JS served to the browser.
-# [ADDED v3.2.0 | 2026-08-20] Purpose: Updated filenames to reflect LIBI rebranding.
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 _PANEL_JS = "libi-panel.js"
 _PANEL_ELEMENT = "libi-panel"
-# [ADDED v2.0.0 | 2026-08-17] One version number for the whole integration. The panel and every module
-# it imports are served with this string, so the browser can never mix an old file with a new one.
-# [ADDED v3.3.0 | 2026-08-20] Purpose: Renamed LADDER_VERSION to LIBI_VERSION.
-LIBI_VERSION = "3.33.0"
+# One version number for the whole integration. The panel and every module it imports are served
+# with this string, so the browser can never mix an old file with a new one.
+LIBI_VERSION = "3.34.0"
 
 # [CHANGED v3.15.2] The frontend used to be served from /local/libi. /local is Home Assistant's own
 # alias for the config/www folder and it is registered before any custom integration, so if a folder
@@ -39,49 +47,43 @@ LIBI_VERSION = "3.33.0"
 # no update could ever reach the browser. A private prefix cannot collide with anything.
 _STATIC_URL = f"/{DOMAIN}_static"
 
+LibiConfigEntry = ConfigEntry[dict]
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the LIBI for HA component."""
-    _LOGGER.info("Setting up LIBI for HA")
-    hass.data.setdefault(DOMAIN, {})
+    """Register what lives for the whole run: the static files and the websocket commands.
+
+    aiohttp refuses a route that is already registered, so doing this per config entry made every
+    reload of the entry fail."""
+    await hass.http.async_register_static_paths([
+        StaticPathConfig(
+            url_path=_STATIC_URL,
+            path=os.path.join(os.path.dirname(__file__), "frontend"),
+            cache_headers=False,
+        )
+    ])
+    ws_module.async_register_websockets(hass)
     return True
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up LIBI for HA from a config entry."""
-    _LOGGER.info("Setting up LIBI for HA entry: %s", entry.entry_id)
 
-    hass.data[DOMAIN][entry.entry_id] = entry.data
-    frontend_path = os.path.join(os.path.dirname(__file__), "frontend")
-    
-    from homeassistant.components.http import StaticPathConfig
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(
-            url_path=_STATIC_URL,
-            path=frontend_path,
-            cache_headers=False,
-        )]
-    )
-
-    from homeassistant.components import panel_custom
-    # [ADDED v3.2.0 | 2026-08-20] Purpose: Replaced PANEL_TITLE with "LIBI" to reflect the new brand in the HA sidebar.
+async def async_setup_entry(hass: HomeAssistant, entry: LibiConfigEntry) -> bool:
+    """Set up LIBI from a config entry: show the panel."""
+    entry.runtime_data = dict(entry.data)
     await panel_custom.async_register_panel(
         hass,
         webcomponent_name=_PANEL_ELEMENT,
         frontend_url_path=PANEL_URL,
-        sidebar_title="LIBI",
+        sidebar_title=PANEL_TITLE,
         sidebar_icon=PANEL_ICON,
         module_url=f"{_STATIC_URL}/{_PANEL_JS}?v={LIBI_VERSION}",
-        require_admin=False,
+        # [CHANGED v3.34.0] Admin only, like Home Assistant's own automation editor: the panel
+        # writes automations.yaml, scripts.yaml and scenes.yaml.
+        require_admin=True,
     )
-
-    ws_module.async_register_websockets(hass)
     return True
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    _LOGGER.info("Unloading LIBI for HA entry: %s", entry.entry_id)
 
-    if entry.entry_id in hass.data[DOMAIN]:
-        hass.data[DOMAIN].pop(entry.entry_id)
-
-    hass.data.get("frontend_panels", {}).pop(PANEL_URL, None)
+async def async_unload_entry(hass: HomeAssistant, entry: LibiConfigEntry) -> bool:
+    """Unload a config entry: remove the panel. The files LIBI wrote stay where they are."""
+    frontend.async_remove_panel(hass, PANEL_URL)
     return True

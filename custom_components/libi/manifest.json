@@ -1,14 +1,21 @@
 {
   "domain": "libi",
   "name": "LIBI",
-  "version": "2026.9.9",
-  "config_flow": true,
-  "documentation": "https://github.com/GuyAzria/Libi",
-  "issue_tracker": "https://github.com/GuyAzria/Libi/issues",
-  "dependencies": [],
   "codeowners": [
     "@GuyAzria"
   ],
+  "config_flow": true,
+  "dependencies": [
+    "frontend",
+    "http",
+    "panel_custom",
+    "websocket_api"
+  ],
+  "documentation": "https://github.com/GuyAzria/Libi",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/GuyAzria/Libi/issues",
   "requirements": [],
-  "iot_class": "local_push"
+  "single_config_entry": true,
+  "version": "2026.10.0"
 }

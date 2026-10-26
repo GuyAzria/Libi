@@ -11,50 +11,42 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v1.69.0] Added preview_yaml command to generate YAML strings on the fly for the UI sidebar.
-# [ADDED v2.0.0 | 2026-08-17] Purpose: Import now returns a round trip verification next to the net,
-#   so an automation that would not survive editing is flagged before the user touches it, and a
-#   standalone verify command lets the panel check every automation without importing it.
-# [ADDED v3.2.0 | 2026-08-20] Purpose: Updated imports to point to the renamed libi_to_yaml file.
-# [ADDED v3.3.0 | 2026-08-20] Purpose: Fully migrated all internal references, file outputs, and API routes from ladder_ha to libi.
-# [ADDED v3.5.0 | 2026-08-24] Purpose: A net now compiles by its level. Automations, scripts and
-#   scenes are three different schemas, and each one is merged into the very file Home Assistant's
-#   own editor writes: automations.yaml, scripts.yaml and scenes.yaml. Every default installation
-#   already includes those three from configuration.yaml, so LIBI needs no configuration change and
-#   no include line. Entries LIBI wrote before are replaced, everything the user wrote by hand is
-#   left alone, and the matching reload service is called so nothing needs a restart.
-# [ADDED v3.14.0 | 2026-08-26] Purpose: A workspace is now a named project stored as a .libi file.
-#   Opening "kitchen" and saving it must never touch what "garden" wrote, so the record of which
-#   entries in Home Assistant's files belong to LIBI is kept per project rather than globally. A
-#   project remembers every net exactly as it was left, unfinished logic included, and which
-#   automation each net was loaded from. Deleting a project deletes only the .libi file.
 # [ADDED v3.15.0 | 2026-08-26] Purpose: Opening a project reloads. A net anchored to an automation is
 #   read fresh out of automations.yaml and converted to ladder again, so whichever project is opened
 #   always shows the newest version and the same automation may sit in several projects without any
 #   of them going stale. A net with no anchor is a draft that no YAML could hold, so it comes back
 #   from the drawing saved in the .libi file, and so does an anchored net whose automation has since
 #   been deleted from Home Assistant, which is then flagged as orphaned.
-import logging
+# [ADDED v3.34.0 | 2026-10-26] Purpose: Every command is admin only and has a strict schema, a
+#   project slug can no longer name a path outside the projects folder, a save refuses to write
+#   anything when one of Home Assistant's files cannot be read, files are written atomically under
+#   one lock, and deleting an automation follows the same read, merge and reload rules as a save.
+#   Saving a project with a script net no longer writes the project under the script's name.
+import asyncio
 import json
+import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
-from typing import Any, Optional, Type
+from typing import Any, Optional
+
+import voluptuous as vol
 import yaml
 
 from homeassistant.components import websocket_api
-from homeassistant.core import HomeAssistant
-import voluptuous as vol
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.util.file import write_utf8_file_atomic
 
 from .libi_to_yaml import ast_to_yaml, verify_round_trip, net_level, slugify
 from .yaml_to_libi import yaml_to_ast
 
-try:
-    from pydantic import BaseModel, Field, ValidationError, root_validator
-except ImportError:
-    from pydantic.v1 import BaseModel, Field, ValidationError, root_validator
-
 _LOGGER = logging.getLogger(__name__)
+
+# [ADDED v3.34.0] Every read-modify-write of automations.yaml, scripts.yaml, scenes.yaml and the
+# project files runs in the executor, so two saves can overlap. One lock makes each of them whole.
+_FILE_LOCK = threading.Lock()
+
 
 def _get_ast_path(hass: HomeAssistant) -> str: return hass.config.path("libi_ast.json")
 
@@ -83,6 +75,17 @@ def project_slug(name: str, fallback: str = "project") -> str:
         return slugify(name, fallback=fallback)
     return cleaned[:80]
 
+
+def valid_project_slug(slug: str) -> bool:
+    """[ADDED v3.34.0] A slug that arrives from the browser names a file inside the projects folder
+    and nothing else. A separator, a control character or a leading dot is refused rather than
+    cleaned, so "../x" can never be turned into some other file. A file copied in by hand keeps
+    working, spaces and all, because only what could escape the folder is refused."""
+    slug = str(slug or "")
+    return (bool(slug) and len(slug) <= 120 and not slug.startswith(".")
+            and not _UNSAFE_IN_FILENAME.search(slug))
+
+
 def _read_project_sync(hass: HomeAssistant, slug: str) -> Optional[dict]:
     path = _project_path(hass, slug)
     if not os.path.exists(path):
@@ -110,6 +113,8 @@ def _list_projects_sync(hass: HomeAssistant) -> list:
         if not fname.endswith(PROJECT_EXT):
             continue
         slug = fname[: -len(PROJECT_EXT)]
+        if not valid_project_slug(slug):
+            continue
         data = _read_project_sync(hass, slug)
         if data is None:
             continue
@@ -156,8 +161,9 @@ def _migrate_single_ast_sync(hass: HomeAssistant) -> None:
 
 def _write_project_sync(hass: HomeAssistant, slug: str, data: dict) -> None:
     os.makedirs(_get_projects_dir(hass), exist_ok=True)
-    with open(_project_path(hass, slug), "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    # [CHANGED v3.34.0] Atomic, so a crash halfway through cannot leave half a project behind.
+    write_utf8_file_atomic(_project_path(hass, slug),
+                           json.dumps(data, indent=2, ensure_ascii=False))
 
 # [CHANGED v3.5.0] These are the three files Home Assistant's own automation, script and scene
 # editors read and write, and the three a fresh configuration.yaml already includes. Writing here is
@@ -173,9 +179,6 @@ def _get_legacy_yaml_path(hass: HomeAssistant) -> str: return hass.config.path("
 # What an empty net looks like per level. An automation with no actions, a script with no sequence
 # and a scene with no entities are all half drawn rungs and are not written out.
 _LEVEL_BODY_KEY = {"automation": "actions", "script": "sequence", "scene": "entities"}
-
-# Which Home Assistant domain owns each level, used for the reload call after the write.
-_LEVEL_DOMAIN = {"automation": "automation", "script": "script", "scene": "scene"}
 
 def _read_ast_sync(hass: HomeAssistant) -> dict:
     path = _get_ast_path(hass)
@@ -215,8 +218,8 @@ def _write_if_changed_sync(path: str, data, skip_when_empty: bool) -> bool:
                     return False
         except Exception:  # noqa: BLE001
             pass
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(new_text)
+    # [CHANGED v3.34.0] Atomic: Home Assistant never reads a half written automations.yaml.
+    write_utf8_file_atomic(path, new_text)
     return True
 
 def _merge_list_sync(existing: list, mine: list, owned_ids: set) -> list:
@@ -266,8 +269,7 @@ def _migrate_legacy_file_sync(hass: HomeAssistant) -> None:
         with open(path, "r", encoding="utf-8") as f:
             if f.read().strip() in ("", "[]"):
                 return
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("[]\n")
+        write_utf8_file_atomic(path, "[]\n")
         _LOGGER.warning("[libi] libi_automations.yaml is no longer used and was emptied. LIBI now "
                         "writes into automations.yaml, the same file the Home Assistant editor uses. "
                         "The include line for it can be removed from configuration.yaml.")
@@ -279,8 +281,16 @@ def _write_ast_and_yaml_sync(hass: HomeAssistant, payload: dict, slug: str = "",
 
     [CHANGED v3.14.0] The record of what LIBI owns is read from this project and from no other. Two
     projects can sit side by side in automations.yaml and saving one leaves the other alone, which
-    is the whole point of having projects at all."""
-    slug = slug or "default"
+    is the whole point of having projects at all.
+
+    [CHANGED v3.34.0] All three files are read before any of them is written. When one cannot be
+    read, nothing at all is written, the project file included, so the ownership record never claims
+    an entry that is not on disk."""
+    with _FILE_LOCK:
+        return _write_ast_and_yaml_locked(hass, payload, slug or "default", name)
+
+
+def _write_ast_and_yaml_locked(hass: HomeAssistant, payload: dict, slug: str, name: str) -> dict:
     _migrate_single_ast_sync(hass)
     project = _read_project_sync(hass, slug) or {}
     previous = project.get("owned") or {}
@@ -304,20 +314,21 @@ def _write_ast_and_yaml_sync(hass: HomeAssistant, payload: dict, slug: str = "",
             if level == "script":
                 # scripts.yaml is a mapping, so the net needs an object id. The name becomes a slug and
                 # a repeated name gets a number rather than quietly overwriting the net before it.
+                # [CHANGED v3.34.0] Its own variable: reusing `slug` here renamed the project file.
                 base = slugify(net.get("name"), fallback="libi_" + slugify(net.get("id"), "script"))
-                slug = base
+                script_key = base
                 counter = 2
-                while slug in scripts:
-                    slug = f"{base}_{counter}"
+                while script_key in scripts:
+                    script_key = f"{base}_{counter}"
                     counter += 1
-                scripts[slug] = compiled
+                scripts[script_key] = compiled
             elif level == "scene":
                 scenes.append(compiled)
             else:
                 automations.append(compiled)
-        except Exception as e:
-            _LOGGER.error(f"Failed to compile net {net.get('name')}: {e}")
-            errors.append(f"{net.get('name')}: {e}")
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("[libi] failed to compile net %s: %s", net.get("name"), err)
+            errors.append(f"{net.get('name')}: {err}")
 
     owned = {
         "automations": [str(a.get("id", "")) for a in automations if a.get("id")],
@@ -325,9 +336,6 @@ def _write_ast_and_yaml_sync(hass: HomeAssistant, payload: dict, slug: str = "",
         "scenes": [str(s.get("id", "")) for s in scenes if s.get("id")],
     }
 
-    _migrate_legacy_file_sync(hass)
-
-    changed = []
     plans = (
         ("automation", _get_automations_path(hass), [], automations,
          (set(owned["automations"]) | set(previous.get("automations") or [])) - protected["automations"]),
@@ -336,11 +344,22 @@ def _write_ast_and_yaml_sync(hass: HomeAssistant, payload: dict, slug: str = "",
         ("scene", _get_scenes_path(hass), [], scenes,
          (set(owned["scenes"]) | set(previous.get("scenes") or [])) - protected["scenes"]),
     )
-    for domain, path, empty, mine, owned_keys in plans:
+    existing_by_domain = {}
+    for domain, path, empty, _mine, _owned_keys in plans:
         existing = _read_target_sync(path, empty)
         if existing is None:
-            errors.append(f"{os.path.basename(path)} could not be read and was left untouched")
-            continue
+            errors.append(f"{os.path.basename(path)} could not be read")
+        existing_by_domain[domain] = existing
+    if any(v is None for v in existing_by_domain.values()):
+        errors.append("nothing was saved")
+        return {"changed": [], "errors": errors, "slug": slug, "saved": False,
+                "counts": {"automations": 0, "scripts": 0, "scenes": 0}}
+
+    _migrate_legacy_file_sync(hass)
+
+    changed = []
+    for domain, path, empty, mine, owned_keys in plans:
+        existing = existing_by_domain[domain]
         merged = _merge_map_sync(existing, mine, owned_keys) if isinstance(empty, dict) \
             else _merge_list_sync(existing, mine, owned_keys)
         if _write_if_changed_sync(path, merged, skip_when_empty=not mine and not owned_keys):
@@ -361,7 +380,7 @@ def _write_ast_and_yaml_sync(hass: HomeAssistant, payload: dict, slug: str = "",
         "owned": owned,
     })
 
-    return {"changed": changed, "errors": errors, "slug": slug,
+    return {"changed": changed, "errors": errors, "slug": slug, "saved": True,
             "counts": {"automations": len(automations), "scripts": len(scripts), "scenes": len(scenes)}}
 
 
@@ -369,31 +388,52 @@ def _delete_project_sync(hass: HomeAssistant, slug: str) -> dict:
     """Removes the .libi file and nothing else. The automations, scripts and scenes this project
     compiled stay exactly where they are in Home Assistant, because they are Home Assistant's now."""
     path = _project_path(hass, slug)
-    if not os.path.exists(path):
-        return {"ok": False, "error": "no such project"}
-    try:
-        os.remove(path)
-    except Exception as err:  # noqa: BLE001
-        _LOGGER.error("[libi] could not delete project %s: %s", slug, err)
-        return {"ok": False, "error": str(err)}
+    with _FILE_LOCK:
+        if not os.path.exists(path):
+            return {"ok": False, "error": "no such project"}
+        try:
+            os.remove(path)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("[libi] could not delete project %s: %s", slug, err)
+            return {"ok": False, "error": str(err)}
     return {"ok": True}
 
 
 def _create_project_sync(hass: HomeAssistant, name: str) -> dict:
     """A new, empty workspace. The name is kept as the user typed it and the file gets a slug."""
-    _migrate_single_ast_sync(hass)
-    base = project_slug(name, fallback="project")
-    slug = base
-    counter = 2
-    while os.path.exists(_project_path(hass, slug)):
-        slug = f"{base}_{counter}"
-        counter += 1
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    _write_project_sync(hass, slug, {
-        "libi_project": 1, "slug": slug, "name": name or slug,
-        "created": now, "updated": now, "nets": [], "owned": {},
-    })
+    with _FILE_LOCK:
+        _migrate_single_ast_sync(hass)
+        base = project_slug(name, fallback="project")
+        slug = base
+        counter = 2
+        while os.path.exists(_project_path(hass, slug)):
+            slug = f"{base}_{counter}"
+            counter += 1
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _write_project_sync(hass, slug, {
+            "libi_project": 1, "slug": slug, "name": name or slug,
+            "created": now, "updated": now, "nets": [], "owned": {},
+        })
     return {"slug": slug, "name": name or slug}
+
+
+def _delete_automation_sync(hass: HomeAssistant, auto_id: str) -> dict:
+    """[ADDED v3.34.0] Removes the one automation the user deleted in LIBI and leaves every other
+    entry exactly as it was, under the same rules as a save: an unreadable file is not written, and
+    a file that would not change is not rewritten (and not reloaded)."""
+    path = _get_automations_path(hass)
+    with _FILE_LOCK:
+        existing = _read_target_sync(path, [])
+        if existing is None:
+            return {"ok": False, "changed": False,
+                    "error": "automations.yaml could not be read and was left untouched"}
+        kept = [a for a in existing
+                if not (isinstance(a, dict) and str(a.get("id", "")) == auto_id)]
+        if len(kept) == len(existing):
+            return {"ok": True, "changed": False}
+        changed = _write_if_changed_sync(path, kept, skip_when_empty=False)
+    return {"ok": True, "changed": changed}
+
 
 def _automations_by_id_sync(hass: HomeAssistant) -> dict:
     """[ADDED v3.15.0] Everything in automations.yaml, keyed by its id."""
@@ -414,14 +454,18 @@ def _automations_by_id_sync(hass: HomeAssistant) -> dict:
     return out
 
 
-def _hydrate_project_nets_sync(hass: HomeAssistant, nets: list) -> dict:
+@callback
+def _hydrate_project_nets(hass: HomeAssistant, nets: list, live: dict) -> dict:
     """[ADDED v3.15.0] Turns what the project stored into what the canvas should show.
 
     A net that names an automation is rebuilt from that automation as it stands right now, so the
     newest version always wins. The things the ladder holds and YAML does not, the position of the
     net, whether it was collapsed and the level it was drawn at, are carried over from the project.
-    A net with no anchor, or one whose automation is gone, keeps the drawing that was saved."""
-    live = _automations_by_id_sync(hass)
+    A net with no anchor, or one whose automation is gone, keeps the drawing that was saved.
+
+    [CHANGED v3.34.0] Runs on the event loop: the importer resolves device and area ids through
+    Home Assistant's registries, which are not safe to read from an executor thread. `live` is the
+    content of automations.yaml, read in the executor beforehand."""
     out = []
     stats = {"reloaded": 0, "draft": 0, "orphan": 0}
 
@@ -475,197 +519,208 @@ def _get_all_automations(hass: HomeAssistant):
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or []
             if isinstance(data, list):
-                for a in data: autos.append({"id": a.get("id"), "name": a.get("alias", f"Automation {a.get('id')}"), "raw": a})
+                for a in data:
+                    if isinstance(a, dict):
+                        autos.append({"id": a.get("id"), "name": a.get("alias", f"Automation {a.get('id')}"), "raw": a})
     return autos
 
-class SaveAutomationCommand(BaseModel):
-    id: int
-    payload: dict[str, Any] = Field(default_factory=dict)
-    @root_validator(pre=True)
-    def normalize(cls, values: dict[str, Any]) -> dict[str, Any]:
-        if "payload" not in values and "nets" in values: values["payload"] = {"nets": values["nets"]}
-        return values
 
-def async_register_websockets(hass: HomeAssistant) -> None:
-    ws_handle_save_automation._ws_command = "libi/save_automation"
-    ws_handle_save_automation._ws_schema = websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({vol.Required("type"): "libi/save_automation"}, extra=vol.ALLOW_EXTRA)
-    websocket_api.async_register_command(hass, ws_handle_save_automation)
-    
-    ws_handle_load_automation._ws_command = "libi/load_automation"
-    ws_handle_load_automation._ws_schema = websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({vol.Required("type"): "libi/load_automation"}, extra=vol.ALLOW_EXTRA)
-    websocket_api.async_register_command(hass, ws_handle_load_automation)
-    
-    ws_handle_list_automations._ws_command = "libi/list_automations"
-    ws_handle_list_automations._ws_schema = websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({vol.Required("type"): "libi/list_automations"}, extra=vol.ALLOW_EXTRA)
-    websocket_api.async_register_command(hass, ws_handle_list_automations)
-
-    ws_handle_get_automation._ws_command = "libi/get_automation"
-    ws_handle_get_automation._ws_schema = websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({
-        vol.Required("type"): "libi/get_automation",
-        vol.Required("automation_id"): str
-    }, extra=vol.ALLOW_EXTRA)
-    websocket_api.async_register_command(hass, ws_handle_get_automation)
-
-    ws_handle_delete_automation._ws_command = "libi/delete_automation"
-    ws_handle_delete_automation._ws_schema = websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({
-        vol.Required("type"): "libi/delete_automation",
-        vol.Required("automation_id"): str
-    }, extra=vol.ALLOW_EXTRA)
-    websocket_api.async_register_command(hass, ws_handle_delete_automation)
-
-    ws_handle_verify_automation._ws_command = "libi/verify_automation"
-    ws_handle_verify_automation._ws_schema = websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({
-        vol.Required("type"): "libi/verify_automation",
-        vol.Optional("automation_id"): str
-    }, extra=vol.ALLOW_EXTRA)
-    websocket_api.async_register_command(hass, ws_handle_verify_automation)
-
-    ws_handle_preview_yaml._ws_command = "libi/preview_yaml"
-    # [ADDED v3.14.0] The project commands behind the four items of the header menu.
-    ws_handle_project_list._ws_schema = websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({
-        vol.Required("type"): "libi/project_list"
-    }, extra=vol.ALLOW_EXTRA)
-    websocket_api.async_register_command(hass, "libi/project_list", ws_handle_project_list, ws_handle_project_list._ws_schema)
-
-    ws_handle_project_open._ws_schema = websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({
-        vol.Required("type"): "libi/project_open",
-        vol.Required("slug"): str
-    }, extra=vol.ALLOW_EXTRA)
-    websocket_api.async_register_command(hass, "libi/project_open", ws_handle_project_open, ws_handle_project_open._ws_schema)
-
-    ws_handle_project_create._ws_schema = websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({
-        vol.Required("type"): "libi/project_create",
-        vol.Required("name"): str
-    }, extra=vol.ALLOW_EXTRA)
-    websocket_api.async_register_command(hass, "libi/project_create", ws_handle_project_create, ws_handle_project_create._ws_schema)
-
-    ws_handle_project_delete._ws_schema = websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({
-        vol.Required("type"): "libi/project_delete",
-        vol.Required("slug"): str
-    }, extra=vol.ALLOW_EXTRA)
-    websocket_api.async_register_command(hass, "libi/project_delete", ws_handle_project_delete, ws_handle_project_delete._ws_schema)
-
-    ws_handle_preview_yaml._ws_schema = websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({
-        vol.Required("type"): "libi/preview_yaml",
-        vol.Required("net"): dict
-    }, extra=vol.ALLOW_EXTRA)
-    websocket_api.async_register_command(hass, ws_handle_preview_yaml)
-    
-    _LOGGER.info("[libi] WebSocket commands registered.")
-
-@websocket_api.async_response
-async def ws_handle_save_automation(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    try: validated = SaveAutomationCommand.parse_obj(msg)
-    except Exception as err:
-        connection.send_error(msg.get("id", 0), "invalid_format", str(err))
-        return
-    # [CHANGED v3.14.0] The save belongs to a project. Without a slug it is the Default workspace,
-    # which is what an installation from before projects is migrated into.
-    slug = str(msg.get("slug") or "default")
-    name = str(msg.get("name") or "")
-    result = await hass.async_add_executor_job(
-        _write_ast_and_yaml_sync, hass, validated.payload or {}, slug, name)
-    # [ADDED v3.5.0] Reloading through the service is what makes the change live without a restart,
-    # and it is the same call the Home Assistant editors make after they save.
-    errors = list(result.get("errors") or [])
-    for domain in result.get("changed") or []:
+async def _reload(hass: HomeAssistant, domains, errors: list) -> list:
+    """[ADDED v3.34.0] Reloads each domain whose file was written and waits for it. A reload that
+    fails is reported as a failure next to the save, never hidden behind it."""
+    reloaded = []
+    for domain in domains or []:
         try:
             await hass.services.async_call(domain, "reload", blocking=True)
+            reloaded.append(domain)
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("[libi] %s reload failed: %s", domain, err)
             errors.append(f"{domain} reload failed: {err}")
+    return reloaded
+
+
+def async_register_websockets(hass: HomeAssistant) -> None:
+    """[CHANGED v3.34.0] Each command carries its own schema and admin requirement on its decorator.
+    Writing automations and reading their full configuration are admin actions in Home Assistant's
+    own editor, so they are here too."""
+    for handler in (
+        ws_handle_save_automation, ws_handle_load_automation, ws_handle_list_automations,
+        ws_handle_get_automation, ws_handle_delete_automation, ws_handle_verify_automation,
+        ws_handle_project_list, ws_handle_project_open, ws_handle_project_create,
+        ws_handle_project_delete, ws_handle_preview_yaml,
+    ):
+        websocket_api.async_register_command(hass, handler)
+    _LOGGER.debug("[libi] WebSocket commands registered")
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/save_automation",
+    vol.Optional("slug", default="default"): str,
+    vol.Optional("name", default=""): str,
+    vol.Optional("nets"): [dict],
+    # Older panels sent the nets wrapped in a payload object.
+    vol.Optional("payload"): dict,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_save_automation(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    # [CHANGED v3.14.0] The save belongs to a project. Without a slug it is the Default workspace,
+    # which is what an installation from before projects is migrated into.
+    slug = msg["slug"] or "default"
+    if not valid_project_slug(slug):
+        connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
+        return
+    payload = {"nets": msg["nets"]} if "nets" in msg else (msg.get("payload") or {})
+    if not isinstance(payload.get("nets", []), list):
+        connection.send_error(msg["id"], "invalid_format", "nets must be a list")
+        return
+    result = await hass.async_add_executor_job(
+        _write_ast_and_yaml_sync, hass, payload, slug, msg["name"])
+    # [ADDED v3.5.0] Reloading through the service is what makes the change live without a restart,
+    # and it is the same call the Home Assistant editors make after they save.
+    errors = list(result.get("errors") or [])
+    reloaded = await _reload(hass, result.get("changed"), errors)
     counts = result.get("counts") or {}
-    message = ("Saved. {automations} automations, {scripts} scripts, {scenes} scenes written into "
-               "Home Assistant.").format(automations=counts.get("automations", 0),
-                                         scripts=counts.get("scripts", 0),
-                                         scenes=counts.get("scenes", 0))
+    if result.get("saved"):
+        message = ("Saved. {automations} automations, {scripts} scripts, {scenes} scenes written into "
+                   "Home Assistant.").format(automations=counts.get("automations", 0),
+                                             scripts=counts.get("scripts", 0),
+                                             scenes=counts.get("scenes", 0))
+    else:
+        message = "Not saved."
     if errors:
         message += " Problems: " + "; ".join(errors[:5])
-    connection.send_result(msg.get("id", 0), {"status": "error" if errors else "ok",
-                                              "message": message,
-                                              "slug": result.get("slug") or slug,
-                                              "reloaded": result.get("changed") or [],
-                                              "errors": errors})
+    connection.send_result(msg["id"], {"status": "error" if errors else "ok",
+                                       "saved": bool(result.get("saved")),
+                                       "message": message,
+                                       "slug": result.get("slug") or slug,
+                                       "written": result.get("changed") or [],
+                                       "reloaded": reloaded,
+                                       "errors": errors})
 
+
+@websocket_api.websocket_command({vol.Required("type"): "libi/load_automation"})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_load_automation(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     data = await hass.async_add_executor_job(_read_ast_sync, hass)
-    connection.send_result(msg.get("id", 0), data)
+    connection.send_result(msg["id"], data)
 
+
+@websocket_api.websocket_command({vol.Required("type"): "libi/list_automations"})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_list_automations(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     autos = await hass.async_add_executor_job(_get_all_automations, hass)
     res = [{"id": a["id"], "name": a["name"]} for a in autos]
-    connection.send_result(msg.get("id", 0), {"automations": res})
+    connection.send_result(msg["id"], {"automations": res})
 
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/get_automation",
+    vol.Required("automation_id"): str,
+})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_get_automation(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    auto_id = msg.get("automation_id")
+    auto_id = msg["automation_id"]
     autos = await hass.async_add_executor_job(_get_all_automations, hass)
-    target = next((a for a in autos if a["id"] == auto_id), None)
+    target = next((a for a in autos if str(a["id"]) == auto_id), None)
     if not target:
-        connection.send_error(msg.get("id", 0), "not_found", "Automation not found")
+        connection.send_error(msg["id"], "not_found", "Automation not found")
         return
     try:
         ast_net = yaml_to_ast(hass, target["raw"])
         report = verify_round_trip(hass, target["raw"])
         if not report.get("ok"):
             _LOGGER.warning("[libi] %s does not round trip cleanly: %s", auto_id, report.get("issues"))
-        connection.send_result(msg.get("id", 0), {"net": ast_net, "verify": report})
-    except Exception as e:
-        connection.send_error(msg.get("id", 0), "parse_error", str(e))
+        connection.send_result(msg["id"], {"net": ast_net, "verify": report})
+    except Exception as err:  # noqa: BLE001
+        connection.send_error(msg["id"], "parse_error", str(err))
 
 
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/verify_automation",
+    vol.Optional("automation_id"): str,
+})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_verify_automation(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     """Imports and compiles back without writing anything, and reports what did not survive."""
     auto_id = msg.get("automation_id")
     autos = await hass.async_add_executor_job(_get_all_automations, hass)
     if auto_id:
-        autos = [a for a in autos if a["id"] == auto_id]
+        autos = [a for a in autos if str(a["id"]) == auto_id]
     results = []
     for a in autos:
         report = verify_round_trip(hass, a["raw"])
         results.append({"id": a["id"], "name": a["name"], "ok": report.get("ok"),
                         "issues": report.get("issues", []), "count": report.get("count", 0)})
-    connection.send_result(msg.get("id", 0), {"results": results,
-                                              "ok": all(r["ok"] for r in results) if results else True})
+        # [ADDED v3.34.0] The importer reads the registries, so this stays on the event loop; it
+        # yields after every automation so a large automations.yaml does not stall Home Assistant.
+        await asyncio.sleep(0)
+    connection.send_result(msg["id"], {"results": results,
+                                       "ok": all(r["ok"] for r in results) if results else True})
 
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/delete_automation",
+    vol.Required("automation_id"): str,
+})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_delete_automation(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    auto_id = msg.get("automation_id")
-    path = _get_automations_path(hass)
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or []
-        if isinstance(data, list):
-            new_data = [a for a in data if a.get("id") != auto_id]
-            with open(path, "w", encoding="utf-8") as f:
-                yaml.dump(new_data, f, default_flow_style=False, allow_unicode=True)
-            await hass.services.async_call("automation", "reload")
-    connection.send_result(msg.get("id", 0), {"status": "ok"})
+    """[CHANGED v3.34.0] Read, filter and write in the executor under the file lock, then wait for
+    the reload. Before this the file was read and rewritten on the event loop with its keys sorted,
+    which reordered every automation in it, and the result was "ok" whatever happened."""
+    result = await hass.async_add_executor_job(
+        _delete_automation_sync, hass, msg["automation_id"])
+    if not result.get("ok"):
+        connection.send_error(msg["id"], "delete_failed", result.get("error") or "could not delete")
+        return
+    errors: list = []
+    reloaded = await _reload(hass, ["automation"] if result.get("changed") else [], errors)
+    connection.send_result(msg["id"], {"status": "error" if errors else "ok",
+                                       "deleted": bool(result.get("changed")),
+                                       "reloaded": reloaded,
+                                       "errors": errors})
 
 # [ADDED v3.14.0] ---------------------------------------------------------------- projects
 
+@websocket_api.websocket_command({vol.Required("type"): "libi/project_list"})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_project_list(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    await hass.async_add_executor_job(_migrate_single_ast_sync, hass)
-    projects = await hass.async_add_executor_job(_list_projects_sync, hass)
-    connection.send_result(msg.get("id", 0), {"projects": projects})
+    projects = await hass.async_add_executor_job(_migrate_and_list_projects_sync, hass)
+    connection.send_result(msg["id"], {"projects": projects})
 
 
+def _migrate_and_list_projects_sync(hass: HomeAssistant) -> list:
+    with _FILE_LOCK:
+        _migrate_single_ast_sync(hass)
+        return _list_projects_sync(hass)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/project_open",
+    vol.Required("slug"): str,
+})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_project_open(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    slug = str(msg.get("slug") or "")
+    slug = msg["slug"]
+    if not valid_project_slug(slug):
+        connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
+        return
     data = await hass.async_add_executor_job(_read_project_sync, hass, slug)
     if data is None:
-        connection.send_error(msg.get("id", 0), "not_found", f"No project called {slug}")
+        connection.send_error(msg["id"], "not_found", f"No project called {slug}")
         return
     # [CHANGED v3.15.0] Anchored nets are rebuilt from Home Assistant as it stands now, drafts and
     # orphans come back from the drawing the project saved.
-    hydrated = await hass.async_add_executor_job(
-        _hydrate_project_nets_sync, hass, data.get("nets") or [])
-    connection.send_result(msg.get("id", 0), {
+    live = await hass.async_add_executor_job(_automations_by_id_sync, hass)
+    hydrated = _hydrate_project_nets(hass, data.get("nets") or [], live)
+    connection.send_result(msg["id"], {
         "slug": data.get("slug") or slug,
         "name": data.get("name") or slug,
         "nets": hydrated["nets"],
@@ -674,36 +729,53 @@ async def ws_handle_project_open(hass: HomeAssistant, connection: websocket_api.
     })
 
 
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/project_create",
+    vol.Required("name"): str,
+})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_project_create(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    name = str(msg.get("name") or "").strip()
+    name = msg["name"].strip()
     if not name:
-        connection.send_error(msg.get("id", 0), "bad_name", "A project needs a name")
+        connection.send_error(msg["id"], "bad_name", "A project needs a name")
         return
     created = await hass.async_add_executor_job(_create_project_sync, hass, name)
-    connection.send_result(msg.get("id", 0), created)
+    connection.send_result(msg["id"], created)
 
 
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/project_delete",
+    vol.Required("slug"): str,
+})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_project_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    slug = str(msg.get("slug") or "")
+    slug = msg["slug"]
+    if not valid_project_slug(slug):
+        connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
+        return
     result = await hass.async_add_executor_job(_delete_project_sync, hass, slug)
     if not result.get("ok"):
-        connection.send_error(msg.get("id", 0), "delete_failed", result.get("error") or "could not delete")
+        connection.send_error(msg["id"], "delete_failed", result.get("error") or "could not delete")
         return
     # Nothing was reloaded and nothing was removed from Home Assistant. Only the drawing is gone.
-    connection.send_result(msg.get("id", 0), {
+    connection.send_result(msg["id"], {
         "status": "ok",
         "message": "The project file was deleted. Everything it compiled is still in Home Assistant.",
     })
 
 
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/preview_yaml",
+    vol.Required("net"): dict,
+})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_preview_yaml(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    net_ast = msg.get("net", {})
     try:
-        yaml_dict = ast_to_yaml(hass, net_ast)
+        yaml_dict = ast_to_yaml(hass, msg["net"])
         yaml_str = yaml.dump(yaml_dict, default_flow_style=False, allow_unicode=True, sort_keys=False)
-        connection.send_result(msg.get("id", 0), {"yaml": yaml_str})
-    except Exception as e:
-        connection.send_error(msg.get("id", 0), "preview_error", str(e))
+        connection.send_result(msg["id"], {"yaml": yaml_str})
+    except Exception as err:  # noqa: BLE001
+        connection.send_error(msg["id"], "preview_error", str(err))

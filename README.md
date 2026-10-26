@@ -35,6 +35,30 @@ The software is built upon the **IEC 61131-3** standard, the international stand
 * **Integrated Helper Management:** Search for, manage, and insert variables (Helpers) directly from within the graphical editor.  
 * **Project and File Grouping:** Save and manage groups of YAML files collectively. In LIBI, every **NET** functions as an individual YAML file. This allows you to open a single project and view all related ladders (e.g., "Garden Automations", "Security Automations") in one unified workspace.
 
+## **Installation**
+
+**Requirements:** Home Assistant 2025.1 or newer, and an administrator account. LIBI edits your automations, so like Home Assistant's own automation editor it is available to administrators only.
+
+### With HACS
+
+1. In HACS, open the menu (⋮) and choose **Custom repositories**.
+2. Add `https://github.com/GuyAzria/Libi` with the type **Integration**.
+3. Search for **LIBI**, download it, and restart Home Assistant.
+4. Go to **Settings ▸ Devices & services ▸ Add integration** and add **LIBI**.
+
+LIBI then appears in the sidebar.
+
+### Manually
+
+Download `libi.zip` from the [latest release](https://github.com/GuyAzria/Libi/releases/latest), unpack it into `config/custom_components/libi/`, restart Home Assistant, and add the integration as in step 4.
+
+## **What LIBI changes in your configuration**
+
+* LIBI reads and writes the same `automations.yaml`, `scripts.yaml` and `scenes.yaml` that Home Assistant's own editors use, and reloads them after a save. Nothing has to be added to `configuration.yaml`.
+* Entries you wrote yourself, by hand or in the Home Assistant editor, are kept exactly as they are. A file is only written when its content actually changes.
+* If one of those files cannot be read (for example because it contains a syntax error), LIBI saves nothing and tells you why.
+* Projects are stored as `.libi` files in `config/libi/`, so they are part of your Home Assistant backup.
+
 ## **🚀 Future Roadmap**
 
 * **AI-Powered Logic Generation:** One of our upcoming milestones is integrating AI capabilities. Users will be able to generate LADDER logic simply by writing a natural language query and selecting the relevant variables.

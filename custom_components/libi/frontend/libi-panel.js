@@ -14,17 +14,21 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.5.0
+ * v3.34.0
  */
 // [ADDED v3.5.0 | 2026-08-20] Purpose: Integrated the full SVG logo with the original house, electronic circuit traces, 3-rung ladder, and aligned text into the header title.
-import { LibiCore } from './libi-core.js?v=3.33.0';
-import { getStyles } from './libi-css.js?v=3.33.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.33.0';
-import { LibiOnline } from './libi-online.js?v=3.33.0';
+// [ADDED v3.34.0 | 2026-10-26] Purpose: Every value from the user's YAML that reaches HTML is escaped
+//   (automation aliases, net names, ids, message text, the YAML preview). Form fields are appended with
+//   insertAdjacentHTML instead of innerHTML +=, which destroyed the pickers appended before them. A save
+//   or delete the backend refused is no longer reported as done.
+import { LibiCore } from './libi-core.js?v=3.34.0';
+import { getStyles } from './libi-css.js?v=3.34.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.34.0';
+import { LibiOnline } from './libi-online.js?v=3.34.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.33.0';
+export const LIBI_BUILD = '3.34.0';
 
 // [ADDED v3.16.0] Every helper Home Assistant can create from a stored collection, which is what a
 // ladder programmer means by a local variable: a bit, a word, a timer, a counter. The other kind of
@@ -255,8 +259,9 @@ class LibiPanel extends HTMLElement {
         .then(res => {
             const r = res || {};
             const errs = r.errors || [];
-            // The project now matches what is on disk.
-            this._projectDirty = false;
+            // [CHANGED v3.34.0] Only a save the backend confirms makes the project match the disk. A
+            // refused save (one of Home Assistant's files could not be read) keeps the unsaved marker.
+            if (r.saved !== false) this._projectDirty = false;
             if (!this._project && r.slug) {
                 this._project = { slug: r.slug, name: 'Default' };
                 this._rememberProject();
@@ -446,7 +451,7 @@ class LibiPanel extends HTMLElement {
         
         let modalHtml = '';
         if (this._modal === 'list_automations') {
-            const items = this._automationList.map(a => `<div class="auto-item" data-id="${a.id}"><div class="auto-item-name">${a.name}</div><div class="auto-item-id">ID: ${a.id}</div></div>`).join('');
+            const items = this._automationList.map(a => `<div class="auto-item" data-id="${this._esc(a.id)}"><div class="auto-item-name">${this._esc(a.name)}</div><div class="auto-item-id">ID: ${this._esc(a.id)}</div></div>`).join('');
             modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 500px;"><h2 class="modal-title">Select HA Automation</h2><p style="font-size:13px; color:#757575; margin:0;">Choose an automation to load into this Net.</p><div class="auto-list" style="max-height:50vh;">${items || '<div style="padding:16px;text-align:center;">No automations found.</div>'}</div><div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div></div></div>`;
         } else if (this._modal === 'project_new') {
             modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:460px;">
@@ -458,7 +463,7 @@ class LibiPanel extends HTMLElement {
         } else if (this._modal === 'project_open') {
             const items = (this._projectList || []).map(p => `<div class="auto-item project-item" data-slug="${this._esc(p.slug)}">
                 <div class="auto-item-name" dir="auto">${this._esc(p.name)}</div>
-                <div class="auto-item-id">${p.nets} net${p.nets === 1 ? '' : 's'}${p.updated ? ' · saved ' + this._esc(String(p.updated).replace('T', ' ').replace('+00:00', ' UTC')) : ''}</div>
+                <div class="auto-item-id">${this._esc(p.nets)} net${p.nets === 1 ? '' : 's'}${p.updated ? ' · saved ' + this._esc(String(p.updated).replace('T', ' ').replace('+00:00', ' UTC')) : ''}</div>
             </div>`).join('');
             modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:520px;">
                 <h2 class="modal-title">Open project</h2>
@@ -637,7 +642,7 @@ class LibiPanel extends HTMLElement {
         if (this._inspectedNetYaml) {
             const net = this.core.nets.find(n => n.id === this._inspectedNetYaml);
             if (!net) return '';
-            return `<div class="sidebar-hdr">Net YAML: ${net.name}</div><div class="sidebar-body" style="padding:0; display:flex; flex-direction:column; background:#1e1e1e;"><textarea class="yaml-preview-box" readonly>${this._previewYamlContent}</textarea><div style="padding: 16px;"><button class="btn btn-ghost" id="closeYamlSidebar" style="width:100%; color:white; border-color:#555;">Close YAML Preview</button></div></div>`;
+            return `<div class="sidebar-hdr">Net YAML: ${this._esc(net.name)}</div><div class="sidebar-body" style="padding:0; display:flex; flex-direction:column; background:#1e1e1e;"><textarea class="yaml-preview-box" readonly>${this._esc(this._previewYamlContent)}</textarea><div style="padding: 16px;"><button class="btn btn-ghost" id="closeYamlSidebar" style="width:100%; color:white; border-color:#555;">Close YAML Preview</button></div></div>`;
         }
 
         if (!this._inspectedEl) {
@@ -719,7 +724,7 @@ class LibiPanel extends HTMLElement {
         wrap.innerHTML = `<label id="lbl_service">Action</label>
             <select id="inp_service">${list.map(s => {
                 const full = `${dom}.${s}`;
-                return `<option value="${full}" ${full === current ? 'selected' : ''}>${full}</option>`;
+                return `<option value="${this._esc(full)}" ${full === current ? 'selected' : ''}>${this._esc(full)}</option>`;
             }).join('')}</select>`;
         const sel = wrap.querySelector('#inp_service');
         sel.addEventListener('change', (e) => {
@@ -1382,7 +1387,7 @@ class LibiPanel extends HTMLElement {
     _picker(kind, value, onValue, opts = {}) {
         const wrap = document.createElement('div');
         wrap.className = 'fgrp';
-        if (opts.label) wrap.innerHTML = `<label id="lbl_${opts.id || kind}">${opts.label}</label>`;
+        if (opts.label) wrap.innerHTML = `<label id="lbl_${this._esc(opts.id || kind)}">${this._esc(opts.label)}</label>`;
 
         // [ADDED v3.31.0] Home Assistant loads its pickers lazily, so one of them can be missing from
         // the browser tab a panel is opened in. Creating it anyway produced an element that renders
@@ -1514,27 +1519,27 @@ class LibiPanel extends HTMLElement {
 
         } else if (el.type === 'move') {
             const mode = el.mode || 'value';
-            slot.innerHTML += `<div class="fgrp"><label>Mode</label><select id="propMoveMode">
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Mode</label><select id="propMoveMode">
                 <option value="value" ${mode === 'value' ? 'selected' : ''}>MOVE (assign a value)</option>
                 <option value="notify" ${mode === 'notify' ? 'selected' : ''}>MOVE NOTIFY (alert)</option>
                 <option value="tts" ${mode === 'tts' ? 'selected' : ''}>MOVE TTS (speak)</option>
                 <option value="both" ${mode === 'both' ? 'selected' : ''}>MOVE NOTIFY/TTS (alert and speak)</option>
-            </select></div>`;
+            </select></div>`);
 
             if (mode === 'value') {
                 // [CHANGED v3.8.0] On a MOVE ACTION the IN pin is the Home Assistant service name, so
                 // the field says so rather than calling it a value.
                 const isAction = el.moveKind === 'action';
-                slot.innerHTML += `<div class="fgrp"><label id="lbl_source">${isAction ? 'Action (Home Assistant service)' : 'Value or Template'}</label><textarea id="inp_source" rows="${isAction ? 1 : 3}" style="font-family:monospace;">${this._esc(el.source || '')}</textarea></div>`;
-                if (isAction) slot.innerHTML += `<div class="fgrp" style="font-size:12px; color:#757575; margin-top:-6px;">OUT is a summary of the targets below. It is not read back, the targets are.</div>`;
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_source">${isAction ? 'Action (Home Assistant service)' : 'Value or Template'}</label><textarea id="inp_source" rows="${isAction ? 1 : 3}" style="font-family:monospace;">${this._esc(el.source || '')}</textarea></div>`);
+                if (isAction) slot.insertAdjacentHTML('beforeend', `<div class="fgrp" style="font-size:12px; color:#757575; margin-top:-6px;">OUT is a summary of the targets below. It is not read back, the targets are.</div>`);
             } else {
                 if (mode !== 'tts') {
-                    slot.innerHTML += `<div class="fgrp"><label id="lbl_source">Message</label><textarea id="inp_source" rows="2">${this._esc(el.source || '')}</textarea></div>`;
-                    slot.innerHTML += `<div class="fgrp"><label id="lbl_title">Title</label><input type="text" id="inp_title" value="${this._esc(el.title || '')}" /></div>`;
+                    slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_source">Message</label><textarea id="inp_source" rows="2">${this._esc(el.source || '')}</textarea></div>`);
+                    slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_title">Title</label><input type="text" id="inp_title" value="${this._esc(el.title || '')}" /></div>`);
                 }
                 if (mode !== 'notify') {
-                    slot.innerHTML += `<div class="fgrp"><label id="lbl_tts">Spoken text${mode === 'both' ? ' (leave empty to speak the message)' : ''}</label><textarea id="inp_tts" rows="2">${this._esc(el.tts || '')}</textarea></div>`;
-                    slot.innerHTML += `<div class="fgrp"><label id="lbl_stream">Media stream</label><input type="text" id="inp_stream" value="${this._esc(el.stream || 'alarm_stream')}" /></div>`;
+                    slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_tts">Spoken text${mode === 'both' ? ' (leave empty to speak the message)' : ''}</label><textarea id="inp_tts" rows="2">${this._esc(el.tts || '')}</textarea></div>`);
+                    slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_stream">Media stream</label><input type="text" id="inp_stream" value="${this._esc(el.stream || 'alarm_stream')}" /></div>`);
                 }
             }
 
@@ -1564,8 +1569,8 @@ class LibiPanel extends HTMLElement {
             pickerA.value = el.sourceA || ''; pickerA.allowCustomEntity = true; pickerA.id = "inp_sourceA";
             pickerA.addEventListener('value-changed', onChange('sourceA'));
             fgrpA.appendChild(pickerA); slot.appendChild(fgrpA);
-            slot.innerHTML += `<div class="fgrp"><label id="lbl_sourceB">Above (MIN)</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`;
-            slot.innerHTML += `<div class="fgrp"><label id="lbl_sourceC">Below (MAX)</label><input type="text" id="inp_sourceC" value="${this._esc(el.sourceC === undefined ? '' : el.sourceC)}" /></div>`;
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">Above (MIN)</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`);
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceC">Below (MAX)</label><input type="text" id="inp_sourceC" value="${this._esc(el.sourceC === undefined ? '' : el.sourceC)}" /></div>`);
             ['sourceB', 'sourceC'].forEach(prop => {
                 const f = slot.querySelector(`#inp_${prop}`);
                 if (f) f.addEventListener('change', e => { el[prop] = e.target.value; this.core.pushHistory(); this._render(); });
@@ -1576,10 +1581,10 @@ class LibiPanel extends HTMLElement {
             const picker = document.createElement('ha-entity-picker'); picker.hass = this._hass; picker.value = el.source || ''; picker.includeDomains = ['counter'];
             picker.id = "inp_source";
             picker.addEventListener('value-changed', onChange('source')); fgrpSrc.appendChild(picker); slot.appendChild(fgrpSrc);
-            slot.innerHTML += `<div class="fgrp"><label id="lbl_value">Preset Value (Limit)</label><input type="text" id="inp_value" value="${el.value || ''}" /></div>`;
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_value">Preset Value (Limit)</label><input type="text" id="inp_value" value="${this._esc(el.value || '')}" /></div>`);
 
         } else if (el.type === 'notify') {
-            const fgrpSrc = document.createElement('div'); fgrpSrc.className = 'fgrp'; fgrpSrc.innerHTML = `<label id="lbl_source">Message Text</label><textarea id="inp_source" rows="3">${el.source || ''}</textarea>`; slot.appendChild(fgrpSrc);
+            const fgrpSrc = document.createElement('div'); fgrpSrc.className = 'fgrp'; fgrpSrc.innerHTML = `<label id="lbl_source">Message Text</label><textarea id="inp_source" rows="3">${this._esc(el.source || '')}</textarea>`; slot.appendChild(fgrpSrc);
             const fgrpTgt = document.createElement('div'); fgrpTgt.className = 'fgrp'; fgrpTgt.innerHTML = `<label id="lbl_target">Notify Target</label>`;
             const picker = document.createElement('ha-entity-picker'); picker.hass = this._hass; picker.value = el.target || ''; picker.includeDomains = ['notify'];
             picker.id = "inp_target";
@@ -1624,15 +1629,15 @@ class LibiPanel extends HTMLElement {
                 }, { label: 'Device', id: 'device' }));
                 slot.appendChild(this._picker('entity', el.sourceA, v => { el.sourceA = v; this.core.pushHistory(); this._render(); },
                     { label: 'Sensor of that device', id: 'sourceA' }));
-                slot.innerHTML += `<div class="fgrp"><label id="lbl_sourceB">Value (IN2)</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`;
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">Value (IN2)</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`);
             } else if (kind === 'time') {
                 el.sourceA = 'time';
-                slot.innerHTML += `<div class="fgrp"><label>Left side</label><input type="text" value="the clock" disabled /></div>`;
-                slot.innerHTML += `<div class="fgrp"><label id="lbl_sourceB">Fixed time (HH:MM:SS)</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB || '')}" placeholder="08:00:00" /></div>`;
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Left side</label><input type="text" value="the clock" disabled /></div>`);
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">Fixed time (HH:MM:SS)</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB || '')}" placeholder="08:00:00" /></div>`);
                 slot.appendChild(this._picker('entity', el.sourceB, v => { el.sourceB = v; this.core.pushHistory(); this._render(); },
                     { label: 'or a time helper', id: 'sourceBhelper', domains: ['input_datetime', 'sensor'] }));
                 if (el.type === 'cmp_rng') {
-                    slot.innerHTML += `<div class="fgrp"><label id="lbl_sourceC">Until (HH:MM:SS)</label><input type="text" id="inp_sourceC" value="${this._esc(el.sourceC || '')}" /></div>`;
+                    slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceC">Until (HH:MM:SS)</label><input type="text" id="inp_sourceC" value="${this._esc(el.sourceC || '')}" /></div>`);
                     const fc = slot.querySelector('#inp_sourceC');
                     if (fc) fc.addEventListener('change', e => { el.sourceC = e.target.value; this.core.pushHistory(); this._render(); });
                 }
@@ -1657,21 +1662,21 @@ class LibiPanel extends HTMLElement {
                     { label: 'Date and time helper', id: 'sourceB', domains: ['input_datetime', 'sensor'] }));
             } else if (kind === 'sun') {
                 el.sourceA = 'sun';
-                slot.innerHTML += `<div class="fgrp"><label id="lbl_sourceB">Event</label><select id="inp_sourceB">
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">Event</label><select id="inp_sourceB">
                     <option value="sunrise" ${el.sourceB === 'sunrise' ? 'selected' : ''}>sunrise</option>
-                    <option value="sunset" ${el.sourceB === 'sunset' ? 'selected' : ''}>sunset</option></select></div>`;
+                    <option value="sunset" ${el.sourceB === 'sunset' ? 'selected' : ''}>sunset</option></select></div>`);
             } else {
                 slot.appendChild(this._picker('entity', el.sourceA, v => { el.sourceA = v; this.core.pushHistory(); this._render(); },
                     { label: isCmp ? 'Entity (IN1)' : 'Variable A (IN1)', id: 'sourceA' }));
-                slot.innerHTML += `<div class="fgrp"><label id="lbl_sourceB">${isCmp ? 'Value or entity (IN2)' : 'Variable B (IN2)'}</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`;
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">${isCmp ? 'Value or entity (IN2)' : 'Variable B (IN2)'}</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`);
             }
             
             const inpB = slot.querySelector('#inp_sourceB');
             if (inpB) inpB.addEventListener('change', e => { el.sourceB = e.target.value; this.core.pushHistory(); this._render(); });
 
             if (el.type === 'math_div') {
-                slot.innerHTML += `<div class="fgrp"><label>Decimals</label><input type="number" id="inp_precision" value="${el.precision === undefined ? 2 : el.precision}" min="0" max="6" /></div>`;
-                slot.innerHTML += `<div class="fgrp"><label>Result when dividing by zero</label><input type="text" id="inp_fallback" value="${el.fallback === undefined ? 0 : el.fallback}" /></div>`;
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Decimals</label><input type="number" id="inp_precision" value="${this._esc(el.precision === undefined ? 2 : el.precision)}" min="0" max="6" /></div>`);
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Result when dividing by zero</label><input type="text" id="inp_fallback" value="${this._esc(el.fallback === undefined ? 0 : el.fallback)}" /></div>`);
                 ['precision', 'fallback'].forEach(prop => {
                     const f = slot.querySelector(`#inp_${prop}`);
                     if (f) f.addEventListener('change', e => { el[prop] = prop === 'precision' ? parseInt(e.target.value, 10) || 0 : e.target.value; this.core.pushHistory(); this._render(); });
@@ -1684,7 +1689,7 @@ class LibiPanel extends HTMLElement {
                 pickerTgt.addEventListener('value-changed', onChange('target')); fgrpTgt.appendChild(pickerTgt); slot.appendChild(fgrpTgt);
             }
         } else if (el.type === 'repeat') {
-            slot.innerHTML += `<div class="fgrp"><label>Loop Type</label><select id="propLoopType"><option value="count" ${el.loopType === 'count' ? 'selected' : ''}>Count</option><option value="while" ${el.loopType === 'while' ? 'selected' : ''}>While</option></select></div><div class="fgrp"><label id="lbl_value">Value/Condition</label><input type="text" id="inp_value" value="${el.value || ''}" /></div>`;
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Loop Type</label><select id="propLoopType"><option value="count" ${el.loopType === 'count' ? 'selected' : ''}>Count</option><option value="while" ${el.loopType === 'while' ? 'selected' : ''}>While</option></select></div><div class="fgrp"><label id="lbl_value">Value/Condition</label><input type="text" id="inp_value" value="${this._esc(el.value || '')}" /></div>`);
         }
 
         if (this._inspectedEl && this._inspectedEl.focusProp) {
@@ -1763,7 +1768,7 @@ class LibiPanel extends HTMLElement {
     _netHtml(net, index) {
         const isCol = net.collapsed ? 'collapsed' : '';
         const rungsHtml = this._netCanvasHtml(net);
-        const syncBadge = net.ha_id ? `<span style="font-size:11px; background:#e3f2fd; color:#0288d1; padding:2px 6px; border-radius:4px; margin-left:8px;" title="Linked to HA ID: ${net.ha_id}">🔗 Linked</span>` : '';
+        const syncBadge = net.ha_id ? `<span style="font-size:11px; background:#e3f2fd; color:#0288d1; padding:2px 6px; border-radius:4px; margin-left:8px;" title="Linked to HA ID: ${this._esc(net.ha_id)}">🔗 Linked</span>` : '';
         // [ADDED v3.5.0] The kind of logic is written next to the name, because the same drawing means
         // different things in an automation, in a script and in a scene.
         const level = this.core.netLevel(net);
@@ -1782,7 +1787,7 @@ class LibiPanel extends HTMLElement {
                     <span style="color:var(--success-color,#4caf50);">●</span>
                     <div class="net-name">
                         <span style="font-weight:900; margin-right:4px;">NET&nbsp;${index + 1}</span>
-                        <input type="text" class="net-name-input" data-nid="${net.id}" value="${net.name}" title="Click to rename" placeholder="Automation Name" />
+                        <input type="text" class="net-name-input" data-nid="${this._esc(net.id)}" value="${this._esc(net.name)}" title="Click to rename" placeholder="Automation Name" />
                         ${levelBadge}
                         ${net.source === 'orphan' ? `<span style="font-size:11px; font-weight:700; background:#fdecea; color:#c62828; padding:2px 6px; border-radius:4px; margin-left:8px;" title="${this._esc(net.source_note || '')}">⚠ Orphan</span>` : ''}
                         ${syncBadge}
@@ -1814,7 +1819,7 @@ class LibiPanel extends HTMLElement {
                             <button class="net-menu-item show-yaml-btn" data-nid="${net.id}">📄 Show as YAML</button>
                             <button class="net-menu-item duplicate-net-btn" data-nid="${net.id}">⧉ Duplicate Net</button>
                             <button class="net-menu-item danger remove-net-btn" data-nid="${net.id}">✖ Remove from Net</button>
-                            ${net.ha_id ? `<button class="net-menu-item danger delete-auto-btn" data-nid="${net.id}" data-haid="${net.ha_id}">🗑️ Delete File</button>` : ''}
+                            ${net.ha_id ? `<button class="net-menu-item danger delete-auto-btn" data-nid="${this._esc(net.id)}" data-haid="${this._esc(net.ha_id)}">🗑️ Delete File</button>` : ''}
                         </div>
                     </div>
                 </div>
@@ -1924,7 +1929,7 @@ class LibiPanel extends HTMLElement {
         const isTriggerClass = el.isTrigger ? 'is-trigger ' : '';
         const selClass = (isSelected ? 'selected ' : '') + (errs.el || hasStructErr ? 'has-error ' : '') + isTriggerClass;
         
-        const errTooltip = hasStructErr ? `<div class="err-tooltip">⚠️ ${el.structuralError}</div>` : '';
+        const errTooltip = hasStructErr ? `<div class="err-tooltip">⚠️ ${this._esc(el.structuralError)}</div>` : '';
         // [CHANGED v3.25.0] Both badges sit under the block. A trigger and a continue on error can
         // never be the same block, so they never collide.
         const triggerLabelHtml = el.isTrigger ? `<div class="trigger-bottom-lbl">Trigger</div>`
@@ -2103,7 +2108,7 @@ class LibiPanel extends HTMLElement {
         const projectCount = this._projectEntities().size;
 
         const chip = (id, label, on, title) =>
-            `<button class="vars-chip${on ? ' on' : ''}" id="${id}" title="${this._esc(title || '')}">${label}</button>`;
+            `<button class="vars-chip${on ? ' on' : ''}" id="${id}" title="${this._esc(title || '')}">${this._esc(label)}</button>`;
         const filterChips = ['ALL', ...VAR_TYPE_KEYS, 'HA']
             .map(k => `<button class="vars-chip vars-filter${this._varsFilter === k ? ' on' : ''}" data-f="${k}" title="${this._esc(k === 'ALL' ? 'Every type' : (VAR_TYPES[k] ? VAR_TYPES[k].title : 'Entities of Home Assistant that are not LIBI variables'))}">${k}</button>`)
             .join('');
@@ -2135,7 +2140,7 @@ class LibiPanel extends HTMLElement {
                     const mine = [...inProj].filter(match).sort();
                     const rest = Object.keys(states).filter(e => !inProj.has(e) && match(e)).sort().slice(0, 120);
                     const sect = (title, list) => list.length
-                        ? `<div class="vars-group-title" style="font-size:11px;font-weight:800;text-transform:uppercase;color:#9e9e9e;margin:8px 0 2px;">${title} · ${list.length}</div>
+                        ? `<div class="vars-group-title" style="font-size:11px;font-weight:800;text-transform:uppercase;color:#9e9e9e;margin:8px 0 2px;">${this._esc(title)} · ${list.length}</div>
                            <table class="vars-table"><tbody>${list.map(e => this._varsRowHtml(e)).join('')}</tbody></table>` : '';
                     if (!mine.length && !rest.length) return '<div class="vars-empty">Nothing matches that.</div>';
                     return sect('In this project', mine) + sect('Everywhere in Home Assistant', rest);
@@ -2528,7 +2533,7 @@ class LibiPanel extends HTMLElement {
                 const row = week[key] || { on: false, from: '08:00', to: '17:00' };
                 return `<div class="hk-day${row.on ? '' : ' off'}">
                     <input type="checkbox" class="hk-day-on" data-d="${key}" ${row.on ? 'checked' : ''} />
-                    <span class="d">${label}</span>
+                    <span class="d">${this._esc(label)}</span>
                     <input type="time" class="hk-day-t" data-d="${key}" data-e="from" value="${this._esc(row.from)}" />
                     <span class="to">to</span>
                     <input type="time" class="hk-day-t" data-d="${key}" data-e="to" value="${this._esc(row.to)}" />
@@ -2732,12 +2737,14 @@ class LibiPanel extends HTMLElement {
     async _projectSaveQuiet() {
         if (!this._hass || !this._hass.connection || !this._project) return false;
         try {
-            await this._hass.connection.sendMessagePromise({
+            const res = await this._hass.connection.sendMessagePromise({
                 type: 'libi/save_automation',
                 slug: this._project.slug,
                 name: this._project.name,
                 nets: this.core.nets,
             });
+            // [CHANGED v3.34.0] A save the backend refused is not a save.
+            if (res && res.saved === false) return false;
             this._projectDirty = false;
             return true;
         } catch (err) {
@@ -3009,7 +3016,7 @@ class LibiPanel extends HTMLElement {
             if (!name && val === null) return `<div class="plc-col-${side} empty"></div>`;
             return `
                 <div class="plc-col-${side} ${errClass ? 'has-error' : ''}">
-                    ${name ? `<span class="pin-lbl">${name}</span>` : ''}
+                    ${name ? `<span class="pin-lbl">${this._esc(name)}</span>` : ''}
                     ${val !== null ? `<div class="pin-val ${errClass ? 'has-error' : ''}" data-prop="${propName}" title="${this._esc(val)}" dir="auto">${this._formatDisplayVal(val)}</div>` : ''}
                 </div>
             `;
@@ -3694,11 +3701,15 @@ class LibiPanel extends HTMLElement {
                 const haId = e.target.getAttribute('data-haid'); 
                 const nid = e.target.getAttribute('data-nid'); 
                 try { 
-                    await this._hass.connection.sendMessagePromise({ type: 'libi/delete_automation', automation_id: haId }); 
+                    const res = await this._hass.connection.sendMessagePromise({ type: 'libi/delete_automation', automation_id: haId }) || {}; 
                     this.core.nets = this.core.nets.filter(n => n.id !== nid); 
                     this.core.pushHistory(); 
                     this._render(); 
-                    alert('Automation deleted successfully.'); 
+                    // [CHANGED v3.34.0] Report what the backend did, a failed reload included.
+                    const errs = res.errors || [];
+                    if (errs.length) alert('The automation was deleted, but: ' + errs.join('; '));
+                    else if (res.deleted === false) alert('That automation was no longer in automations.yaml. The net was removed from the editor.');
+                    else alert('Automation deleted successfully.'); 
                 } catch (err) { 
                     alert('Error deleting automation: ' + err.message); 
                 } 

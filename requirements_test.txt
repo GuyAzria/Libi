@@ -1,0 +1,4 @@
+# Test dependencies. pytest-homeassistant-custom-component pins Home Assistant itself; LIBI depends
+# on the frontend integration, which needs the matching frontend package to set up.
+pytest-homeassistant-custom-component==0.13.375
+home-assistant-frontend==20260930.5

@@ -1,0 +1,47 @@
+# The project gate from CLAUDE.md RULE 3, the same commands the VS Code tasks run.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Project gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install the gate's tools
+        run: pip install ruff tree-sitter tree-sitter-javascript
+      - name: Every JS file parses
+        run: python tools/check_js_syntax.py $(find custom_components -name "*.js")
+      - name: Lint
+        run: python -m ruff check custom_components/libi --select=E9,F,B --ignore=E501
+      - name: Compile
+        run: |
+          python -m compileall -q custom_components/libi
+          find . -name __pycache__ -type d -exec rm -rf {} +
+      - name: Gate
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python tools/ha_full_check.py --root . --json reports/ha-full-check.json
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install test dependencies
+        run: pip install -r requirements_test.txt
+      - name: Pytest
+        run: python -m pytest -q

@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.coverage
+.venv/
+.uv-cache/
+venv/
+reports/
+libi.zip
