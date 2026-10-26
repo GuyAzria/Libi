@@ -42,6 +42,11 @@ while 17 real unescaped values per panel copy went unreported.
 * check_tests now also accepts a flat tests/ folder, the layout of the
   pytest-homeassistant-custom-component template.
 
+* The tag/manifest check ran on every GitHub run, because GitHub sets
+  GITHUB_REF_NAME on branch pushes too ("main"), and reported a BLOCKER for
+  "main" != the manifest version. It now runs only when GITHUB_REF_TYPE is
+  "tag", or when GITHUB_REF_NAME is set by hand with no type.
+
 What changed in 1.0.5, and why
 ------------------------------
 Version 1.0.4 reported 66 BLOCKERs, 25 HOT_WARNs and 1 ERROR on a codebase
@@ -311,7 +316,11 @@ def check_manifest(repo, comp, domain, rep: Report):
         else:
             rep.mark("HA version floor declared", PASS, str(floor))
 
+    # GitHub sets GITHUB_REF_NAME on every run - "main" on a branch push - so it is a tag only when
+    # GITHUB_REF_TYPE says so. Run by hand, GITHUB_REF_NAME=v... without a type is a tag check.
     tag = os.environ.get("GITHUB_REF_NAME", "")
+    if os.environ.get("GITHUB_REF_TYPE", "tag") != "tag":
+        tag = ""
     if tag and tag.lstrip("v") != str(man.get("version", "")):
         rep.add(BLOCKER, cat,
                 f"Git tag '{tag}' != manifest version '{man.get('version')}'.",
