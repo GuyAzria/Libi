@@ -11,9 +11,10 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
+# [ADDED v3.40.0 | 2026-10-27] Purpose: Automation-level conditions go back under conditions: when every
+#   rung still carries them, so an automation with conditions and an if keeps its shape.
 # [ADDED v3.37.0 | 2026-10-26] Purpose: A template trigger is no longer written into the conditions, and a
 #   trigger id LIBI generated is written only when a condition refers to it.
-# [ADDED v3.34.0 | 2026-10-26] Purpose: Removed unused imports; zip(strict=False) made explicit.
 # [ADDED v1.69.0] Output perfectly formed logic for standard triggers, retrieving native YAML dictionary if present via raw_trigger.
 # [ADDED v3.5.0 | 2026-08-24] Purpose: A net now carries a level. automation compiles to the
 #   automation schema exactly as before, script compiles to alias plus sequence, and scene
@@ -934,8 +935,11 @@ def _for_after(head, index):
     return None
 
 
-def _rung_conditions(head, trig_ids, use_trigger_refs):
+def _rung_conditions(head, trig_ids, use_trigger_refs, skip_base=False):
     conds = []
+    if skip_base:
+        # [ADDED v3.40.0] These are written once under conditions: by the caller.
+        head = [el for el in head if not el.get("baseCond")]
     for key, span in _spans(head):
         if key:
             # [ADDED v3.37.0] A template TRIGGER is drawn as a group too. It is a trigger, so it is
@@ -1187,7 +1191,28 @@ def _group_rungs(rungs):
     return groups, plain
 
 
-def _rungs_to_actions(rungs, groups, trig_ids):
+def _hoisted_conditions(rungs, trig_ids):
+    """[ADDED v3.40.0] The automation-level conditions, when every rung still carries the same ones.
+
+    The importer copies them into every rung, which is how a ladder draws them. Without this the
+    compiler wrote them into each rung as an if, so a save reshaped any automation that has both
+    conditions: and an if or choose. When the copies differ - the user edited one rung - None is
+    returned and each rung keeps its own, which is still correct."""
+    found = None
+    for rung in rungs:
+        head, _body = _split_rung(rung.get("elements", []))
+        base = [el for el in head if el.get("baseCond")]
+        if not base:
+            return None
+        conds = _rung_conditions(base, trig_ids, use_trigger_refs=True)
+        if found is None:
+            found = conds
+        elif conds != found:
+            return None
+    return found or None
+
+
+def _rungs_to_actions(rungs, groups, trig_ids, skip_base=False):
     """[ADDED v3.5.0] The per rung compilation that an automation with more than one rung already
     used, lifted out of ast_to_yaml unchanged. With an empty trig_ids it is exactly what a script
     sequence needs: every rung contributes its plain actions or an if / then that wraps them."""
@@ -1212,7 +1237,7 @@ def _rungs_to_actions(rungs, groups, trig_ids):
             default_seq = None
             for member in members:
                 head, body = _split_rung(member.get("elements", []))
-                conds = _rung_conditions(head, trig_ids, use_trigger_refs=True)
+                conds = _rung_conditions(head, trig_ids, use_trigger_refs=True, skip_base=skip_base)
                 seq = _rung_actions(body)
                 if member.get("isDefault"):
                     default_seq = seq
@@ -1232,7 +1257,7 @@ def _rungs_to_actions(rungs, groups, trig_ids):
             actions.append(block)
         else:
             head, body = _split_rung(rung.get("elements", []))
-            conds = _rung_conditions(head, trig_ids, use_trigger_refs=True)
+            conds = _rung_conditions(head, trig_ids, use_trigger_refs=True, skip_base=skip_base)
             seq = _rung_actions(body)
             only_triggers = all(el.get("isTrigger") or _all_triggers(el) for el in head) if head else True
             covers_all = only_triggers and len(_head_trigger_keys(head)) >= len(trig_ids)
@@ -1264,7 +1289,10 @@ def ast_to_automation(hass, net_ast):
         conditions = _rung_conditions(head, trig_ids, use_trigger_refs=False)
         actions = _rung_actions(body)
     else:
-        actions = _rungs_to_actions(rungs, groups, trig_ids)
+        hoisted = _hoisted_conditions(rungs, trig_ids)
+        if hoisted:
+            conditions = hoisted
+        actions = _rungs_to_actions(rungs, groups, trig_ids, skip_base=bool(hoisted))
 
     out = {
         "id": net.get("ha_id") or net.get("id"),

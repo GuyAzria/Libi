@@ -14,20 +14,20 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.38.0
+ * v3.47.0
  */
-// [ADDED v3.37.0 | 2026-10-26] Purpose: Imports at 3.37.0, for the chat's privacy line.
-// [ADDED v3.38.0 | 2026-10-26] Purpose: The Terminal / Logs view escapes the nets it shows. A net name
-//   with </textarea> in it (from an automation alias) closed the box and ran as HTML.
-import { LibiCore } from './libi-core.js?v=3.38.0';
-import { getStyles } from './libi-css.js?v=3.38.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.38.0';
-import { LibiOnline } from './libi-online.js?v=3.38.0';
-import { LibiAiChat } from './libi-ai.js?v=3.38.0';
+// [ADDED v3.46.0 | 2026-10-27] Purpose: Clicking an element while the AI chat is open shows its Inspector.
+// [ADDED v3.47.0 | 2026-10-27] Purpose: Net versions - a V badge on every net and a Versions dialog that
+//   puts an earlier version back on the canvas; SAVE & COMPILE then makes it the one that runs.
+import { LibiCore } from './libi-core.js?v=3.47.0';
+import { getStyles } from './libi-css.js?v=3.47.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.47.0';
+import { LibiOnline } from './libi-online.js?v=3.47.0';
+import { LibiAiChat } from './libi-ai.js?v=3.47.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.38.0';
+export const LIBI_BUILD = '3.47.0';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -138,6 +138,17 @@ class LibiPanel extends HTMLElement {
         this._activeNetForLoad = null;
     }
 
+    // [ADDED v3.45.0] Home Assistant tells every panel whether the screen is narrow (its sidebar is then
+    // hidden); the hamburger in the header follows it.
+    set narrow(value) {
+        const narrow = !!value;
+        if (narrow === this._narrow) return;
+        this._narrow = narrow;
+        this.toggleAttribute('narrow', narrow);
+    }
+
+    get narrow() { return !!this._narrow; }
+
     set hass(hass) { 
         this._hass = hass; 
         // [ADDED v3.35.0] The colour tokens in libi-css.js switch on [dark]. It follows the theme the
@@ -199,6 +210,7 @@ class LibiPanel extends HTMLElement {
                 const res = await this._hass.connection.sendMessagePromise({ type: 'libi/project_open', slug: remembered.slug });
                 this.core.nets = res.nets || [];
                 this._project = { slug: res.slug, name: res.name };
+                this._versions = res.versions || {};
                 this.core.syncCounters();
                 this.core.repairAST();
                 this._initialized = true;
@@ -269,6 +281,8 @@ class LibiPanel extends HTMLElement {
             // [CHANGED v3.34.0] Only a save the backend confirms makes the project match the disk. A
             // refused save (one of Home Assistant's files could not be read) keeps the unsaved marker.
             if (r.saved !== false) this._projectDirty = false;
+            // [ADDED v3.47.0] The backend says which version of each net is the one now in Home Assistant.
+            if (r.versions) this._versions = r.versions;
             if (!this._project && r.slug) {
                 this._project = { slug: r.slug, name: 'Default' };
                 this._rememberProject();
@@ -486,6 +500,8 @@ class LibiPanel extends HTMLElement {
                 <p style="font-size:13px; color:var(--secondary-text-color, #757575); margin:0;">The automations, scripts and scenes this project compiled stay exactly where they are in Home Assistant and keep running. Only the .libi file is removed, so the ladder is gone and the YAML is not.</p>
                 <div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button><button class="btn danger" id="projDeleteOk">Delete the drawing</button></div>
             </div></div>`;
+        } else if (this._modal === 'net_versions') {
+            modalHtml = this._versionsDialogHtml();
         } else if (this._modal === 'entity_picker') {
             modalHtml = this._epDialogHtml();
         } else if (this._modal === 'rename_entity') {
@@ -511,6 +527,10 @@ class LibiPanel extends HTMLElement {
         <style>${getStyles()}</style>
         <div class="panel-layout">
             <div class="header">
+                <!-- [ADDED v3.45.0] On a phone Home Assistant shows no bar of its own above a custom panel, so the
+                     panel carries the button that opens HA's sidebar - the same hass-toggle-menu event HA's own
+                     menu button fires. Shown when HA says the screen is narrow, or at phone width. -->
+                <button class="ha-icon-btn hdr-ha-menu" id="haMenuBtn" title="Home Assistant menu"><svg viewBox="0 0 24 24"><path d="${MDI.menu}"></path></svg></button>
                 <div class="header-title" style="display: flex; align-items: center;">
                     <!-- [CHANGED v3.35.0] The logo is the brand icon (brand/dark_icon@2x.png with its
                          background made transparent), so it reads on a light and a dark header alike. -->
@@ -522,16 +542,23 @@ class LibiPanel extends HTMLElement {
                      ghost icon buttons, one blue text action, one filled primary action, and an
                      overflow menu on the right for everything that is not used every minute. -->
                 <div class="header-acts">
-                    ${this._iconBtn('undoBtn', MDI.undo, 'Undo (Ctrl+Z)')}
-                    ${this._iconBtn('redoBtn', MDI.redo, 'Redo (Ctrl+Y)')}
-                    ${this._iconBtn('collapseAllBtn', allCollapsed ? MDI.unfold : MDI.collapse, allCollapsed ? 'Expand every net' : 'Collapse every net')}
-                    <button class="ha-text-btn ${this.online.enabled ? 'online-on' : ''}" id="onlineBtn" title="Follow the automations as they run">${this.online.enabled ? '● Traces' : 'Traces'}</button>
+                    <!-- [CHANGED v3.45.0] On a phone these four live in the menu (hide-phone); the menu moves to
+                         the left of the header and Save becomes a round icon, so nothing is wider than the screen. -->
+                    ${this._iconBtn('undoBtn', MDI.undo, 'Undo (Ctrl+Z)', 'hide-phone')}
+                    ${this._iconBtn('redoBtn', MDI.redo, 'Redo (Ctrl+Y)', 'hide-phone')}
+                    ${this._iconBtn('collapseAllBtn', allCollapsed ? MDI.unfold : MDI.collapse, allCollapsed ? 'Expand every net' : 'Collapse every net', 'hide-phone')}
+                    <button class="ha-text-btn hide-phone ${this.online.enabled ? 'online-on' : ''}" id="onlineBtn" title="Follow the automations as they run">${this.online.enabled ? '● Traces' : 'Traces'}</button>
                     <button class="ha-btn-primary" id="saveBtn" title="Save the drawing and compile it into Home Assistant">
-                        <svg viewBox="0 0 24 24"><path d="${MDI.save}"></path></svg>SAVE &amp; COMPILE
+                        <svg viewBox="0 0 24 24"><path d="${MDI.save}"></path></svg><span class="save-lbl">SAVE &amp; COMPILE</span>
                     </button>
                     <div class="hdr-menu-wrap">
                         ${this._iconBtn('hdrMenuBtn', MDI.dots, 'More')}
                         <div class="hdr-menu${this._hdrMenu ? ' show' : ''}" id="hdrMenu">
+                            <button class="hdr-menu-item phone-only" id="mUndo"><svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:currentColor;"><path d="${MDI.undo}"></path></svg>Undo</button>
+                            <button class="hdr-menu-item phone-only" id="mRedo"><svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:currentColor;"><path d="${MDI.redo}"></path></svg>Redo</button>
+                            <button class="hdr-menu-item phone-only" id="mCollapse">${allCollapsed ? `<svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:currentColor;"><path d="${MDI.unfold}"></path></svg>Expand every net` : `<svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:currentColor;"><path d="${MDI.collapse}"></path></svg>Collapse every net`}</button>
+                            <button class="hdr-menu-item phone-only${this.online.enabled ? ' online-on' : ''}" id="mOnline"><svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:currentColor;"><path d="${MDI.pulse}"></path></svg>${this.online.enabled ? 'Traces: stop following' : 'Traces: follow the automations'}</button>
+                            <div class="hdr-menu-sep phone-only"></div>
                             <button class="hdr-menu-item" id="projNewBtn"><svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:currentColor;"><path d="${MDI.filePlus}"></path></svg>New project</button>
                             <button class="hdr-menu-item" id="projOpenBtn"><svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:currentColor;"><path d="${MDI.folderOpen}"></path></svg>Open project</button>
                             <button class="hdr-menu-item" id="projCloseBtn" ${this._project ? '' : 'disabled'}><svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:currentColor;"><path d="${MDI.close}"></path></svg>Close project</button>
@@ -557,6 +584,7 @@ class LibiPanel extends HTMLElement {
                         <span class="grow">Inspector</span>
                     </div>
                     <div class="sidebar-rail-tag">LIBI</div>
+                    <button class="sidebar-rail-ai" id="railAiBtn" title="Open the AI chat">CHAT AI</button>
                     <div class="sidebar-content">${sidebarHtml}</div>
                     <div class="ai-mount" id="aiChatMount"></div>
                 </div>
@@ -1746,6 +1774,7 @@ class LibiPanel extends HTMLElement {
                         ${levelBadge}
                         ${net.source === 'orphan' ? `<span style="font-size:11px; font-weight:700; background:#fdecea; color:#c62828; padding:2px 6px; border-radius:4px; margin-left:8px;" title="${this._esc(net.source_note || '')}">⚠ Orphan</span>` : ''}
                         ${syncBadge}
+                        ${this._versionBadgeHtml(net)}
                     </div>
                 </div>
                 <div class="net-hdr-r">
@@ -1772,6 +1801,7 @@ class LibiPanel extends HTMLElement {
                         </button>
                         <div class="net-menu-dropdown" id="dropdown-${net.id}">
                             <button class="net-menu-item show-yaml-btn" data-nid="${net.id}">📄 Show as YAML</button>
+                            <button class="net-menu-item versions-net-btn" data-nid="${this._esc(net.id)}">🕘 Versions</button>
                             <button class="net-menu-item duplicate-net-btn" data-nid="${net.id}">⧉ Duplicate Net</button>
                             <button class="net-menu-item danger remove-net-btn" data-nid="${net.id}">✖ Remove from Net</button>
                             ${net.ha_id ? `<button class="net-menu-item danger delete-auto-btn" data-nid="${this._esc(net.id)}" data-haid="${this._esc(net.ha_id)}">🗑️ Delete File</button>` : ''}
@@ -1790,6 +1820,101 @@ class LibiPanel extends HTMLElement {
                 </div>
             </div>
         </div>`;
+    }
+
+    // [ADDED v3.47.0] The version of this net that runs in Home Assistant. When an earlier version was
+    // chosen, the newest one is named next to it, so it is clear that the newest is not the one running.
+    _versionBadgeHtml(net) {
+        const v = (this._versions || {})[net.id];
+        if (!v || !v.active) return '';
+        const older = v.latest && v.active !== v.latest;
+        const text = older ? `V${v.active} · newest V${v.latest}` : `V${v.active}`;
+        const tip = older ? `Version ${v.active} runs in Home Assistant. Version ${v.latest} is newer. Click to choose a version.`
+                          : `Version ${v.active} runs in Home Assistant. Click to see the earlier versions.`;
+        return `<button class="ver-badge${older ? ' older' : ''}" data-nid="${this._esc(net.id)}" title="${this._esc(tip)}">${this._esc(text)}</button>`;
+    }
+
+    _versionsDialogHtml() {
+        const vm = this._verModal || {};
+        const net = this.core.nets.find(n => n.id === vm.nid);
+        const reasons = { opened: 'Recorded when the project was opened', saved: 'Saved from LIBI', external: 'Changed outside LIBI' };
+        const muted = 'font-size:13px; color:var(--secondary-text-color, #757575); margin:0;';
+        let body;
+        if (vm.loading) body = `<p style="${muted}">Loading the versions…</p>`;
+        else if (vm.error) body = `<p class="ver-error">${this._esc(vm.error)}</p>`;
+        else if (!(vm.versions || []).length) body = `<p style="${muted}">No versions yet. The first one is recorded when this net is saved and compiled.</p>`;
+        else body = `<div class="auto-list ver-list">${vm.versions.map(v => {
+            const running = v.v === vm.active;
+            let when = String(v.saved || '');
+            try { when = new Date(v.saved).toLocaleString(); } catch (err) { /* keep the stored text */ }
+            return `<div class="ver-item${running ? ' running' : ''}">
+                <div class="ver-row">
+                    <span class="ver-num">V${this._esc(v.v)}</span>
+                    <span class="ver-when">${this._esc(when)}</span>
+                    ${running ? '<span class="ver-run">● Runs in Home Assistant</span>' : ''}
+                    <span style="flex:1"></span>
+                    <button class="btn ver-use" data-v="${this._esc(v.v)}">Put on the canvas</button>
+                </div>
+                <div class="ver-why">${this._esc(reasons[v.reason] || v.reason || '')}${v.name ? ' · ' + this._esc(v.name) : ''}</div>
+                <details class="ver-yaml"><summary>YAML</summary><pre dir="ltr">${this._esc(v.yaml || '')}</pre></details>
+            </div>`;
+        }).join('')}</div>`;
+        return `<div class="modal-overlay" id="modalOverlay"><div class="modal ver-modal">
+            <h2 class="modal-title" dir="auto">Versions · ${this._esc(net ? net.name : '')}</h2>
+            <p style="${muted}">Every save that changes this net keeps the version before it. Putting a version on the canvas does not change Home Assistant yet: SAVE &amp; COMPILE makes it the version that runs. When no version is chosen, the newest saved version is the one that runs.</p>
+            ${body}
+            <div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Close</button></div>
+        </div></div>`;
+    }
+
+    async _openVersions(nid) {
+        this.shadowRoot.querySelectorAll('.net-menu-dropdown.show').forEach(d => d.classList.remove('show'));
+        this._verModal = { nid, loading: true, versions: [], active: 0 };
+        this._modal = 'net_versions';
+        this._render();
+        if (!this._project || !this._hass || !this._hass.connection) {
+            this._verModal = { nid, versions: [], active: 0, error: 'Versions belong to a project. Save the project first.' };
+        } else {
+            try {
+                const res = await this._hass.connection.sendMessagePromise({ type: 'libi/net_versions', slug: this._project.slug, net_id: nid });
+                this._verModal = { nid, versions: (res && res.versions) || [], active: (res && res.active) || 0 };
+            } catch (err) {
+                // An updated panel talking to a Home Assistant that still runs the previous LIBI: the
+                // JavaScript is new after a refresh, the Python only after a restart.
+                const stale = err && err.code === 'unknown_command';
+                this._verModal = { nid, versions: [], active: 0, error: stale
+                    ? 'LIBI was updated, but Home Assistant still runs the previous version. Restart Home Assistant (Settings ▸ System ▸ Restart); opening the project afterwards records V1 of every net.'
+                    : 'The versions could not be read: ' + (err && err.message ? err.message : err) };
+            }
+        }
+        if (this._modal === 'net_versions' && this._verModal && this._verModal.nid === nid) this._render();
+    }
+
+    // Replaces the net on the canvas with the chosen version. The net keeps its place, its id and the
+    // automation it is linked to, so the save that follows overwrites the same automation in Home
+    // Assistant and the backend recognises the YAML as that earlier version instead of a new one.
+    _useVersion(number) {
+        const vm = this._verModal || {};
+        const at = this.core.nets.findIndex(n => n.id === vm.nid);
+        const ver = (vm.versions || []).find(x => Number(x.v) === number);
+        if (at < 0 || !ver || !ver.net) return;
+        const cur = this.core.nets[at];
+        const copy = this.core.duplicateNet(ver.net);
+        copy.id = cur.id;
+        copy.name = ver.net.name || cur.name;
+        const haId = cur.ha_id || ver.net.ha_id;
+        if (haId) copy.ha_id = haId; else delete copy.ha_id;
+        delete copy.source;
+        delete copy.source_note;
+        this.core.nets[at] = copy;
+        this.core.repairAST();
+        this.core.pushHistory();
+        this._projectDirty = true;
+        this._inspectedEl = null;
+        this._modal = null;
+        this._verModal = null;
+        this._render();
+        alert(`V${number} is on the canvas. Press SAVE & COMPILE to make it the version that runs in Home Assistant.`);
     }
 
     _netCanvasHtml(net) {
@@ -2701,6 +2826,7 @@ class LibiPanel extends HTMLElement {
             // [CHANGED v3.34.0] A save the backend refused is not a save.
             if (res && res.saved === false) return false;
             this._projectDirty = false;
+            if (res && res.versions) this._versions = res.versions;
             return true;
         } catch (err) {
             console.error('LIBI could not save the project on close', err);
@@ -2731,6 +2857,7 @@ class LibiPanel extends HTMLElement {
             this.core.repairAST();
             this.core.resetHistory ? this.core.resetHistory() : this.core.pushHistory();
             this._project = { slug: res.slug, name: res.name };
+            this._versions = res.versions || {};
             this._projectDirty = false;
             this._inspectedEl = null;
             this._modal = null;
@@ -2751,6 +2878,7 @@ class LibiPanel extends HTMLElement {
             this.core.nets = [];
             this.core.pushHistory();
             this._project = { slug: res.slug, name: res.name };
+            this._versions = {};
             this._projectDirty = false;
             this._modal = null;
             this._rememberProject();
@@ -2794,8 +2922,8 @@ class LibiPanel extends HTMLElement {
     }
 
     // [ADDED v3.13.0] A ghost icon button in the Home Assistant shape.
-    _iconBtn(id, path, title) {
-        return `<button class="ha-icon-btn" id="${id}" title="${this._esc(title)}"><svg viewBox="0 0 24 24"><path d="${path}"></path></svg></button>`;
+    _iconBtn(id, path, title, cls = '') {
+        return `<button class="ha-icon-btn${cls ? ' ' + cls : ''}" id="${id}" title="${this._esc(title)}"><svg viewBox="0 0 24 24"><path d="${path}"></path></svg></button>`;
     }
 
     // [ADDED v3.13.0] The automation entity that belongs to a net. The link is the id, not the
@@ -2893,6 +3021,9 @@ class LibiPanel extends HTMLElement {
     // opens back to the width that was saved, not to some default, so clicking an element always
     // shows it at the size the user last chose.
     _wakeSidebar() {
+        // [ADDED v3.46.0] The open AI chat fills the whole sidebar and hides the Inspector, so new
+        // Inspector content (a clicked element, a net's YAML) closes the chat and shows it.
+        if (this.aiChat && this.aiChat.open) this.aiChat.setOpen(false);
         if (!this._sidebarRail) return;
         this._sidebarRail = false;
         this._saveSidebar();
@@ -3486,6 +3617,16 @@ class LibiPanel extends HTMLElement {
             }
         });
 
+        // [ADDED v3.39.0] On the collapsed rail, CHAT AI opens the sidebar straight into the chat.
+        const railAi = sr.getElementById('railAiBtn');
+        if (railAi) railAi.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._sidebarRail = false;
+            this._saveSidebar();
+            this.aiChat.setOpen(true);
+            this._render();
+        });
+
         const sbToggle = sr.getElementById('sidebarToggle');
         if (sbToggle) sbToggle.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -3505,8 +3646,18 @@ class LibiPanel extends HTMLElement {
             }
         });
 
-        on('undoBtn', 'click', () => { if (this.core.undo()) this._render(); });
-        on('redoBtn', 'click', () => { if (this.core.redo()) this._render(); });
+        // [CHANGED v3.45.0] The same four actions from the header and, on a phone, from the menu.
+        const doUndo = () => { this._hdrMenu = false; if (this.core.undo()) this._render(); else this._render(); };
+        const doRedo = () => { this._hdrMenu = false; if (this.core.redo()) this._render(); else this._render(); };
+        on('undoBtn', 'click', doUndo);
+        on('redoBtn', 'click', doRedo);
+        on('mUndo', 'click', (e) => { e.stopPropagation(); doUndo(); });
+        // Opens Home Assistant's sidebar. Where nothing listens for the event, the press does nothing.
+        on('haMenuBtn', 'click', (e) => {
+            e.stopPropagation();
+            this.dispatchEvent(new CustomEvent('hass-toggle-menu', { bubbles: true, composed: true }));
+        });
+        on('mRedo', 'click', (e) => { e.stopPropagation(); doRedo(); });
 
         // [CHANGED v3.5.0] ADD NET asks which kind of logic to create instead of always producing
         // an automation. The net itself is created by the level picker below.
@@ -3517,17 +3668,23 @@ class LibiPanel extends HTMLElement {
         on('addNetTop', 'click', addNet);
         on('addNetBottom', 'click', addNet);
         
-        on('collapseAllBtn', 'click', () => {
+        const doCollapse = () => {
+            this._hdrMenu = false;
             const allClosed = this.core.nets.length > 0 && this.core.nets.every(n => n.collapsed);
             this.core.nets.forEach(n => { n.collapsed = !allClosed; });
             this._render();
-        });
+        };
+        on('collapseAllBtn', 'click', doCollapse);
+        on('mCollapse', 'click', (e) => { e.stopPropagation(); doCollapse(); });
 
-        on('onlineBtn', 'click', () => {
+        const doOnline = () => {
+            this._hdrMenu = false;
             this.online.enabled = !this.online.enabled;
             this._render();
             this._paintOnline();
-        });
+        };
+        on('onlineBtn', 'click', doOnline);
+        on('mOnline', 'click', (e) => { e.stopPropagation(); doOnline(); });
 
         on('saveBtn', 'click', () => { 
             this._saveToBackend(); 
@@ -3611,6 +3768,16 @@ class LibiPanel extends HTMLElement {
             this.core.nets.splice(at + 1, 0, copy);
             this.core.pushHistory();
             this._render();
+        });
+
+        // [ADDED v3.47.0] The badge and the menu item open the same list.
+        all('.ver-badge, .versions-net-btn', 'click', e => {
+            e.stopPropagation();
+            this._openVersions(e.currentTarget.getAttribute('data-nid'));
+        });
+        all('.ver-use', 'click', e => {
+            e.stopPropagation();
+            this._useVersion(Number(e.currentTarget.getAttribute('data-v')));
         });
 
         all('.show-yaml-btn', 'click', async e => {

@@ -10,7 +10,7 @@
       },
       "local": {
         "title": "Local AI",
-        "description": "The address and model of a local LLM server, for example Ollama. When you use the AI Chat, your request and the names of the devices you pick are sent to this server, and stay in your network as long as the server does.",
+        "description": "The address and model of a local LLM server, for example Ollama. When you use the AI Chat, your request, the names of the devices you pick and, while sharing is on, the nets open in the LIBI page and your helpers are sent to this server, and stay in your network as long as the server does.",
         "data": {
           "local_url": "Server URL",
           "local_model": "Model",
@@ -19,7 +19,7 @@
       },
       "cloud": {
         "title": "Cloud AI",
-        "description": "A cloud AI service that offers the OpenAI chat completions API: Google Gemini, OpenAI, or another compatible service. When you use the AI Chat, your request and the names of the devices you pick are sent to this service. Your automations, device states and the full list of your devices are never sent.",
+        "description": "A cloud AI service that offers the OpenAI chat completions API: Google Gemini, OpenAI, or another compatible service. When you use the AI Chat, your request and the names of the devices you pick are sent to this service. While \"Share the nets on this page and my helpers\" is on (in the chat), so are the nets open in the LIBI page, your helpers, and the devices that match the request with their state. Your other automations and the rest of your devices are never sent.",
         "data": {
           "cloud_provider": "Provider",
           "cloud_api_key": "API key",
@@ -55,7 +55,7 @@
       },
       "local": {
         "title": "Local AI",
-        "description": "The address and model of a local LLM server, for example Ollama. When you use the AI Chat, your request and the names of the devices you pick are sent to this server, and stay in your network as long as the server does.",
+        "description": "The address and model of a local LLM server, for example Ollama. When you use the AI Chat, your request, the names of the devices you pick and, while sharing is on, the nets open in the LIBI page and your helpers are sent to this server, and stay in your network as long as the server does.",
         "data": {
           "local_url": "Server URL",
           "local_model": "Model",
@@ -67,7 +67,7 @@
       },
       "cloud": {
         "title": "Cloud AI",
-        "description": "A cloud AI service that offers the OpenAI chat completions API: Google Gemini, OpenAI, or another compatible service. When you use the AI Chat, your request and the names of the devices you pick are sent to this service. Your automations, device states and the full list of your devices are never sent.",
+        "description": "A cloud AI service that offers the OpenAI chat completions API: Google Gemini, OpenAI, or another compatible service. When you use the AI Chat, your request and the names of the devices you pick are sent to this service. While \"Share the nets on this page and my helpers\" is on (in the chat), so are the nets open in the LIBI page, your helpers, and the devices that match the request with their state. Your other automations and the rest of your devices are never sent.",
         "data": {
           "cloud_provider": "Provider",
           "cloud_api_key": "API key",

@@ -1,0 +1,122 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-10-27] Purpose: At phone widths nothing may be wider than the screen. The panel runs
+  inside iframes of real phone widths (a desktop browser window cannot be made that narrow); the header
+  has the hamburger (Home Assistant's sidebar) on the left, the logo, the project, a round Save and the
+  menu on the right; the other actions are in the menu. At desktop width the header is unchanged.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1300,900"><title>libi phone header test</title></head>
+<body style="margin:0">
+<pre id="out">RUNNING</pre>
+<div id="frames"></div>
+<script type="module">
+const results = [];
+const check = (name, cond, detail = '') => results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+const INNER = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="margin:0">
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+window.alert = () => {}; window.confirm = () => false;
+const hass = { states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+  connection: { sendMessagePromise: async (m) => m.type === 'libi/ai_status' ? { configured: false } :
+                 (m.type === 'libi/load_automation' ? { nets: [] } : []),
+                subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {} } };
+localStorage.clear();
+const panel = document.createElement('libi-panel');
+panel.style.height = '100vh'; panel.style.display = 'block';
+document.body.appendChild(panel);
+panel.hass = hass;
+setTimeout(() => {
+  panel._project = { slug: 'g', name: 'Garden watering project with a long name' };
+  const net = panel.core.nets[0] || panel.core.mkNet('x');
+  if (!panel.core.nets.length) panel.core.nets.push(net);
+  net.name = 'Garden watering on the chosen days and hours';
+  net.ha_id = 'garden_watering';
+  panel._render();
+  window.__ready = panel;
+}, 200);
+<\/script></body></html>`;
+
+function frame(width) {
+  return new Promise(resolve => {
+    const f = document.createElement('iframe');
+    f.style.cssText = `width:${width}px;height:800px;border:0;display:block`;
+    f.srcdoc = INNER;
+    document.getElementById('frames').appendChild(f);
+    const poll = () => (f.contentWindow && f.contentWindow.__ready) ? resolve(f) : setTimeout(poll, 50);
+    poll();
+  });
+}
+
+function inside(win, el) {
+  const r = el.getBoundingClientRect();
+  return r.width === 0 || (r.left >= -1 && r.right <= win.innerWidth + 1);
+}
+
+try {
+  for (const width of [360, 390, 768]) {
+    const f = await frame(width);
+    const win = f.contentWindow, panel = win.__ready, sr = panel.shadowRoot;
+    await sleep(80);
+    const tag = `${width}px:`;
+    const doc = win.document.documentElement;
+    check(`${tag} the page does not scroll sideways`, doc.scrollWidth <= win.innerWidth + 1, `${doc.scrollWidth} > ${win.innerWidth}`);
+    const outside = [...sr.querySelectorAll('.header *, .net-hdr *, .net-toolbar *, .vars-top *')]
+      .filter(el => getComputedStyle(el).display !== 'none' && !el.closest('.hdr-menu') && !inside(win, el))
+      .map(el => `${el.tagName.toLowerCase()}#${el.id}.${String(el.className).split(' ')[0]}`);
+    check(`${tag} every header, net and variables control is inside the screen`, outside.length === 0, outside.slice(0, 6).join(' '));
+    const menuBtn = sr.getElementById('hdrMenuBtn'), logo = sr.querySelector('.hdr-logo'), save = sr.getElementById('saveBtn');
+    const burger = sr.getElementById('haMenuBtn');
+    check(`${tag} the hamburger is first, on the left`, getComputedStyle(burger).display !== 'none' && burger.getBoundingClientRect().right <= logo.getBoundingClientRect().left + 1);
+    check(`${tag} the menu stays on the right, after Save`, menuBtn.getBoundingClientRect().left >= save.getBoundingClientRect().right - 1);
+    let toggled = 0;
+    win.document.addEventListener('hass-toggle-menu', () => { toggled++; });
+    burger.click(); await sleep(20);
+    check(`${tag} the hamburger asks Home Assistant to open its sidebar`, toggled === 1);
+    check(`${tag} Save is a round icon`, getComputedStyle(sr.querySelector('.save-lbl')).display === 'none' && save.getBoundingClientRect().width <= 44);
+    check(`${tag} Save is on the screen`, inside(win, save) && save.getBoundingClientRect().width > 0);
+    for (const id of ['undoBtn', 'redoBtn', 'collapseAllBtn', 'onlineBtn']) {
+      check(`${tag} ${id} leaves the header`, getComputedStyle(sr.getElementById(id)).display === 'none');
+    }
+    menuBtn.click(); await sleep(40);
+    const menu = sr.getElementById('hdrMenu');
+    check(`${tag} the menu opens`, menu.classList.contains('show'));
+    for (const id of ['mUndo', 'mRedo', 'mCollapse', 'mOnline']) {
+      const it = sr.getElementById(id);
+      check(`${tag} ${id} is in the menu`, !!it && getComputedStyle(it).display !== 'none');
+    }
+    check(`${tag} the open menu fits the screen`, inside(win, menu), `${menu.getBoundingClientRect().left}-${menu.getBoundingClientRect().right} of ${win.innerWidth}`);
+    const before = panel.core.nets.every(n => n.collapsed);
+    sr.getElementById('mCollapse').click(); await sleep(40);
+    check(`${tag} Collapse from the menu works and closes it`, panel.core.nets.every(n => n.collapsed) !== before && !sr.getElementById('hdrMenu').classList.contains('show'));
+    sr.getElementById('hdrMenuBtn').click(); await sleep(20);
+    sr.getElementById('mOnline').click(); await sleep(40);
+    check(`${tag} Traces from the menu works`, panel.online.enabled === true);
+    panel.online.enabled = false;
+  }
+
+  // desktop: unchanged
+  const f = await frame(1280);
+  const win = f.contentWindow, sr = win.__ready.shadowRoot;
+  await sleep(80);
+  check('1280px: Undo, Redo, Collapse and Traces stay in the header', ['undoBtn', 'redoBtn', 'collapseAllBtn', 'onlineBtn']
+    .every(id => getComputedStyle(sr.getElementById(id)).display !== 'none'));
+  check('1280px: Save keeps its label', getComputedStyle(sr.querySelector('.save-lbl')).display !== 'none');
+  check('1280px: the menu stays on the right', sr.getElementById('hdrMenuBtn').getBoundingClientRect().left > sr.getElementById('saveBtn').getBoundingClientRect().left);
+  check('1280px: no hamburger while Home Assistant shows its sidebar', getComputedStyle(sr.getElementById('haMenuBtn')).display === 'none');
+  win.__ready.narrow = true; await sleep(20);
+  check('1280px: the hamburger appears when Home Assistant says the screen is narrow', getComputedStyle(sr.getElementById('haMenuBtn')).display !== 'none');
+  win.__ready.narrow = false; await sleep(20);
+  sr.getElementById('hdrMenuBtn').click(); await sleep(30);
+  check('1280px: the phone-only menu items are hidden', getComputedStyle(sr.getElementById('mUndo')).display === 'none');
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

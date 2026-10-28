@@ -129,3 +129,62 @@ async def test_the_gate_sees_added_and_lost_keys(hass: HomeAssistant, change, ex
         report = verify_round_trip(hass, CORPUS[0])
     assert report["ok"] is False
     assert any(i.startswith(expect) for i in report["issues"]), report["issues"]
+
+
+# [ADDED 2026-10-27] Automation-level conditions next to an if or choose. The compiler used to write
+# them into every rung as an if, so a save reshaped such an automation.
+_V = "switch.garden_valve"
+_ON = {"action": "switch.turn_on", "target": {"entity_id": _V}}
+_OFF = {"action": "switch.turn_off", "target": {"entity_id": _V}}
+_WK = [{"condition": "time", "weekday": ["sun", "tue", "thu", "sat"]}]
+_IF_SHORT = {"if": [{"condition": "template", "value_template": "{{ not wait.completed }}"}],
+             "then": [{"action": "notify.notify", "data": {"message": "short"}}]}
+HOISTED = [
+    {"id": "conditions_and_if", "alias": "x", "triggers": [{"trigger": "time", "at": "05:00:00"}],
+     "conditions": _WK, "actions": [_ON, _IF_SHORT]},
+    {"id": "conditions_segment_if_segment", "alias": "x", "triggers": [{"trigger": "time", "at": "05:00:00"}],
+     "conditions": _WK, "actions": [_ON, _IF_SHORT, _OFF]},
+    {"id": "two_conditions_and_choose", "alias": "x", "triggers": [{"trigger": "time", "at": "05:00:00"}],
+     "conditions": _WK + [{"condition": "state", "entity_id": "input_boolean.away", "state": "off"}],
+     "actions": [{"choose": [{"conditions": [{"condition": "state", "entity_id": _V, "state": "on"}],
+                              "sequence": [_OFF]}], "default": [_ON]}]},
+    {"id": "garden_four_mornings", "alias": "Garden watering", "mode": "single",
+     "triggers": [{"trigger": "time", "at": "05:00:00"}], "conditions": _WK,
+     "actions": [
+         {"action": "weather.get_forecasts", "target": {"entity_id": "weather.home"},
+          "data": {"type": "daily"}, "response_variable": "forecast"},
+         {"condition": "template",
+          "value_template": "{{ forecast['weather.home'].forecast[0].condition not in ['rainy', 'pouring'] }}"},
+         {"variables": {"start": "{{ states('sensor.water_meter') | float(0) }}"}},
+         _ON,
+         {"wait_template": "{{ states('sensor.water_meter') | float(0) - start >= 200 }}",
+          "timeout": "01:00:00", "continue_on_timeout": True},
+         _OFF, _IF_SHORT]},
+]
+
+
+@pytest.mark.parametrize("automation", HOISTED, ids=[a["id"] for a in HOISTED])
+async def test_conditions_next_to_if_keep_their_shape(hass: HomeAssistant, automation) -> None:
+    report = verify_round_trip(hass, automation)
+    assert report["ok"], report.get("issues")
+
+
+async def test_a_condition_edited_in_one_rung_stays_in_that_rung(hass: HomeAssistant) -> None:
+    """When the user changes the copy in one rung, the copies differ: nothing is hoisted, and each
+    rung keeps its own condition, so the automation still does what the drawing says."""
+    from custom_components.libi.libi_to_yaml import ast_to_yaml
+    from custom_components.libi.yaml_to_libi import yaml_to_ast
+    net = yaml_to_ast(hass, HOISTED[0])
+    edited = False
+    for rung in net["rungs"]:
+        for el in rung["elements"]:
+            if el.get("baseCond") and not edited and rung.get("group"):
+                el["weekday"] = ["mon"]
+                if isinstance(el.get("raw"), dict):
+                    el["raw"] = {**el["raw"], "weekday": ["mon"]}
+                edited = True
+    assert edited
+    out = ast_to_yaml(hass, net)
+    assert not out.get("conditions"), out.get("conditions")
+    text = str(out["actions"])
+    assert "'mon'" in text and "'sun'" in text

@@ -12,12 +12,12 @@
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
 """The LIBI integration: a ladder editor panel for Home Assistant automations."""
-# v3.38.0
+# v3.47.0
 # [ADDED v3.34.0 | 2026-10-26] Purpose: The static path and the websocket commands are registered once
 #   in async_setup, so reloading the config entry no longer fails on a route that already exists. The
 #   panel is admin only and is removed through the frontend API on unload, the entry data lives on
 #   entry.runtime_data, and CONFIG_SCHEMA declares that LIBI is set up from the UI only.
-# [ADDED v3.38.0 | 2026-10-26] Purpose: LIBI_VERSION 3.38.0 (an XSS fix in the panel).
+# [ADDED v3.47.0 | 2026-10-27] Purpose: LIBI_VERSION 3.47.0 (every net keeps its earlier versions).
 import logging
 import os
 
@@ -39,7 +39,7 @@ _PANEL_JS = "libi-panel.js"
 _PANEL_ELEMENT = "libi-panel"
 # One version number for the whole integration. The panel and every module it imports are served
 # with this string, so the browser can never mix an old file with a new one.
-LIBI_VERSION = "3.38.0"
+LIBI_VERSION = "3.47.0"
 
 # [CHANGED v3.15.2] The frontend used to be served from /local/libi. /local is Home Assistant's own
 # alias for the config/www folder and it is registered before any custom integration, so if a folder

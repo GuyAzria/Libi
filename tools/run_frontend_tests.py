@@ -14,6 +14,8 @@
 # more details. <https://www.gnu.org/licenses/>.
 """Run the panel's behavioural tests in a real headless browser.
 
+[ADDED v1.1.0 | 2026-10-26] Purpose: Each page can state its window size, so phone and desktop
+layouts are both testable.
 [ADDED v1.0.0 | 2026-10-26] Purpose: Frontend behaviour a syntax check cannot reach (CLAUDE.md
 RULE 3a). Each tests/frontend/test_*.html loads the real module, runs it against canned websocket
 answers, and writes {"passed": n, "failed": [...]} into <pre id="out">. Chrome or Edge runs it with
@@ -49,11 +51,19 @@ def browser():
     return None
 
 
+def window_size(page):
+    """A page states the window it needs: <meta name="window-size" content="1280,900">. Without one
+    it gets a desktop window, because headless Chrome's small default trips the phone layout."""
+    m = re.search(r'<meta name="window-size" content="(\d+),(\d+)"', page.read_text(encoding="utf-8"))
+    return f"{m.group(1)},{m.group(2)}" if m else "1280,900"
+
+
 def run(exe, page):
     with tempfile.TemporaryDirectory() as profile:
         proc = subprocess.run(
             [exe, "--headless=new", "--disable-gpu", "--no-first-run", "--no-sandbox",
              "--allow-file-access-from-files", f"--user-data-dir={profile}",
+             f"--window-size={window_size(page)}",
              "--virtual-time-budget=10000", "--dump-dom", page.as_uri()],
             capture_output=True, text=True, encoding="utf-8", timeout=120)
     m = re.search(r'<pre id="out">(.*?)</pre>', proc.stdout, re.S)

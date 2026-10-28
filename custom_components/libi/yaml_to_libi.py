@@ -11,8 +11,8 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
+# [ADDED v3.40.0 | 2026-10-27] Purpose: Copies of automation-level conditions are marked baseCond.
 # [ADDED v3.37.0 | 2026-10-26] Purpose: The registry imports moved to the top of the module.
-# [ADDED v3.34.0 | 2026-10-26] Purpose: Removed an unused local in the service branch.
 # [ADDED v1.69.0] Backend parser updated to correctly map native device/state triggers into isTrigger=True Contacts and CMPs without using proprietary blocks.
 # [ADDED v3.6.0 | 2026-08-24] Purpose: Three rules that the import now keeps without exception.
 #   1. No pin is ever left empty and no registry id is ever shown. Every target is resolved through
@@ -1547,17 +1547,21 @@ def _trigger_group(elements, ids):
     return [par]
 
 
-def _clone_group(elements, ids, auto=False):
+def _clone_group(elements, ids, auto=False, base=False):
     """Fresh ids for a trigger group reused on another rung. auto marks a trigger that is drawn only
-    to show what starts the flow, so the compiler does not turn it into a condition of its own."""
+    to show what starts the flow, so the compiler does not turn it into a condition of its own.
+    [ADDED v3.40.0] base marks a copy of an automation-level condition, so the compiler can put the
+    conditions back under conditions: when every rung still carries the same ones."""
     out = []
     for el in elements:
         copy = dict(el)
         copy["id"] = ids.next()
         if auto:
             copy["autoGate"] = True
+        if base:
+            copy["baseCond"] = True
         if copy.get("type") == "parallel":
-            copy["branches"] = [_clone_group(b, ids, auto) for b in el.get("branches", [])]
+            copy["branches"] = [_clone_group(b, ids, auto, base) for b in el.get("branches", [])]
         out.append(copy)
     return out
 
@@ -1659,7 +1663,7 @@ def yaml_to_ast(hass, automation_dict):
         if not segment:
             return
         elements = _clone_group(_trigger_group(trigger_elements, ids), ids, auto=True)
-        elements += _clone_group(base_conditions, ids)
+        elements += _clone_group(base_conditions, ids, base=True)
         elements += segment
         rungs.append({"id": r_ids.next(), "comment": "", "elements": elements})
 
@@ -1699,7 +1703,7 @@ def yaml_to_ast(hass, automation_dict):
                 for j, s in enumerate(seq):
                     act_elements.extend(_mark_from_action(_action_to_elements(s, ids, trig_map, f"actions[{i}].opt[{k}].seq[{j}]")))
 
-                elements = head + _clone_group(base_conditions, ids) + rest + act_elements
+                elements = head + _clone_group(base_conditions, ids, base=True) + rest + act_elements
                 rungs.append({
                     "id": r_ids.next(),
                     "comment": "",
@@ -1718,7 +1722,7 @@ def yaml_to_ast(hass, automation_dict):
     flush_segment()
 
     if not rungs:
-        elements = _clone_group(_trigger_group(trigger_elements, ids), ids, auto=True) + _clone_group(base_conditions, ids)
+        elements = _clone_group(_trigger_group(trigger_elements, ids), ids, auto=True) + _clone_group(base_conditions, ids, base=True)
         rungs.append({"id": r_ids.next(), "comment": "", "elements": elements})
 
     for rung in rungs:

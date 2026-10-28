@@ -47,6 +47,7 @@ The software is built upon the **IEC 61131-3** standard, the international stand
 
 * **Integrated Helper Management:** Search for, manage, and insert variables (Helpers) directly from within the graphical editor.  
 * **Project and File Grouping:** Save and manage groups of YAML files collectively. In LIBI, every **NET** functions as an individual YAML file. This allows you to open a single project and view all related ladders (e.g., "Garden Automations", "Security Automations") in one unified workspace.
+* **Net Versions:** Every NET keeps its earlier versions. Opening a project records **V1**, and every **SAVE & COMPILE** that changes a NET records the next one (V2, V3, ...). The **V** badge on a NET shows the version that runs in Home Assistant; click it to see every version with its date and YAML, put an earlier one back on the canvas, and **SAVE & COMPILE** to make it the one that runs. Without a choice, the newest saved version runs. A change made in Home Assistant's own editor is recorded as a version the next time the project is opened.
 
 ## **Installation**
 
@@ -93,10 +94,13 @@ Download `libi.zip` from the [latest release](https://github.com/GuyAzria/Libi/r
 * Entries you wrote yourself, by hand or in the Home Assistant editor, are kept exactly as they are. A file is only written when its content actually changes.
 * If one of those files cannot be read (for example because it contains a syntax error), LIBI saves nothing and tells you why.
 * Projects are stored as `.libi` files in `config/libi/`, so they are part of your Home Assistant backup.
+* The version history of each project is stored next to it, as `<project>.versions.json` (up to 30 versions per NET; the one that runs is always kept). Deleting a project deletes its history; the automations stay in Home Assistant.
 
 ## **🤖 AI Chat (beta)**
 
 Under the Inspector, the **AI Chat** builds ladder logic from a sentence, in your own language — for example *"pressing a button turns the living room light on for 10 minutes"*.
+
+You can also ask about the nets on the page ("what does the garden net do?") or ask to change one ("water on Sunday, Tuesday, Thursday and Saturday at 5:00 instead of the button"). A change is drawn as a new version that you can put in place of the old net with **Replace NET**.
 
 1. LIBI asks the AI what the logic needs, then **searches your Home Assistant itself** and shows you the matching devices — every button, every light in the living room. You pick them, several at once if you like.
 2. You answer the few questions it asks (how long, which days, whether you want a dashboard card).
@@ -104,7 +108,7 @@ Under the Inspector, the **AI Chat** builds ladder logic from a sentence, in you
 
 **The AI never chooses or controls a device on its own.** It only ever sees roles like "the buttons" and "the lights"; the entities are the ones *you* ticked. LIBI rejects any draft that names another entity, a device or area id, or a service outside a safe list, and Home Assistant's own validator checks it too. Nothing is written until you press **SAVE & COMPILE**, and drafts that control locks, alarms, covers, valves or sirens are flagged.
 
-**Privacy:** what you type in the chat and the *names* of the devices you pick are sent to the AI model you choose. Your automations, the states of your devices and the full list of your devices are never sent. With **Local AI**, everything stays on your own server.
+**Privacy:** what you type in the chat and the *names* of the devices you pick are sent to the AI model you choose. While **Share the nets on this page and my helpers** is on (it is by default), the chat also sends the nets open in the LIBI page (as YAML), your helpers, and the devices that match the request with their state and unit, so it can answer questions about those nets, change them and reuse what you already have. Your other automations - the rest of `automations.yaml`, `scripts.yaml` and `scenes.yaml` - and the rest of your devices are never sent. With **Local AI**, everything stays on your own server.
 
 **Setup:** Settings ▸ Devices & services ▸ LIBI ▸ **Configure**, then choose:
 

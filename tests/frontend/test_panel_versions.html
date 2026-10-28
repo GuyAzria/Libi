@@ -1,0 +1,183 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-10-27] Purpose: Net versions in the panel. The badge names the version that runs;
+  the Versions dialog lists every version with its YAML (escaped); putting an earlier one on the canvas
+  keeps the net's id and automation, gives its elements fresh ids, and the save that follows sends it.
+  The dialog fits a phone screen.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi net versions test</title></head>
+<body style="margin:0; width:1280px; height:800px;">
+<pre id="out">RUNNING</pre>
+<div id="frames"></div>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+// Each check also writes the results so far, so a page that stalls shows where it stopped.
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+
+// The net as each version drew it. V1 switches light.x, V2 light.y; the element ids collide with net n2.
+const drawn = (light) => ({
+  id: 'n1', ha_id: 'a1', name: 'Lamp', level: 'automation', collapsed: false,
+  rungs: [{ id: 'r1', comment: '', elements: [
+    { id: 'e1', type: 'contact_no', label: 'binary_sensor.door', isTrigger: true },
+    { id: 'e2', type: 'coil_s', label: light },
+  ] }],
+});
+const other = { id: 'n2', name: 'Other', level: 'automation', collapsed: false,
+  rungs: [{ id: 'r2', comment: '', elements: [{ id: 'e3', type: 'contact_no', label: 'binary_sensor.window', isTrigger: true },
+                                         { id: 'e4', type: 'coil_s', label: 'light.hall' }] }] };
+const VERSIONS = [
+  { v: 2, saved: '2026-10-27T10:00:00+00:00', reason: 'saved', name: 'Lamp', yaml: 'id: a1\n# <script>window.__xss = 1<\/script>\n', net: drawn('light.y') },
+  { v: 1, saved: '2026-10-20T10:00:00+00:00', reason: 'opened', name: 'Lamp', yaml: 'id: a1\nactions: light.x\n', net: drawn('light.x') },
+];
+const sent = [];
+let saveResult = { status: 'ok', saved: true, message: 'Saved.', versions: { n1: { active: 1, latest: 2, count: 2 } } };
+
+function makeHass() {
+  return {
+    states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+    user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+    connection: {
+      sendMessagePromise: async (m) => {
+        sent.push(JSON.parse(JSON.stringify(m)));
+        if (m.type === 'libi/ai_status') return { configured: false };
+        if (m.type === 'libi/project_list') return { projects: [{ slug: 'p', name: 'P', nets: 2 }] };
+        if (m.type === 'libi/project_open') return { slug: 'p', name: 'P', nets: [drawn('light.y'), JSON.parse(JSON.stringify(other))],
+                                                     stats: {}, versions: { n1: { active: 2, latest: 2, count: 2 } } };
+        if (m.type === 'libi/net_versions') return { active: 2, versions: JSON.parse(JSON.stringify(VERSIONS)) };
+        if (m.type === 'libi/save_automation') return saveResult;
+        if (m.type === 'libi/preview_yaml') return { yaml: '' };
+        return [];
+      },
+      subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+    },
+  };
+}
+
+const allIds = (nets) => {
+  const ids = [];
+  const walk = (els) => (els || []).forEach(el => { ids.push(el.id); (el.branches || []).forEach(walk); walk(el.sequence); });
+  nets.forEach(n => n.rungs.forEach(r => walk(r.elements)));
+  return ids;
+};
+
+try {
+  localStorage.clear();
+  localStorage.setItem('libi_project', JSON.stringify({ slug: 'p', name: 'P' }));
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '800px';
+  document.body.appendChild(panel);
+  panel.hass = makeHass();
+  await sleep(300);
+  const sr = panel.shadowRoot;
+
+  const badge = () => sr.querySelector('.ver-badge[data-nid="n1"]');
+  check('the net shows the version that runs', badge() && badge().textContent.trim() === 'V2', badge() && badge().textContent);
+  check('a net without history has no badge', !sr.querySelector('.ver-badge[data-nid="n2"]'));
+  check('the net menu has Versions', !!sr.querySelector('.versions-net-btn[data-nid="n1"]'));
+
+  badge().click(); await sleep(60);
+  check('clicking the badge does not collapse the net', panel.core.nets[0].collapsed === false);
+  check('the badge asks for this net\'s versions', sent.some(m => m.type === 'libi/net_versions' && m.slug === 'p' && m.net_id === 'n1'));
+  const items = [...sr.querySelectorAll('.ver-item')];
+  check('the dialog lists every version, newest first', items.length === 2 && items[0].querySelector('.ver-num').textContent === 'V2'
+        && items[1].querySelector('.ver-num').textContent === 'V1', items.map(i => i.textContent.trim().slice(0, 20)).join('|'));
+  check('the running version is marked', items[0].classList.contains('running') && !!items[0].querySelector('.ver-run') && !items[1].querySelector('.ver-run'));
+  check('the YAML is shown as text, not markup', items[0].querySelector('pre').textContent.includes('<script>')
+        && !sr.querySelector('.ver-modal script') && window.__xss === undefined);
+  check('the reason is written out', items[1].textContent.includes('Recorded when the project was opened'));
+
+  // Put V1 back on the canvas.
+  items[1].querySelector('.ver-use').click(); await sleep(60);
+  const net = panel.core.nets[0];
+  check('the dialog closes', !sr.querySelector('.ver-modal'));
+  check('V1 is on the canvas', JSON.stringify(net.rungs).includes('light.x') && !JSON.stringify(net.rungs).includes('light.y'));
+  check('the net keeps its id, place and automation', net.id === 'n1' && net.ha_id === 'a1' && panel.core.nets[1].id === 'n2');
+  const ids = allIds(panel.core.nets);
+  check('every element id is unique after the restore', new Set(ids).size === ids.length, ids.join(','));
+  check('the project is marked unsaved', panel._projectDirty === true);
+  check('the badge still says what runs until it is saved', badge().textContent.trim() === 'V2');
+  check('undo brings the newest version back', (panel.core.undo(), panel._render(), JSON.stringify(panel.core.nets[0].rungs).includes('light.y')));
+  panel.core.redo(); panel._render(); await sleep(20);
+
+  // SAVE & COMPILE sends V1, and the badge follows what the backend says runs now.
+  const before = sent.length;
+  panel._saveToBackend(); await sleep(80);
+  const save = sent.slice(before).find(m => m.type === 'libi/save_automation');
+  check('the save sends V1', !!save && JSON.stringify(save.nets[0].rungs).includes('light.x') && save.nets[0].ha_id === 'a1',
+        save ? '' : 'no save was sent (validation blocked it?)');
+  check('after the save the badge says V1 runs and V2 is newer', badge() && badge().textContent.trim() === 'V1 · newest V2' && badge().classList.contains('older'),
+        badge() && badge().textContent);
+  check('the project is saved', panel._projectDirty === false);
+
+  // A refused save leaves the badge alone.
+  saveResult = { status: 'error', saved: false, message: 'Not saved.', errors: ['automations.yaml could not be read'] };
+  panel._saveToBackend(); await sleep(80);
+  check('a refused save does not move the badge', badge().textContent.trim() === 'V1 · newest V2');
+
+  // An error from the backend is shown in the dialog, escaped.
+  panel._hass.connection.sendMessagePromise = async (m) => { if (m.type === 'libi/net_versions') throw new Error('<b>boom</b>'); return []; };
+  badge().click(); await sleep(60);
+  const err = sr.querySelector('.ver-error');
+  check('a failed read is reported in the dialog', !!err && err.textContent.includes('<b>boom</b>') && !err.querySelector('b'));
+  sr.getElementById('closeModalBtn').click(); await sleep(20);
+  check('Close closes the dialog', !sr.querySelector('.ver-modal'));
+
+  // The panel is new but Home Assistant still runs the previous LIBI: say to restart.
+  panel._hass.connection.sendMessagePromise = async (m) => {
+    if (m.type === 'libi/net_versions') { const e = new Error('Unknown command.'); e.code = 'unknown_command'; throw e; }
+    return [];
+  };
+  badge().click(); await sleep(60);
+  const stale = sr.querySelector('.ver-error');
+  check('an old backend asks for a restart', !!stale && stale.textContent.includes('Restart Home Assistant'), stale && stale.textContent);
+  sr.getElementById('closeModalBtn').click(); await sleep(20);
+
+  // Phone: the dialog fits the screen.
+  const inner = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head><body style="margin:0">
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+window.alert = () => {}; window.confirm = () => false;
+localStorage.clear();
+const panel = document.createElement('libi-panel');
+panel.style.height = '100vh'; panel.style.display = 'block';
+document.body.appendChild(panel);
+panel.hass = parent.__makeHass();
+setTimeout(async () => {
+  panel._project = { slug: 'p', name: 'P' };
+  panel.core.nets = [parent.__drawn('light.y')];
+  panel._versions = { n1: { active: 2, latest: 2, count: 2 } };
+  panel._render();
+  await panel._openVersions('n1');
+  window.__ready = panel;
+}, 200);
+<\/script></body></html>`;
+  window.__makeHass = makeHass; window.__drawn = drawn;
+  const f = document.createElement('iframe');
+  f.style.cssText = 'width:360px;height:740px;border:0;display:block';
+  f.srcdoc = inner;
+  document.getElementById('frames').appendChild(f);
+  for (let i = 0; i < 60 && !(f.contentWindow && f.contentWindow.__ready); i++) await sleep(50);
+  const fw = f.contentWindow, fsr = fw.__ready && fw.__ready.shadowRoot;
+  await sleep(60);
+  const modal = fsr && fsr.querySelector('.ver-modal');
+  const r = modal && modal.getBoundingClientRect();
+  check('360px: the dialog is open', !!modal);
+  check('360px: the dialog fits the screen', r && r.left >= 0 && r.right <= fw.innerWidth + 1, r && `${r.left}-${r.right} of ${fw.innerWidth}`);
+  check('360px: the page does not scroll sideways', fw.document.documentElement.scrollWidth <= fw.innerWidth + 1);
+  const use = fsr && fsr.querySelector('.ver-use');
+  check('360px: the button is a comfortable touch target', use && use.getBoundingClientRect().height >= 36, use && use.getBoundingClientRect().height);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

@@ -1,0 +1,111 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-10-26] Purpose: PHONE width (400px), the sidebar as a sheet at the bottom (RULE 36). The AI chat in the sidebar. Open, it fills the whole sidebar and
+  the inspector is hidden; closed, the inspector is back. On the collapsed rail a CHAT AI button,
+  written top to bottom with upright letters, opens the sidebar straight into the chat.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="400,800"><title>libi panel layout test (phone)</title></head>
+<body style="margin:0;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+// Static import: a dynamic import() never settles under --virtual-time-budget.
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+const check = (name, cond, detail = '') => results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+
+const hass = {
+  states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+  connection: {
+    sendMessagePromise: async (m) => {
+      if (m.type === 'libi/ai_status') return { configured: true, mode: 'cloud', provider: 'gemini', model: 'gemini-x' };
+      if (m.type === 'libi/load_automation') return { nets: [] };
+      if (m.type === 'libi/project_list') return { projects: [] };
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+
+try {
+  localStorage.clear();
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '800px'; panel.style.display = 'block';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await sleep(300);
+  const sr = panel.shadowRoot;
+  const bar = () => sr.getElementById('sidebarContainer');
+  const shown = (el) => !!el && getComputedStyle(el).display !== 'none';
+
+  // Open (the default): the chat fills the sidebar.
+  panel.aiChat.setOpen(true); panel._render(); await sleep(30);
+  const top = sr.querySelector('.sidebar-top').getBoundingClientRect();
+  const head = sr.querySelector('.ai-head').getBoundingClientRect();
+  check('open chat marks the sidebar full', bar().classList.contains('ai-full'));
+  check('open chat hides the inspector', !shown(sr.querySelector('.sidebar-content')));
+  check('chat header sits right under the sidebar top, not halfway down', Math.abs(head.top - top.bottom) <= 3, `${head.top} vs ${top.bottom}`);
+  const sbRect = bar().getBoundingClientRect(), mountRect = sr.getElementById('aiChatMount').getBoundingClientRect();
+  check('chat reaches the bottom of the sidebar', Math.abs(mountRect.bottom - sbRect.bottom) <= 3, `${mountRect.bottom} vs ${sbRect.bottom}`);
+
+  // A render of the panel rebuilds the sidebar; the layout must survive it.
+  panel._render(); await sleep(30);
+  check('full layout survives a panel render', bar().classList.contains('ai-full') && !shown(sr.querySelector('.sidebar-content')));
+
+  // Closed: the inspector is back and the chat is only its header.
+  panel.aiChat.setOpen(false); await sleep(30);
+  check('closed chat brings the inspector back', !bar().classList.contains('ai-full') && shown(sr.querySelector('.sidebar-content')));
+  check('closed chat keeps only its header', !sr.querySelector('.ai-body'));
+  check('rail button hidden while the sidebar is open', !shown(sr.getElementById('railAiBtn')));
+
+
+  // [ADDED 2026-10-27] Clicking an element while the AI chat is open shows that element's Inspector.
+  {
+    const net = panel.core.nets[0] || panel.core.mkNet('Net');
+    if (!panel.core.nets.length) panel.core.nets.push(net);
+    const el = panel.core.mkEl('contact_no', 'binary_sensor.door');
+    net.rungs[0].elements = [el];
+    panel.core.syncCounters();
+    panel.aiChat.setOpen(true); panel._render(); await sleep(30);
+    check('before the click the chat covers the sidebar', bar().classList.contains('ai-full'));
+    const node = sr.querySelector(`.libi-el[data-eid="${el.id}"]`);
+    check('the element is on the canvas', !!node);
+    node.click(); await sleep(40);
+    check('the click closes the chat', panel.aiChat.open === false && !bar().classList.contains('ai-full'));
+    check('the click shows the Inspector', shown(sr.querySelector('.sidebar-content')));
+    check('the Inspector shows the clicked element', !!sr.querySelector('#inspectorBody') &&
+      sr.querySelector('.sidebar-content').textContent.includes('Element Properties'));
+    check('the chat can be opened again', (panel.aiChat.setOpen(true), bar().classList.contains('ai-full')));
+    panel._inspectedEl = null; panel._floatingMenu = null; panel.aiChat.setOpen(false); panel._render(); await sleep(20);
+  }
+  // Collapsed on a phone: the rail is a strip at the bottom, so CHAT AI reads left to right there.
+  panel._sidebarRail = true; panel._render(); await sleep(30);
+  const btn = sr.getElementById('railAiBtn');
+  check('rail shows CHAT AI', shown(btn) && btn.textContent.trim() === 'CHAT AI', btn && btn.textContent);
+  const cs = btn && getComputedStyle(btn);
+  check('on a phone CHAT AI is horizontal', cs && cs.writingMode === 'horizontal-tb', cs && cs.writingMode);
+  const r = btn.getBoundingClientRect(), b = bar().getBoundingClientRect();
+  check('the collapsed sheet is a strip at the bottom', b.height <= 42 && Math.abs(b.bottom - window.innerHeight) <= 2, `${b.height} ${b.bottom}/${window.innerHeight}`);
+  check('CHAT AI sits inside the strip', r.top >= b.top - 1 && r.bottom <= b.bottom + 1 && r.right <= window.innerWidth, `${r.top}-${r.bottom} in ${b.top}-${b.bottom}`);
+  check('CHAT AI is a reasonable touch target', r.height >= 28 && r.width >= 60, `${r.width}x${r.height}`);
+  check('no horizontal page scroll', document.documentElement.scrollWidth <= window.innerWidth, document.documentElement.scrollWidth);
+  check('rail hides the chat itself', !shown(sr.getElementById('aiChatMount')));
+
+  // Pressing it opens the sidebar straight into the chat.
+  btn.click(); await sleep(30);
+  check('CHAT AI opens the sidebar', panel._sidebarRail === false && !bar().classList.contains('rail'));
+  check('CHAT AI opens the chat', panel.aiChat.open === true && bar().classList.contains('ai-full'));
+  check('chat is shown after CHAT AI', !!sr.querySelector('.ai-body') && shown(sr.getElementById('aiChatMount')));
+  let stored = null; try { stored = localStorage.getItem('libi_sidebar_rail'); } catch (e) { /* */ }
+  check('opened sidebar is remembered', stored === '0', stored);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

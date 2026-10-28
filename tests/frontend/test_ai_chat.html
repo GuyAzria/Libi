@@ -56,7 +56,7 @@ try {
   check('status shows model', root().querySelector('.ai-model')?.textContent === 'gemini-x');
   check('hint before first message', !!root().querySelector('.ai-hint'));
   check('privacy line names the provider', root().querySelector('.ai-privacy')?.textContent.includes('Google Gemini'));
-  check('privacy line says what is not sent', root().querySelector('.ai-privacy')?.textContent.includes('device states'));
+  check('privacy line says what is not sent', root().querySelector('.ai-privacy')?.textContent.includes('Your other automations and the rest of your devices are not'));
 
   chat.draft = 'button turns salon light on for 10 minutes';
   await chat.send();
@@ -123,6 +123,118 @@ try {
   check('not configured shows the settings path', m3.querySelector('.ai-path')?.textContent.includes('Configure'));
   check('not configured has no input', !m3.querySelector('.ai-input'));
 
+
+  // ---------------------------------------------------------------- the nets on the page (v3.40.0)
+  panel.core.nets = [{ id: 'n_garden', ha_id: 'garden_watering', name: 'Garden', level: 'automation', rungs: [] }];
+  panel._projectDirty = false;
+  const lastCall = (type) => calls.filter(c => c.type === type).pop();
+
+  chat._reset();
+  check('privacy line says the nets on the page and the helpers are sent while sharing', chat.root.querySelector('.ai-privacy')?.textContent.includes('the nets open on this page, your helpers'));
+  check('the switch says what it shares', chat.root.querySelector('.ai-share')?.textContent.includes('Share the nets on this page and my helpers'));
+  responses['libi/ai_plan'] = { plan: { reply: 'It waters 50 litres when you press the button.', intent: 'answer',
+    target_net: '', level: 'automation', name: '', roles: [], questions: [] }, candidates: {}, preselect: {} };
+  chat.draft = 'what does the garden net do?'; await chat.send();
+  check('the nets on the page are sent while sharing', lastCall('libi/ai_plan').nets.length === 1 && lastCall('libi/ai_plan').nets[0].id === 'n_garden');
+  check('the share flag is sent with the plan', lastCall('libi/ai_plan').share === true);
+  check('a question is answered in the chat', [...chat.root.querySelectorAll('.ai-msg.ai')].some(m => m.textContent.includes('50 litres')));
+  check('a question shows nothing to pick or build', !chat.root.querySelector('.ai-plan') && !chat.root.querySelector('.ai-build'));
+
+  chat.root.querySelector('#aiShareNets').click();
+  check('the share switch turns off and is remembered', chat.shareNets === false && localStorage.getItem('libi_ai_share') === '0');
+  chat.draft = 'and now?'; await chat.send();
+  check('the nets are not sent when not shared', lastCall('libi/ai_plan').nets.length === 0);
+  check('the share flag is off when not shared', lastCall('libi/ai_plan').share === false);
+  chat._reset();
+  check('privacy line without sharing says automations are not sent', chat.root.querySelector('.ai-privacy')?.textContent.includes('Your automations'));
+  chat.root.querySelector('#aiShareNets').click();
+  check('the share switch turns back on', chat.shareNets === true);
+
+  responses['libi/ai_plan'] = {
+    plan: { reply: 'I will change the garden.', intent: 'modify', target_net: 'n_garden', level: 'automation', name: 'Garden',
+      roles: [{ id: 'valve', label: 'Valve', purpose: 'target', domains: ['switch'], device_classes: [], keywords: [], area_keywords: [] }],
+      questions: [] },
+    candidates: { valve: { exact: true, items: [
+      { entity_id: 'switch.garden_valve', name: 'Garden valve', area: '', state: 'off', current: true },
+      { entity_id: 'switch.other', name: 'Other', area: '', state: 'off' }] } },
+    preselect: { valve: ['switch.garden_valve'] } };
+  chat.draft = 'water on four mornings instead of the button'; await chat.send();
+  check('a change names the net it changes', chat.root.querySelector('.ai-plan-title')?.textContent.includes('Change: Garden'));
+  check('the device already in the net is ticked', chat.selections.valve.has('switch.garden_valve') && !chat.selections.valve.has('switch.other'));
+  check('the device already in the net is marked current', !!chat.root.querySelector('.ai-current'));
+
+  responses['libi/ai_build'] = { ok: true, errors: [], level: 'automation', reply: 'Changed.', notes: [], yaml: 'alias: Garden',
+    card_yaml: '', sensitive: [], round_trip: { ok: true, issues: [] }, intent: 'modify', target_net: 'n_garden',
+    net: { id: 'n_libi_x', ha_id: 'garden_watering', name: 'Garden', level: 'automation', rungs: [{ id: 'r1', elements: [] }] } };
+  chat.root.querySelector('.ai-build').click(); await tick(); await tick(); await tick();
+  check('the build sends the nets too', lastCall('libi/ai_build').nets.length === 1);
+  check('the build sends the share flag', lastCall('libi/ai_build').share === true);
+  const rep = chat.root.querySelector('.ai-replace');
+  check('a change offers Replace NET', !!rep && rep.textContent.includes('Replace NET Garden'), rep && rep.textContent);
+  const netsBefore = panel.core.nets.length;
+  rep.click();
+  check('Replace keeps the number of nets', panel.core.nets.length === netsBefore);
+  check('Replace keeps the net id and the automation id', panel.core.nets[0].id === 'n_garden' && panel.core.nets[0].ha_id === 'garden_watering',
+    JSON.stringify(panel.core.nets[0]));
+  check('Replace puts the new version in place', panel.core.nets[0].rungs.length === 1);
+  check('Replace marks the project unsaved', panel._projectDirty === true);
+  check('the Replace button says it is done', chat.root.querySelector('.ai-replace').disabled && chat.root.querySelector('.ai-replace').textContent.includes('was replaced'));
+
+  responses['libi/ai_build'] = { ...responses['libi/ai_build'], round_trip: { ok: false, issues: ['length .action: 7 to 2'] } };
+  chat.draft = 'again'; await chat.send();
+  chat.root.querySelector('.ai-build').click(); await tick(); await tick(); await tick();
+  const warn = [...chat.root.querySelectorAll('.ai-note.danger')].pop();
+  check('a draft the ladder cannot hold is said to change on saving', !!warn && warn.textContent.includes('would change it') && warn.textContent.includes('7 to 2'));
+
+
+  // ---------------------------------------------------------------- helpers the AI proposes (v3.43.0)
+  panel._hass.states = panel._hass.states || {};
+  const created = [];
+  const realWs = panel._hass.connection.sendMessagePromise;
+  panel._hass.connection.sendMessagePromise = async (m) => {
+    if (/^(input_[a-z]+|counter|timer)\/create$/.test(m.type)) {
+      created.push(JSON.parse(JSON.stringify(m)));
+      const id = String(m.name).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+      panel._hass.states[`${m.type.split('/')[0]}.${id}`] = { state: 'off', attributes: {} };
+      return { id, name: m.name };
+    }
+    return realWs(m);
+  };
+  responses['libi/ai_plan'] = {
+    plan: { reply: 'Set it from the screen.', intent: 'create', target_net: '', level: 'automation', name: 'Garden plan',
+      roles: [
+        { id: 'litres', label: 'Litres', purpose: 'condition', domains: ['input_number'], device_classes: [], keywords: [], area_keywords: [] },
+        { id: 'day_sun', label: 'Sunday', purpose: 'condition', domains: ['input_boolean'], device_classes: [], keywords: [], area_keywords: [] },
+      ],
+      questions: [],
+      new_helpers: [
+        { role: 'litres', domain: 'input_number', name: 'Garden litres', settings: { min: 0, max: 500, step: 10, unit_of_measurement: 'L' } },
+        { role: 'day_sun', domain: 'input_boolean', name: 'Garden Sunday', settings: {} },
+      ] },
+    candidates: { litres: { items: [], exact: false }, day_sun: { items: [], exact: false } }, preselect: {} };
+  chat._reset(); chat.draft = 'let me set the litres and the days on the screen'; await chat.send();
+  const helpersBox = chat.root.querySelector('.ai-helpers');
+  // The names sit in editable fields, whose text is their value, not textContent.
+  const helperNames = [...chat.root.querySelectorAll('.ai-helper-name')].map(i => i.value);
+  check('proposed helpers are listed', !!helpersBox && helperNames.includes('Garden litres') && helperNames.includes('Garden Sunday') && helpersBox.textContent.includes('0–500 L'), JSON.stringify(helperNames));
+  check('nothing is created before the click', created.length === 0);
+  check('a role a new helper fills says so', chat.root.textContent.includes('Filled by the new helper'));
+  check('build waits for the helpers', chat.root.querySelector('.ai-build').disabled === true);
+
+  // untick one, rename the other, then create
+  chat.root.querySelectorAll('.ai-helper input[type=checkbox]')[1].click();
+  const nameBox = chat.root.querySelector('.ai-helper-name');
+  nameBox.value = 'Litres for the garden'; nameBox.dispatchEvent(new Event('input'));
+  const createBtn = chat.root.querySelector('.ai-create-helpers');
+  check('the button counts the ticked helpers', createBtn && createBtn.textContent.includes('Create the 1 ticked helper'), createBtn && createBtn.textContent);
+  createBtn.click(); for (let i = 0; i < 8; i++) await tick();
+  await new Promise(r => setTimeout(r, 50));
+  check('only the ticked helper is created', created.length === 1 && created[0].type === 'input_number/create', JSON.stringify(created));
+  check('it is created with the settings LIBI checked', created[0].min === 0 && created[0].max === 500 && created[0].unit_of_measurement === 'L');
+  check('it is created under the name the user typed', created[0].name === 'Litres for the garden');
+  check('the new helper becomes the pick for its role', chat.selections.litres && chat.selections.litres.has('input_number.litres_for_the_garden'));
+  check('the list says it was created', chat.root.querySelector('.ai-helpers').textContent.includes('created: input_number.litres_for_the_garden'));
+  panel._hass.connection.sendMessagePromise = realWs;
   check('no HTML injected anywhere', document.querySelectorAll('img').length === 0 && window.pwned === undefined);
 } catch (err) {
   results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });

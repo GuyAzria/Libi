@@ -14,11 +14,10 @@
  */
 /**
  * LIBI Panel - Styles
- * v3.36.0
+ * v3.47.0
  */
-// [ADDED v3.35.0 | 2026-10-26] Purpose: Colour tokens with a dark set under :host([dark]), so no
-//   light-only background sits under the theme's (light) text in dark mode; header logo styles.
-// [ADDED v3.36.0 | 2026-10-26] Purpose: The AI chat section under the Inspector.
+// [ADDED v3.45.0 | 2026-10-27] Purpose: Phone layout without sideways scrolling; header actions in the menu.
+// [ADDED v3.47.0 | 2026-10-27] Purpose: The version badge on a net and the Versions dialog.
 export const getStyles = () => `
 :host { display: block; height: 100vh; overflow-y: hidden; background: var(--primary-background-color, #f5f5f5); color: var(--primary-text-color, #212121); font-family: var(--primary-font-family, sans-serif); box-sizing: border-box; direction: ltr !important; text-align: left; }
 /* [ADDED v3.35.0] Colour tokens. The light values are the colours the panel always used; the
@@ -65,15 +64,23 @@ export const getStyles = () => `
 /* The word LIBI running up the closed rail, so the strip is not a blank column. */
 .sidebar-rail-tag { writing-mode: vertical-rl; text-orientation: mixed; margin: 10px auto 0 auto; font-size: 10px; font-weight: 800; letter-spacing: 2px; color: var(--secondary-text-color, #9e9e9e); user-select: none; }
 .sidebar:not(.rail) .sidebar-rail-tag { display: none; }
+/* [ADDED v3.39.0] CHAT AI on the collapsed rail, its letters upright one under the other. */
+.sidebar-rail-ai { display: none; }
+.sidebar.rail .sidebar-rail-ai { display: flex; align-items: center; justify-content: center; writing-mode: vertical-rl; text-orientation: upright; margin: 14px auto 0 auto; width: 30px; min-height: 40px; padding: 10px 0; border: 1px solid var(--divider-color, #ddd); border-radius: 8px; background: var(--card-background-color, #fff); color: var(--primary-color, #03a9f4); font: 800 11px var(--primary-font-family, sans-serif); letter-spacing: 1px; line-height: 1; cursor: pointer; }
+.sidebar.rail .sidebar-rail-ai:hover, .sidebar.rail .sidebar-rail-ai:focus-visible { border-color: var(--primary-color, #03a9f4); background: var(--libi-pin-bg); outline: none; }
 
 @media (max-width: 768px) {
     .main-content { flex-direction: column; }
     /* On a phone the sidebar is a sheet at the bottom, so the same saved number is a height and the
        grip drags up and down instead of sideways. */
     .sidebar { width: 100% !important; flex: 0 0 auto !important; border-left: none; border-top: 2px solid var(--primary-color, #03a9f4); height: var(--libi-sidebar-h, 40vh); max-height: 60vh; min-height: 40px; box-shadow: 0 -2px 8px rgba(0,0,0,0.1); }
-    .sidebar.rail { width: 100% !important; height: 40px !important; flex: 0 0 40px !important; }
+    .sidebar.rail { width: 100% !important; height: 40px !important; flex: 0 0 40px !important; flex-direction: row; align-items: center; }
+    /* [CHANGED v3.39.0] The collapsed sheet is a 40px strip, so its parts sit side by side: stacked, everything
+       after the toggle fell below the strip and was clipped. */
+    .sidebar.rail .sidebar-top { border-bottom: none; background: none; min-height: 0; }
     .sidebar-grip { left: 0; right: 0; top: -3px; bottom: auto; width: auto; height: 7px; cursor: row-resize; }
     .sidebar-rail-tag { writing-mode: horizontal-tb; margin: 0 0 0 6px; }
+    .sidebar.rail .sidebar-rail-ai { writing-mode: horizontal-tb; text-orientation: mixed; width: auto; min-height: 30px; padding: 0 10px; margin: 0 0 0 8px; }
     .header-acts .ha-text-btn { font-size: 11px; padding: 0 6px; }
     .canvas { padding: 10px; }
 }
@@ -477,7 +484,10 @@ export const getStyles = () => `
 /* [ADDED v3.36.0] AI chat, under the Inspector in the same sidebar. Open, it shares the height with
    the Inspector; closed, only its header shows. Every colour comes from the theme or the tokens. */
 .ai-mount { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; border-top: 2px solid var(--divider-color, #e0e0e0); }
-.ai-mount.ai-open { flex: 1.2 1 0; }
+.ai-mount.ai-open { flex: 1 1 auto; border-top: none; }
+/* [CHANGED v3.39.0] The open chat takes the whole sidebar, from the top; the inspector comes back when
+   the chat is closed. */
+.sidebar.ai-full .sidebar-content { display: none; }
 .sidebar.rail .ai-mount { display: none; }
 .ai-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .ai-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--libi-tint); border-bottom: 1px solid var(--divider-color, #e0e0e0); min-height: 36px; box-sizing: border-box; }
@@ -493,6 +503,15 @@ export const getStyles = () => `
 .ai-msg.error ul { margin: 6px 0 0; padding-inline-start: 18px; }
 .ai-hint, .ai-busy { font-size: 12px; color: var(--secondary-text-color, #757575); line-height: 1.45; }
 .ai-busy { font-style: italic; }
+/* [ADDED v3.40.0] Sharing the nets on the page, the current device in a change, Replace NET. */
+.ai-share { display: flex; align-items: center; gap: 8px; padding: 6px 10px 0; font-size: 12px; color: var(--secondary-text-color, #757575); cursor: pointer; min-height: 32px; }
+.ai-share input { width: 18px; height: 18px; margin: 0; flex: 0 0 auto; }
+.ai-current { margin-inline-start: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 1px 5px; border-radius: 4px; background: var(--libi-ok-bg); color: var(--libi-ok); }
+.ai-replace { width: 100%; min-height: 40px; }
+/* [ADDED v3.43.0] Helpers the AI proposes, created on the user's click. */
+.ai-helpers { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed var(--primary-color, #03a9f4); border-radius: 8px; }
+.ai-helper .ai-helper-name { min-height: 32px; margin-bottom: 2px; }
+.ai-create-helpers { width: 100%; min-height: 40px; }
 .ai-compose { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--divider-color, #e0e0e0); align-items: flex-end; }
 .ai-input { flex: 1; resize: none; min-height: 40px; max-height: 120px; padding: 8px 10px; border: 1.5px solid var(--divider-color, #e0e0e0); border-radius: 8px; font: inherit; font-size: 13px; background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121); box-sizing: border-box; }
 .ai-input:focus, .ai-filter:focus { outline: none; border-color: var(--primary-color, #03a9f4); }
@@ -532,4 +551,61 @@ export const getStyles = () => `
 .ai-path { font-family: monospace; font-size: 12px; }
 .ai-copy-buffer { position: absolute; inset-inline-start: -9999px; }
 @media (max-width: 768px) { .ai-list { max-height: 150px; } .ai-mount.ai-open { flex: 1 1 auto; } }
+/* [ADDED v3.45.0] Phone. Nothing may be wider than the screen: the page never scrolls sideways. The header
+   holds, left to right, the hamburger that opens Home Assistant's sidebar, the logo, the project, Save and
+   the menu (on the right, as on a desktop); Undo, Redo, Collapse and Traces are in the menu. Rows that do
+   not fit wrap instead of pushing the page wider. */
+.hdr-menu-item.phone-only, .hdr-menu-sep.phone-only { display: none; }
+.hdr-ha-menu { display: none; flex: 0 0 auto; }
+:host([narrow]) .hdr-ha-menu { display: flex; }
+@media (max-width: 768px) {
+    .header { padding: 0 6px; gap: 4px; }
+    .header-acts { display: contents; }
+    .header .hide-phone { display: none !important; }
+    .hdr-ha-menu { display: flex; order: -1; width: 40px; height: 40px; }
+    .header-title { order: 0; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+    .header #saveBtn { order: 1; flex: 0 0 auto; width: 40px; height: 40px; padding: 0; justify-content: center; border-radius: 50%; }
+    .hdr-menu-wrap { order: 2; flex: 0 0 auto; }
+    .header .hdr-menu-wrap .ha-icon-btn { width: 40px; height: 40px; }
+    .save-lbl { display: none; }
+    .hdr-menu { right: 0; left: auto; max-width: calc(100vw - 12px); }
+    .hdr-menu-item.phone-only { display: flex; }
+    .hdr-menu-sep.phone-only { display: block; }
+    .hdr-menu-item.online-on { color: var(--libi-ok); }
+    .project-chip { margin-left: 6px; min-width: 0; max-width: 100%; overflow: hidden; }
+    .main-content, .canvas, .net, .net-body { min-width: 0; }
+    .net-hdr { padding: 10px 10px; }
+    .net-hdr-l { min-width: 0; }
+    .net-name { flex-wrap: wrap; min-width: 0; row-gap: 4px; }
+    .net-name input { min-width: 0; flex: 1 1 110px; }
+    .net-toolbar { flex-wrap: wrap; gap: 6px; padding: 6px 10px; }
+    .net-toolbar .net-level-select { margin-left: 0 !important; }
+    .vars-top { gap: 4px; padding: 5px 6px; min-width: 0; }
+    .vars-title { display: none; }
+    .vars-tabs { min-width: 0; overflow-x: auto; flex: 1 1 auto; }
+    .vars-tab { padding: 5px 10px; white-space: nowrap; flex: 0 0 auto; }
+}
+@media (max-width: 420px) { .hdr-wordmark { display: none; } }
+/* [ADDED v3.47.0] Net versions. The badge sits in the net header next to the name; amber when an earlier
+   version was chosen, so the newest saved version is visibly not the one running. */
+.ver-badge { font-size: 11px; font-weight: 800; padding: 2px 8px; margin-inline-start: 8px; border-radius: 10px; cursor: pointer; border: 1px solid var(--libi-ok-border); background: var(--libi-ok-bg); color: var(--libi-ok); min-height: 22px; white-space: nowrap; }
+.ver-badge.older { border-color: var(--libi-notice-border); background: var(--libi-notice-bg); color: var(--libi-notice-head); }
+.ver-badge:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); }
+.ver-modal { width: 640px; max-width: calc(100vw - 32px); box-sizing: border-box; }
+.ver-list { max-height: 55vh; }
+.ver-item { padding: 10px 12px; border-bottom: 1px solid var(--divider-color, #eee); display: flex; flex-direction: column; gap: 4px; }
+.ver-item.running { background: var(--libi-ok-bg); }
+.ver-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ver-num { font-weight: 900; font-size: 14px; color: var(--primary-text-color, #212121); }
+.ver-when { font-size: 12px; color: var(--secondary-text-color, #757575); }
+.ver-run { font-size: 11px; font-weight: 800; color: var(--libi-ok); }
+.ver-why { font-size: 12px; color: var(--secondary-text-color, #757575); overflow-wrap: anywhere; }
+.ver-use { min-height: 36px; }
+.ver-yaml summary { cursor: pointer; font-size: 12px; font-weight: 700; color: var(--primary-color, #03a9f4); padding: 4px 0; }
+.ver-yaml pre { margin: 4px 0 0; padding: 8px; max-height: 240px; overflow: auto; font-size: 11px; background: var(--card-background-color, #fff); border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; white-space: pre; text-align: left; }
+.ver-error { font-size: 13px; color: var(--error-color, #f44336); margin: 0; }
+@media (max-width: 768px) {
+    .ver-modal { padding: 16px; max-height: 90vh; }
+    .ver-use { width: 100%; }
+}
 `;

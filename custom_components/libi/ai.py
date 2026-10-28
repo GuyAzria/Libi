@@ -13,6 +13,11 @@
 # more details. <https://www.gnu.org/licenses/>.
 """The AI chat: an LLM drafts, Home Assistant decides.
 
+[ADDED v3.44.0 | 2026-10-27] Purpose: When the logic reads helpers, a settings card to copy always comes
+with it (settings_card), built from the user's picks.
+[ADDED v3.43.0 | 2026-10-27] Purpose: The model may propose helpers (HELPER_SPEC); LIBI checks them and the
+user creates the ones they keep with a click in the chat, through Home Assistant's own <domain>/create.
+
 [ADDED v3.36.0 | 2026-10-26] Purpose: Turn a request written in any language into a ladder net.
 
 The model is never trusted with anything that executes (CLAUDE.md RULES 7-11):
@@ -51,6 +56,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .libi_to_yaml import ast_to_yaml, net_level
 from .const import (
     AI_MODE_CLOUD,
     AI_MODE_LOCAL,
@@ -73,7 +79,9 @@ _LOGGER = logging.getLogger(__name__)
 LEVELS = ("automation", "script", "scene")
 MAX_MESSAGES = 20
 MAX_MESSAGE_CHARS = 4000
-MAX_ROLES = 8
+# [CHANGED v3.44.0] 8 was too few: watering on days the user picks needs a role per day, plus the
+# valve, the meter, the weather, the time and the amount. A longer plan was cut without a word.
+MAX_ROLES = 20
 MAX_CANDIDATES = 80
 LLM_TIMEOUT = aiohttp.ClientTimeout(total=120)
 
@@ -244,6 +252,8 @@ PLAN_SCHEMA: dict = {
     "type": "object",
     "properties": {
         "reply": {"type": "string"},
+        "intent": {"type": "string", "enum": ["answer", "create", "modify"]},
+        "target_net": {"type": "string"},
         "level": {"type": "string", "enum": list(LEVELS)},
         "name": {"type": "string"},
         "roles": {"type": "array", "items": {
@@ -265,17 +275,36 @@ PLAN_SCHEMA: dict = {
                            "choices": {"type": "array", "items": {"type": "string"}}},
             "required": ["id", "text", "choices"],
         }},
+        "new_helpers": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"role": {"type": "string"}, "domain": {"type": "string"},
+                           "name": {"type": "string"}, "settings": {"type": "object"}},
+            "required": ["role", "domain", "name", "settings"],
+        }},
     },
-    "required": ["reply", "level", "name", "roles", "questions"],
+    "required": ["reply", "intent", "target_net", "level", "name", "roles", "questions", "new_helpers"],
 }
 
-PLAN_SYSTEM = """You help a Home Assistant user describe an automation, script or scene that LIBI will build.
+PLAN_SYSTEM_TEMPLATE = """You help a Home Assistant user describe an automation, script or scene that LIBI will build.
 You do NOT know the user's devices and you must NOT name any entity_id, device_id or area_id.
 Instead, describe every device the logic needs as a ROLE with search criteria. LIBI searches the
 user's Home Assistant with them and the user picks the entities from a list.
 
+The message may end with NETS ON THE CANVAS: the automations, scripts and scenes the user has open
+in LIBI, as YAML, each with its net id - and only those; other automations are not shown to you. Use
+them to answer questions about them and to change them. It may also list the user's HELPERS: when a
+helper fits (a schedule, a timer, a number for the litres), make it a role rather than asking for a
+new device.
+
 Answer with JSON only, matching the schema:
-- reply: one or two short sentences IN THE USER'S LANGUAGE: what you understood and what to pick.
+- intent: "answer" when the user only asks a question (about a net, or in general) - then give the
+  answer in reply and leave roles and questions empty; "create" for new logic; "modify" when the
+  user wants to change one of the nets on the canvas.
+- target_net: for "modify", the net id of the net to change, exactly as listed; otherwise "".
+- reply: IN THE USER'S LANGUAGE. For "answer", the answer itself (it may be several sentences). For
+  "create" and "modify", one or two short sentences: what you understood and what to pick.
+- For "modify", the roles describe every device the NEW version needs, including the devices the net
+  already uses (LIBI ticks those for the user) and any new ones (for example a weather entity).
 - level: "automation" if something must start it (a button, a sensor, a time); "script" if the user
   starts it by hand; "scene" for a set of fixed states.
 - name: a short name for it, in the user's language.
@@ -294,6 +323,12 @@ Answer with JSON only, matching the schema:
   - area_keywords: area names the user mentioned, in English AND in the user's language, e.g.
     ["living room","salon","סלון"]; [] when no area was said.
   Do not invent a specific device; when the user did not say which one, the role asks them to pick.
+- new_helpers: when the user wants to set something from the screen (days, a time, an amount, an
+  on/off choice) and no existing HELPER fits, propose new helpers here - LIBI creates them only after
+  the user approves. Each: role (the role id it fills; also list that role in roles with the helper's
+  domain), domain, name (in the user's language), settings. {HELPER_RULES}
+  For days the user picks, propose one input_boolean per day (role ids like "day_sun" ... "day_sat").
+  [] when nothing new is needed.
 - questions: what you must know before building that is not a device: durations, times, days,
   thresholds, whether a dashboard card is wanted and on which dashboard. Each with an English
   snake_case id, the text in the user's language, and choices (or [] for a free answer). Ask only
@@ -314,7 +349,7 @@ BUILD_SCHEMA: dict = {
     "required": ["reply", "level", "name", "description", "config", "ui_card", "notes"],
 }
 
-BUILD_SYSTEM = """You write a Home Assistant configuration that LIBI turns into a ladder diagram.
+BUILD_SYSTEM_TEMPLATE = """You write a Home Assistant configuration that LIBI turns into a ladder diagram.
 Answer with JSON only, matching the schema.
 
 Devices: you never write an entity_id. Every device is written as "role:<role id>" from the ROLES
@@ -327,23 +362,29 @@ config, by level:
 - script: {"mode": ..., "sequence": [...]}
 - scene: {"actions": [...]} where every action switches one role on or off, e.g.
   {"action": "light.turn_on", "target": {"entity_id": "role:lights"}}
-Use the current syntax: "trigger:" (not platform), "action:" (not service).
-Allowed triggers: state, numeric_state, time, time_pattern, sun, template, homeassistant, zone.
+{RULES}
   A press of a button/input_button/event entity is {"trigger": "state", "entity_id": "role:..."}
   with no "to". A remote's action sensor uses "to" with the action value only if the user said it.
-Allowed conditions: state, numeric_state, time, sun, template, and, or, not, trigger, zone.
-Allowed actions: a service of the target's own domain (light.turn_on, switch.turn_off, valve.open_valve,
-  cover.close_cover, climate.set_temperature, media_player.volume_set, input_number.set_value ...),
-  homeassistant.turn_on/turn_off/toggle, notify.*, tts.speak, persistent_notification.create,
-  delay, wait_for_trigger, wait_template, choose, if/then/else, repeat, parallel, sequence, stop.
-  Every service that acts on devices must have target.entity_id with role references.
-Durations: "delay": {"minutes": 10} or "for": {"minutes": 2}.
+Days of the week: a "time" condition with "weekday": ["sun", "tue", "thu", "sat"].
+Weather: read the forecast with {"action": "weather.get_forecasts", "target": {"entity_id": "role:<weather
+  role>"}, "data": {"type": "daily"}, "response_variable": "forecast"}, then a template condition such as
+  "{{ forecast['role:<weather role>'].forecast[0].condition not in ['rainy', 'pouring', 'lightning-rainy'] }}".
+  The weather role must have exactly one entity.
+Waiting for an amount with a time limit: store the start in "variables" (e.g. {"start": "{{ states('role:
+  <meter>') | float(0) }}"}), then "wait_template" with "timeout" (e.g. "01:00:00") and
+  "continue_on_timeout": true, then act on both outcomes; "{{ wait.completed }}" tells which.
+When the request changes an existing net (CURRENT NET below), write the WHOLE new version of it.
 
-ui_card: when the user asked for a dashboard card, a Lovelace card config (built-in card types only,
-e.g. "entities", "tile", "glance", "vertical-stack"), with entities as role references; otherwise {}.
+ui_card: a Lovelace card config (built-in card types only, e.g. "entities", "tile", "glance",
+"vertical-stack"), with entities as role references, whenever the user asked for one OR the logic reads
+helpers the user sets (days, a time, an amount, an on/off choice) - so they can change those settings
+from a dashboard. Otherwise {}. When you leave it {} and helpers are used, LIBI builds one itself.
 reply: one or two sentences IN THE USER'S LANGUAGE describing what you built.
 description: one sentence in the user's language. notes: anything the user should check, in the
 user's language, or [].
+The message may also carry the user's HELPERS and, per role, the DEVICES LIBI found. Use them to reuse a
+helper that already exists instead of inventing one, and to read units (litres, %, W). The rules above still hold:
+devices only as "role:<id>", never an entity_id copied from that context.
 """
 
 
@@ -369,10 +410,17 @@ def present_domains(hass: HomeAssistant) -> set[str]:
 
 
 @callback
-def clean_plan(hass: HomeAssistant, raw: dict) -> dict:
+def clean_plan(hass: HomeAssistant, raw: dict, net_ids: set[str] | None = None) -> dict:
     """The plan reduced to what LIBI understands. A domain that does not exist in this Home
-    Assistant is dropped, ids become safe snake_case, and every list is capped."""
+    Assistant is dropped, ids become safe snake_case, and every list is capped. [v3.40.0] A target
+    net is kept only when it is one of the nets on the canvas; otherwise a change becomes new logic."""
     domains_here = present_domains(hass)
+    intent = raw.get("intent") if raw.get("intent") in ("answer", "create", "modify") else "create"
+    target = str(raw.get("target_net") or "")
+    if intent != "modify" or not net_ids or target not in net_ids:
+        target = ""
+        if intent == "modify":
+            intent = "create"
     level = raw.get("level") if raw.get("level") in LEVELS else "automation"
     roles, seen = [], set()
     for i, r in enumerate(raw.get("roles") or []):
@@ -402,9 +450,15 @@ def clean_plan(hass: HomeAssistant, raw: dict) -> dict:
         qseen.add(qid)
         questions.append({"id": qid, "text": str(q.get("text") or "")[:300],
                           "choices": _str_list(q.get("choices"), 8, 80)})
-    return {"reply": str(raw.get("reply") or "")[:1200], "level": level,
+    new_helpers = []
+    if intent != "answer":
+        new_helpers, roles = clean_new_helpers(raw.get("new_helpers"), roles)
+    if intent == "answer":
+        roles, questions = [], []
+    return {"reply": str(raw.get("reply") or "")[:4000 if intent == "answer" else 1200],
+            "intent": intent, "target_net": target, "level": level,
             "name": str(raw.get("name") or "")[:80] or "AI automation",
-            "roles": roles, "questions": questions}
+            "roles": roles, "questions": questions, "new_helpers": new_helpers}
 
 
 def _norm(text: Any) -> str:
@@ -468,6 +522,9 @@ ENTITY_SERVICE_DOMAINS = {
 # Services that send a message or speak and need no device of their own domain.
 MESSAGE_DOMAINS = {"notify", "persistent_notification"}
 MESSAGE_SERVICES = {"tts.speak"}
+# [ADDED v3.40.0] Services that only READ and answer into a response_variable. Each one acts on
+# entities of its own domain, which the user picked, like any entity service.
+READ_SERVICES = {"weather.get_forecasts"}
 GENERIC_SERVICES = {"homeassistant.turn_on", "homeassistant.turn_off", "homeassistant.toggle"}
 # Within scene and script only switching is allowed, never creating or applying ad hoc ones.
 RESTRICTED = {"scene": {"turn_on"}, "script": {"turn_on", "turn_off", "toggle"},
@@ -488,7 +545,154 @@ KNOWN_KEYS = {
     "continue_on_timeout", "choose", "default", "if", "then", "else", "repeat", "count", "while",
     "until", "for_each", "parallel", "stop", "error", "variables", "response_variable", "data",
     "message", "title", "media_player_entity_id", "description", "match",
+    # [ADDED v3.41.0] Valid in Home Assistant, and rejected before: state trigger and sun condition keys.
+    "not_from", "not_to", "after_offset", "before_offset",
 }
+
+LEGACY_KEYS = {"platform", "service"}
+
+
+# [ADDED v3.43.0] The helpers the AI may propose and the settings each takes - the same kinds and fields
+# the Helper tab of the panel creates, through the same <domain>/create call of Home Assistant.
+HELPER_SPEC: dict[str, dict[str, str]] = {
+    "input_boolean": {"icon": "text"},
+    "input_button": {"icon": "text"},
+    "input_number": {"icon": "text", "min": "number", "max": "number", "step": "number", "initial": "number",
+                     "mode": "box|slider", "unit_of_measurement": "text"},
+    "input_datetime": {"icon": "text", "has_date": "bool", "has_time": "bool"},
+    "input_select": {"icon": "text", "options": "list", "initial": "text"},
+    "input_text": {"icon": "text", "min": "number", "max": "number", "initial": "text", "mode": "text|password"},
+    "counter": {"icon": "text", "initial": "number", "minimum": "number", "maximum": "number", "step": "number",
+                "restore": "bool"},
+    "timer": {"icon": "text", "duration": "text", "restore": "bool"},
+}
+MAX_NEW_HELPERS = 12
+
+
+def helper_rules() -> str:
+    kinds = "; ".join(f"{d}: {', '.join(f'{k} ({t})' for k, t in f.items())}" for d, f in HELPER_SPEC.items())
+    return (f"Helper domains and their settings: {kinds}. input_datetime needs has_time and/or has_date; "
+            "input_number needs max above min, and initial between them.")
+
+
+def clean_new_helpers(raw: Any, roles: list[dict]) -> tuple[list[dict], list[dict]]:
+    """[ADDED v3.43.0] The helpers the model proposed, reduced to what Home Assistant's <domain>/create
+    accepts: known domains, known settings of the right type, ranges that make sense. Anything else is
+    dropped. Each kept helper fills a role; a role it names that the plan lacks is added. Nothing is
+    created here - the user creates the ones they keep, with a click in the chat."""
+    out, seen = [], set()
+    by_id = {r["id"]: r for r in roles}
+    for item in (raw if isinstance(raw, list) else [])[:MAX_NEW_HELPERS]:
+        if not isinstance(item, dict):
+            continue
+        domain = str(item.get("domain") or "")
+        spec = HELPER_SPEC.get(domain)
+        name = str(item.get("name") or "").strip()[:60]
+        rid = _clean_id(item.get("role"), "")
+        if not spec or not name or not rid or rid in seen:
+            continue
+        settings = {}
+        given = item.get("settings") if isinstance(item.get("settings"), dict) else {}
+        for key, kind in spec.items():
+            if key not in given:
+                continue
+            value = given[key]
+            if kind == "number":
+                try:
+                    settings[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if settings[key].is_integer():
+                    settings[key] = int(settings[key])
+            elif kind == "bool":
+                settings[key] = bool(value)
+            elif kind == "list":
+                opts = [str(v)[:60] for v in value if str(v).strip()][:30] if isinstance(value, list) else []
+                if opts:
+                    settings[key] = opts
+            elif "|" in kind:
+                if str(value) in kind.split("|"):
+                    settings[key] = str(value)
+            else:
+                text = str(value).strip()[:100]
+                if text:
+                    settings[key] = text
+        if domain == "input_number":
+            lo, hi = settings.get("min", 0), settings.get("max", 100)
+            if not hi > lo:
+                continue
+            if "initial" in settings and not lo <= settings["initial"] <= hi:
+                settings.pop("initial")
+        if domain == "input_datetime" and not (settings.get("has_time") or settings.get("has_date")):
+            settings["has_time"] = True
+        if domain == "input_select":
+            if not settings.get("options"):
+                continue
+            if settings.get("initial") not in settings["options"]:
+                settings.pop("initial", None)
+        if domain == "counter" and "maximum" in settings and "minimum" in settings \
+                and not settings["maximum"] > settings["minimum"]:
+            continue
+        seen.add(rid)
+        out.append({"role": rid, "domain": domain, "name": name, "settings": settings})
+        role = by_id.get(rid)
+        if role is None:
+            role = {"id": rid, "label": name, "purpose": "condition", "domains": [domain],
+                    "device_classes": [], "keywords": [], "area_keywords": []}
+            roles.append(role)
+            by_id[rid] = role
+        elif domain not in role["domains"]:
+            role["domains"].append(domain)
+    return out, roles
+
+
+def validator_rules() -> str:
+    """[ADDED v3.41.0] The rules the model is told, made from the very lists the validator checks, so
+    the prompt can never allow what LIBI rejects or keep quiet about what it accepts."""
+    restricted = "; ".join(f"{d}: only {', '.join(sorted(v))}" for d, v in sorted(RESTRICTED.items()))
+    return "\n".join([
+        "HOME ASSISTANT SYNTAX (current, 2024.10 and later):",
+        "- Plural top-level keys: triggers, conditions, actions (a script: sequence).",
+        "- A trigger is {\"trigger\": <type>, ...} - never \"platform\". A service call is",
+        "  {\"action\": \"<domain>.<service>\", \"target\": {\"entity_id\": ...}, \"data\": {...}} - never",
+        "  \"service\", \"service_data\" or \"data_template\".",
+        "- Times are strings \"HH:MM:SS\" (\"05:00:00\"). Durations are {\"hours\": h, \"minutes\": m,",
+        "  \"seconds\": s} or \"HH:MM:SS\". Weekdays: mon tue wed thu fri sat sun.",
+        "- numeric_state needs above and/or below. State values are strings: \"on\", \"off\", \"home\".",
+        "- A condition is a dict with \"condition\": <type>; and / or / not take \"conditions\": [...].",
+        "- Templates are Jinja: {{ states('role:x') }}, {{ is_state('role:x', 'on') }}, {{ now() }}.",
+        "  Use | float(0) or | int(0) before comparing numbers. A role inside a template must hold one entity.",
+        "- mode: single (ignore new runs while running), restart, queued or parallel.",
+        "- How each trigger is written: time {\"trigger\": \"time\", \"at\": \"05:00:00\"};",
+        "  time_pattern {\"trigger\": \"time_pattern\", \"minutes\": \"/5\"}; sun {\"trigger\": \"sun\",",
+        "  \"event\": \"sunset\", \"offset\": \"-00:30:00\"}; state {\"trigger\": \"state\", \"entity_id\": ..., \"to\": \"on\",",
+        "  \"for\": {\"minutes\": 2}}; numeric_state {..., \"above\": 25}; zone {\"trigger\": \"zone\", \"entity_id\": <person>,",
+        "  \"zone\": <zone>, \"event\": \"enter\"}; template {\"trigger\": \"template\", \"value_template\": \"{{ ... }}\"}.",
+        "- A state CONDITION uses \"state\": \"on\" (not \"to\"). A time condition: \"after\", \"before\", \"weekday\".",
+        "- Give a trigger an \"id\" only when a {\"condition\": \"trigger\", \"id\": ...} refers to it.",
+        "- No !secret, !include, !input or any other YAML tag. No device triggers, conditions or actions.",
+        "",
+        "WHAT LIBI ACCEPTS (anything else and the draft is rejected):",
+        f"- Trigger types: {', '.join(sorted(TRIGGERS))}.",
+        f"- Condition types: {', '.join(sorted(CONDITIONS))}.",
+        "- Services on devices: any existing service of these domains, acting only on entities of the same",
+        f"  domain: {', '.join(sorted(ENTITY_SERVICE_DOMAINS))}.",
+        f"  Restricted domains: {restricted}. To run a script: script.turn_on with the script as target.",
+        f"- Services that act on any device: {', '.join(sorted(GENERIC_SERVICES))}.",
+        f"- Messages: {', '.join(d + '.*' for d in sorted(MESSAGE_DOMAINS))} and {', '.join(sorted(MESSAGE_SERVICES))}.",
+        f"- Read-only services (with response_variable): {', '.join(sorted(READ_SERVICES))}.",
+        "- Every service that acts on devices has target.entity_id with role references; never \"all\".",
+        f"- Never write these keys: {', '.join(sorted(FORBIDDEN_KEYS))} (inside \"data\" they are allowed).",
+        # platform and service are accepted so old automations load, but the model must not write them.
+        f"- Allowed keys outside data and variables: {', '.join(sorted(KNOWN_KEYS - LEGACY_KEYS))}.",
+        "- Building blocks: delay, wait_template, wait_for_trigger (with timeout and continue_on_timeout),",
+        "  choose/default, if/then/else, repeat (count, while, until, for_each), parallel, sequence, stop,",
+        "  variables, an inline condition step, continue_on_error.",
+    ])
+
+
+BUILD_SYSTEM = BUILD_SYSTEM_TEMPLATE.replace("{RULES}", validator_rules())
+PLAN_SYSTEM = PLAN_SYSTEM_TEMPLATE.replace("{HELPER_RULES}", helper_rules())
 
 _ROLE_RE = re.compile(r"role:([a-z0-9_]+)")
 _ENTITY_RE = re.compile(r"(?<![\w.])([a-z_][a-z0-9_]*)\.([a-z0-9_]+)(?![\w(])")
@@ -607,7 +811,8 @@ class _Draft:
             if not _targets(step):
                 self.err(f"{value} needs a target.")
             return value
-        if domain not in ENTITY_SERVICE_DOMAINS or (domain in RESTRICTED and name not in RESTRICTED[domain]):
+        if value not in READ_SERVICES and (
+                domain not in ENTITY_SERVICE_DOMAINS or (domain in RESTRICTED and name not in RESTRICTED[domain])):
             self.err(f"The service {value} is not allowed in an AI draft.")
             return value
         targets = _targets(step)
@@ -710,6 +915,9 @@ async def async_build_draft(hass: HomeAssistant, plan: dict, selections: dict, r
 
     card = raw.get("ui_card") if isinstance(raw.get("ui_card"), dict) else {}
     card_yaml = ""
+    if not card:
+        # [ADDED v3.44.0] The settings the user changes from the screen always come with a card for them.
+        card = settings_card(hass, plan, selections, name)
     if card:
         card_draft = _Draft(hass, selections)
         card_body = _clean_card(card_draft, card)
@@ -731,6 +939,38 @@ async def async_build_draft(hass: HomeAssistant, plan: dict, selections: dict, r
             "notes": _str_list(raw.get("notes"), 8, 300)}
 
 
+_DAY_ORDER = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+# Values the user SETS. A button is pressed and a counter or timer runs; they are not settings.
+CARD_DOMAINS = ("input_boolean", "input_number", "input_datetime", "input_select", "input_text")
+
+
+def settings_card(hass: HomeAssistant, plan: dict, selections: dict, title: str) -> dict:
+    """[ADDED v3.44.0] An entities card with every helper the logic reads, so the user sets the days,
+    the time, the amount and the on/off choices from a dashboard. Built by LIBI from the user's own
+    picks - never from the model - and only of entities that exist. Days come first, in week order
+    (role ids day_sun ... day_sat), under a section of their own. {} when no helper is used."""
+    days, others = [], []
+    for role in plan.get("roles") or []:
+        for eid in selections.get(role["id"]) or []:
+            state = hass.states.get(eid)
+            if state is None or eid.split(".")[0] not in CARD_DOMAINS:
+                continue
+            row = {"entity": f"role:{role['id']}" if len(selections[role["id"]]) == 1 else eid,
+                   "name": str(state.name or role["label"])[:60]}
+            day = role["id"].removeprefix("day_")
+            if role["id"].startswith("day_") and day in _DAY_ORDER:
+                days.append((_DAY_ORDER.index(day), row))
+            else:
+                others.append(row)
+    if not days and not others:
+        return {}
+    entities = list(others)
+    if days:
+        entities.append({"type": "section", "label": "Days"})
+        entities += [row for _i, row in sorted(days, key=lambda x: x[0])]
+    return {"type": "entities", "title": str(title or "Settings")[:60], "state_color": True, "entities": entities}
+
+
 _CARD_SERVICE_KEYS = ("perform_action", "service")
 
 
@@ -746,6 +986,9 @@ def _clean_card(draft: _Draft, card: Any, depth: int = 0) -> Any:
             k = str(k)
             if k in ("device_id", "area_id"):
                 draft.err(f"'{k}' is not allowed in an AI card.")
+                continue
+            if k in ("label", "name", "title", "icon") and isinstance(v, str):
+                out[k] = v[:80]
                 continue
             if k == "type" and isinstance(v, str) and v.startswith("custom:"):
                 draft.err(f"The card type {v} is a custom card, which may not be installed.")
@@ -775,6 +1018,88 @@ def _clean_card(draft: _Draft, card: Any, depth: int = 0) -> Any:
 
 # ---------------------------------------------------------------------------------------- messages
 
+MAX_HELPERS = 150
+HELPER_DOMAINS = ("input_boolean", "input_number", "input_select", "input_text", "input_datetime",
+                  "input_button", "timer", "counter", "schedule")
+
+
+@callback
+def helpers_context(hass: HomeAssistant) -> str:
+    """[ADDED v3.41.0] The user's helpers, which an automation often reads or sets."""
+    lines = []
+    for state in hass.states.async_all(HELPER_DOMAINS)[:MAX_HELPERS]:
+        a = state.attributes
+        extra = []
+        for key in ("unit_of_measurement", "min", "max", "step", "options", "has_date", "has_time", "duration"):
+            if key in a:
+                value = a[key]
+                extra.append(f"{key}={value if not isinstance(value, list) else '|'.join(map(str, value[:12]))}")
+        lines.append(f"- {state.entity_id} \"{state.name}\" = {state.state}" + (f" ({', '.join(extra)})" if extra else ""))
+    return ("HELPERS:\n" + "\n".join(lines)) if lines else ""
+
+
+@callback
+def candidates_context(hass: HomeAssistant, plan: dict, candidates: dict, selections: dict) -> str:
+    """[ADDED v3.41.0] Per role, the devices LIBI found, with state, unit and class, and which ones the
+    user picked - so the model knows a meter counts litres. It still writes only role references."""
+    lines = ["DEVICES (per role; * = picked by the user; write only the role reference):"]
+    for role in plan.get("roles") or []:
+        picked = set(selections.get(role["id"]) or [])
+        items = (candidates.get(role["id"]) or {}).get("items") or []
+        lines.append(f"role:{role['id']}:")
+        for it in items[:25]:
+            state = hass.states.get(it.get("entity_id", ""))
+            unit = state.attributes.get("unit_of_measurement", "") if state else ""
+            mark = "*" if it.get("entity_id") in picked else " "
+            lines.append(f" {mark} {it.get('entity_id')} \"{it.get('name', '')}\" = {state.state if state else ''}"
+                         f"{(' ' + unit) if unit else ''}{(' [' + it['device_class'] + ']') if it.get('device_class') else ''}")
+    return "\n".join(lines)
+
+
+MAX_CANVAS_NETS = 20
+MAX_CANVAS_CHARS = 16000
+
+
+def canvas_context(hass: HomeAssistant, nets: Any) -> tuple[str, dict[str, str]]:
+    """[ADDED v3.40.0] The nets on the canvas as the YAML LIBI would save, for the model to read.
+    Returns the text block and each net's YAML by its net id. [CHANGED v3.42.0] This is the ONLY YAML
+    the model gets: the nets open in the LIBI page, while the chat's share switch is on. The user's
+    automations.yaml, scripts.yaml and scenes.yaml are never read for the model."""
+    blocks, by_id, total = [], {}, 0
+    for net in (nets if isinstance(nets, list) else [])[:MAX_CANVAS_NETS]:
+        if not isinstance(net, dict) or not net.get("id"):
+            continue
+        try:
+            text = yaml.dump(ast_to_yaml(hass, net), default_flow_style=False, allow_unicode=True,
+                             sort_keys=False)
+        except Exception as err:  # noqa: BLE001
+            text = f"# could not be compiled: {_sanitize(err)}\n"
+        nid = str(net["id"])[:40]
+        by_id[nid] = text
+        block = f"--- net id {nid} | {net_level(net)} | {str(net.get('name') or '')[:80]}\n{text}"
+        if total + len(block) > MAX_CANVAS_CHARS:
+            blocks.append(f"--- net id {nid} | {str(net.get('name') or '')[:80]} (too long to include)")
+            continue
+        total += len(block)
+        blocks.append(block)
+    if not blocks:
+        return "", by_id
+    return "NETS ON THE CANVAS:\n" + "\n".join(blocks), by_id
+
+
+@callback
+def preselect(hass: HomeAssistant, plan: dict, net_yaml: str) -> dict[str, list[str]]:
+    """[ADDED v3.40.0] For a change to a net: the entities that net already uses, per role, so the
+    user starts from what is there. Only entities that exist and fit the role's domains."""
+    used = {m.group(0) for m in _ENTITY_RE.finditer(net_yaml or "") if hass.states.get(m.group(0))}
+    out = {}
+    for role in plan.get("roles") or []:
+        ids = sorted(e for e in used if e.split(".")[0] in role["domains"])
+        if ids:
+            out[role["id"]] = ids
+    return out
+
+
 def clean_messages(raw: Any) -> list[dict]:
     """The conversation as the model may see it: user and assistant turns, capped."""
     out = []
@@ -786,10 +1111,15 @@ def clean_messages(raw: Any) -> list[dict]:
     return out
 
 
-def build_context(plan: dict, selections: dict, answers: dict, hass: HomeAssistant) -> str:
+def build_context(plan: dict, selections: dict, answers: dict, hass: HomeAssistant,
+                  current_net: str = "") -> str:
     """What the model is told for the build: the roles and what the user picked, by NAME and
-    domain only, so it can choose fitting services; entity ids are filled in by LIBI."""
-    lines = [f"LEVEL: {plan['level']}", f"NAME: {plan['name']}", "ROLES:"]
+    domain only, so it can choose fitting services; entity ids are filled in by LIBI. For a change,
+    the current version of the net comes along, so the model rewrites it instead of starting over."""
+    lines = [f"LEVEL: {plan['level']}", f"NAME: {plan['name']}"]
+    if current_net:
+        lines += ["CURRENT NET (write the whole new version of it, devices as role references):", current_net]
+    lines.append("ROLES:")
     for role in plan["roles"]:
         picked = selections.get(role["id"]) or []
         kinds = sorted({e.split(".")[0] for e in picked})

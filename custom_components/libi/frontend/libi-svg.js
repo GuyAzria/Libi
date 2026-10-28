@@ -15,13 +15,14 @@
 /**
  * LIBI SVG Icon Library
  * LIBI - LIBI for Home Assistant
- * v3.4.0
+ * v3.45.0
  * LIBI_ICONS: Core ladder diagram element icons (Monochrome / currentColor)
  *   - All icons use viewBox="0 0 100 100" and inherit color via currentColor.
  *   - Import and inject the SVG string directly into innerHTML where needed.
  */
 
 // [ADDED v3.4.0 | 2026-08-20] Purpose: Renamed LADDER_ICONS to LIBI_ICONS to complete rebranding.
+// [ADDED v3.45.0 | 2026-10-27] Purpose: The menu and pulse icons for the phone header.
 // [ADDED v1.5.1 | 2026-08-10] Purpose: Centralised inline SVG library replacing the
 //   external icons/ directory — no file serving or HACS subdirectory copy required.
 // [ADDED v1.74.0 | 2026-08-17] Purpose: Every contact and coil variant is now a drawing of its own.
@@ -54,6 +55,10 @@ export const MDI = {
     folderOpen: 'M6.1,10L4,18V8H21A2,2 0 0,0 19,6H12L10,4H4A2,2 0 0,0 2,6V18A2,2 0 0,0 4,20H19C19.9,20 20.7,19.4 20.9,18.5L23.2,10H6.1M19,18H6L7.6,12H20.6L19,18Z',
     close: 'M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z',
     collapse: 'M4,2H6V4C6,4.44 6.45,5 7,5H17C17.55,5 18,4.44 18,4V2H20V4A3,3 0 0,1 17,7H7A3,3 0 0,1 4,4V2M4,22V20A3,3 0 0,1 7,17H17A3,3 0 0,1 20,20V22H18V20C18,19.56 17.55,19 17,19H7C6.45,19 6,19.56 6,20V22H4Z',
+    // [ADDED v3.45.0] mdi:menu, the hamburger that opens Home Assistant's sidebar on a phone.
+    menu: 'M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z',
+    // [ADDED v3.45.0] mdi:pulse, for Traces in the phone menu.
+    pulse: 'M3,13H5.79L10.1,4.79L11.28,13.75L14.5,9.66L17.83,13H21V15H17L14.67,12.67L9.92,18.73L8.94,11.31L7,15H3V13Z',
 };
 
 export const LIBI_ICONS = {
