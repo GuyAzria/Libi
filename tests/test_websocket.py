@@ -83,12 +83,15 @@ async def test_non_admin_is_rejected(hass, libi, hass_ws_client, hass_read_only_
                 {"type": "libi/list_automations"},
                 {"type": "libi/delete_automation", "automation_id": "a1"},
                 {"type": "libi/net_helpers", "net": {}},
+                {"type": "libi/local_names"},
+                {"type": "libi/local_name_set", "entity_id": "light.x", "name": "Mine"},
                 {"type": "libi/project_list"}):
         await client.send_json_auto_id(msg)
         res = await client.receive_json()
         assert res["success"] is False, msg
         assert res["error"]["code"] == "unauthorized", msg
     assert not (libi / "automations.yaml").exists()
+    assert not (libi / "libi" / "local_names.json").exists()
 
 
 async def test_unknown_field_is_rejected(hass, libi, hass_ws_client):
@@ -602,3 +605,69 @@ async def test_no_variable_is_offered_when_a_user_cannot_be_read(hass, libi, has
     result = await _net_helpers(client, _net(hass, GARDEN), automation_id="garden")
     assert result["helpers"] == []
     assert result["error"], result
+
+
+# [ADDED 2026-11-04, v3.86.0] Names in LIBI only - the user's request: an entity Home Assistant cannot rename (no unique
+# ID), or one the user names in LIBI only, gets a name LIBI shows wherever it shows the entity. Home Assistant is not
+# changed; the names are config/libi/local_names.json, one file for every project.
+async def test_a_fresh_install_has_no_local_names_and_writes_nothing(hass, libi, writes, hass_ws_client):
+    client = await hass_ws_client(hass)
+    res = await send(client, {"type": "libi/local_names"})
+    assert res["success"] and res["result"] == {"names": {}}
+    assert writes == [] and not (libi / "libi" / "local_names.json").exists()
+
+
+async def test_a_local_name_is_kept_shown_and_taken_away(hass, libi, writes, hass_ws_client):
+    client = await hass_ws_client(hass)
+    res = await send(client, {"type": "libi/local_name_set", "entity_id": "input_number.kmvt_mym", "name": "  Water	litres  "})
+    assert res["success"], res
+    assert res["result"]["names"] == {"input_number.kmvt_mym": "Water litres"}
+    stored = json.loads((libi / "libi" / "local_names.json").read_text(encoding="utf-8"))
+    assert stored == {"libi_local_names": 1, "names": {"input_number.kmvt_mym": "Water litres"}}
+    res = await send(client, {"type": "libi/local_names"})
+    assert res["result"]["names"] == {"input_number.kmvt_mym": "Water litres"}
+    # The same name again changes nothing, so nothing is written.
+    assert writes == ["local_names.json"]
+    await send(client, {"type": "libi/local_name_set", "entity_id": "input_number.kmvt_mym", "name": "Water litres"})
+    assert writes == ["local_names.json"]
+    # An empty name takes it away; taking away a name nobody gave writes nothing.
+    res = await send(client, {"type": "libi/local_name_set", "entity_id": "input_number.kmvt_mym", "name": " "})
+    assert res["success"] and res["result"]["names"] == {}
+    assert json.loads((libi / "libi" / "local_names.json").read_text(encoding="utf-8"))["names"] == {}
+    await send(client, {"type": "libi/local_name_set", "entity_id": "light.none", "name": ""})
+    assert writes == ["local_names.json", "local_names.json"]
+
+
+async def test_a_local_name_never_reaches_home_assistant(hass, libi, hass_ws_client):
+    reg = er.async_get(hass)
+    reg.async_get_or_create("light", "test", "lamp-1", suggested_object_id="lamp", original_name="Lamp")
+    client = await hass_ws_client(hass)
+    res = await send(client, {"type": "libi/local_name_set", "entity_id": "light.lamp", "name": "Hall.Lamp"})
+    assert res["success"], res
+    assert reg.async_get("light.lamp").name is None and reg.async_get("light.lamp").original_name == "Lamp"
+    assert not (libi / "automations.yaml").exists() and not (libi / "scripts.yaml").exists()
+
+
+async def test_a_local_names_file_that_cannot_be_read_is_never_written_over(hass, libi, writes, hass_ws_client):
+    (libi / "libi").mkdir(exist_ok=True)
+    path = libi / "libi" / "local_names.json"
+    path.write_text("{not json", encoding="utf-8")
+    client = await hass_ws_client(hass)
+    res = await send(client, {"type": "libi/local_names"})
+    assert res["success"] is False and res["error"]["code"] == "read_failed"
+    res = await send(client, {"type": "libi/local_name_set", "entity_id": "light.x", "name": "Mine"})
+    assert res["success"] is False and res["error"]["code"] == "read_failed"
+    assert path.read_text(encoding="utf-8") == "{not json" and writes == []
+
+
+@pytest.mark.parametrize(("entity_id", "name", "code"), [
+    ("../escape", "x", "invalid_entity_id"),
+    ("light", "x", "invalid_entity_id"),
+    ("Light.X", "x", "invalid_entity_id"),
+    ("light.x", "n" * 101, "name_too_long"),
+])
+async def test_a_local_name_for_no_entity_or_too_long_is_refused(hass, libi, writes, hass_ws_client, entity_id, name, code):
+    client = await hass_ws_client(hass)
+    res = await send(client, {"type": "libi/local_name_set", "entity_id": entity_id, "name": name})
+    assert res["success"] is False and res["error"]["code"] == code
+    assert writes == []

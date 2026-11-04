@@ -1,0 +1,200 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-04] Purpose: Names in LIBI only, the user's request (2026-11-04). The variables inside a block -
+  its pins - have the right-click menu too. Rename offers Home Assistant when its entity registry has the entity, and
+  "In LIBI only" always; an entity Home Assistant cannot rename has the second only, and a rename Home Assistant refuses
+  falls back to it. A name in LIBI is shown wherever LIBI shows the entity - the block's name, its pins, the variables
+  bar - escaped, and never sent to Home Assistant. Renamed in Home Assistant, the LIBI name goes.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi local names test</title></head>
+<body style="margin:0; width:1400px; height:860px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const told = [];
+window.alert = (m) => { told.push(String(m)); };
+window.confirm = () => false;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const states = {};
+const st = (id, name) => { states[id] = { entity_id: id, state: '3', attributes: { friendly_name: name } }; };
+st('sensor.meter', 'Meter HA'); st('input_number.litres', 'Litres HA'); st('binary_sensor.yaml_door', 'Door from YAML');
+st('light.hall', 'Hall HA'); st('light.porch', 'Porch HA');
+// What Home Assistant's entity registry has: not the door, written in YAML without a unique ID.
+const entities = { 'sensor.meter': { entity_id: 'sensor.meter' }, 'input_number.litres': { entity_id: 'input_number.litres' },
+                   'light.hall': { entity_id: 'light.hall' }, 'light.porch': { entity_id: 'light.porch' } };
+let stored = { 'sensor.meter': 'Meter.Total' };
+const sent = [];
+const hass = {
+  states, entities, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en', user: { is_admin: true },
+  localize: (k) => k, callService: async () => {}, callApi: async () => ({}),
+  connection: {
+    sendMessagePromise: async (m) => {
+      sent.push(JSON.parse(JSON.stringify(m)));
+      if (m.type === 'libi/ai_status') return { configured: false };
+      if (m.type === 'libi/project_list') return { projects: [] };
+      if (m.type === 'libi/local_names') return { names: { ...stored } };
+      if (m.type === 'libi/local_name_set') {
+        stored = { ...stored };
+        if (m.name) stored[m.entity_id] = m.name; else delete stored[m.entity_id];
+        return { names: { ...stored } };
+      }
+      if (m.type === 'config/entity_registry/update') {
+        if (m.entity_id === 'light.porch') throw { code: 'unknown_error', message: 'Entity is read only' };
+        return { entity_entry: {} };
+      }
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+
+try {
+  localStorage.clear();
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '860px';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await sleep(300);
+  const sr = panel.shadowRoot, core = panel.core;
+  core.nets = [{ id: 'n1', name: 'Garden', level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r1', comment: '', elements: [
+    { id: 'e1', type: 'contact_no', isTrigger: true, label: 'binary_sensor.yaml_door' },
+    { id: 'e2', type: 'cmp_gt', sourceA: 'sensor.meter', sourceB: 'input_number.litres' },
+    { id: 'e3', type: 'coil_s', label: 'light.hall' },
+    { id: 'e4', type: 'coil_r', label: 'light.porch' }] }] }];
+  core.syncCounters(); core.repairAST(); core.validateAST();
+  panel._project = { slug: 'p', name: 'P' };
+  panel._markSaved();
+  panel._selectNet('n1');
+  await sleep(30);
+
+  const block = (eid) => sr.querySelector(`.libi-el[data-nid="n1"][data-eid="${eid}"]`);
+  const pin = (eid, prop) => block(eid).querySelector(`.pin-val[data-prop="${prop}"]`);
+  const label = (eid) => block(eid).querySelector('.el-lbl').textContent.trim();
+  const rowName = (entity) => { const r = sr.querySelector(`.vars-table tr[data-eid="${entity}"] .c-name`); return r ? r.textContent : null; };
+  const rightClick = async (node) => {
+    const r = node.getBoundingClientRect();
+    node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, composed: true,
+      clientX: Math.round(r.left + 5), clientY: Math.round(r.top + 5), button: 2 }));
+    await sleep(20);
+  };
+  const rename = async (node, text, how) => {
+    await rightClick(node);
+    sr.getElementById('ctxRename').click(); await sleep(20);
+    const box = sr.getElementById('renameInput');
+    box.value = text; box.dispatchEvent(new Event('input'));
+    if (how === 'enter') box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    else sr.getElementById(how).click();
+    await sleep(40);
+  };
+  const types = () => sent.map(m => m.type).filter(t => t === 'libi/local_name_set' || t === 'config/entity_registry/update');
+
+  // ---- The names given in LIBI come with the panel
+  check('the names given in LIBI are read when the panel starts', sent.some(m => m.type === 'libi/local_names')
+        && core.localNames && core.localNames['sensor.meter'] === 'Meter.Total', JSON.stringify(core.localNames));
+  check('a pin shows the name it has in LIBI, the hover keeps the id', pin('e2', 'sourceA').textContent === 'Meter.Total'
+        && pin('e2', 'sourceA').title === 'sensor.meter', pin('e2', 'sourceA').outerHTML);
+  check('a pin without one shows the entity id, as before', pin('e2', 'sourceB').textContent === 'input_number.litres');
+  check('the variables bar shows the name in LIBI', rowName('sensor.meter') === 'Meter.Total', rowName('sensor.meter'));
+
+  // ---- A pin has the right-click menu; from a pin, In LIBI only comes first
+  sent.length = 0;
+  await rightClick(pin('e2', 'sourceB'));
+  check('a pin that holds an entity opens the menu', panel._ctx && panel._ctx.entityId === 'input_number.litres' && panel._ctx.prop === 'sourceB'
+        && !!sr.getElementById('ctxMenu'), JSON.stringify(panel._ctx));
+  sr.getElementById('ctxRename').click(); await sleep(20);
+  check('Rename offers both, In LIBI only first from a pin', !!sr.getElementById('renameOk') && !!sr.getElementById('renameLocal')
+        && !sr.getElementById('renameLocal').classList.contains('btn-ghost') && sr.getElementById('renameOk').classList.contains('btn-ghost'));
+  const box = sr.getElementById('renameInput');
+  box.value = 'Water.Litres'; box.dispatchEvent(new Event('input'));
+  box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await sleep(40);
+  check('Enter keeps it in LIBI only, nothing goes to Home Assistant', JSON.stringify(types()) === '["libi/local_name_set"]'
+        && sent[sent.length - 1].entity_id === 'input_number.litres' && sent[sent.length - 1].name === 'Water.Litres', JSON.stringify(sent));
+  check('the dialog closes', !sr.getElementById('renameInput'));
+  check('the pin shows the new name', pin('e2', 'sourceB').textContent === 'Water.Litres' && pin('e2', 'sourceB').title === 'input_number.litres');
+  check('and so does the variables bar', rowName('input_number.litres') === 'Water.Litres', rowName('input_number.litres'));
+  check('Home Assistant\'s own name is unchanged for what goes to it', core.haName('input_number.litres', hass) === 'Litres HA');
+
+  // ---- An entity Home Assistant cannot rename: In LIBI only, and nothing else
+  sent.length = 0;
+  await rightClick(block('e1').querySelector('.el-lbl'));
+  sr.getElementById('ctxRename').click(); await sleep(20);
+  check('an entity without a unique ID is not offered Home Assistant', !sr.getElementById('renameOk') && !!sr.getElementById('renameLocal')
+        && sr.querySelector('.rename-note').textContent.includes('Home Assistant cannot rename this entity'));
+  sr.getElementById('closeModalBtn').click(); await sleep(20);
+  await rename(block('e1').querySelector('.el-lbl'), 'Front door', 'enter');
+  check('its name in LIBI is kept', JSON.stringify(types()) === '["libi/local_name_set"]' && stored['binary_sensor.yaml_door'] === 'Front door');
+  check('the block shows it', label('e1').startsWith('Front door'), label('e1'));
+
+  // ---- A block of an entity in the registry: Home Assistant first, and the LIBI name goes when it is renamed there
+  stored['light.hall'] = 'Old LIBI name'; core.localNames = { ...stored }; panel._render(); await sleep(20);
+  sent.length = 0;
+  await rightClick(block('e3').querySelector('.el-lbl'));
+  sr.getElementById('ctxRename').click(); await sleep(20);
+  check('from a block of the registry, Rename in Home Assistant comes first', !sr.getElementById('renameOk').classList.contains('btn-ghost')
+        && sr.getElementById('renameLocal').classList.contains('btn-ghost'));
+  check('the dialog says the name it has in LIBI', sr.querySelector('.rename-local') && sr.querySelector('.rename-local').textContent.includes('Old LIBI name'));
+  const box2 = sr.getElementById('renameInput');
+  box2.value = 'Hall light'; box2.dispatchEvent(new Event('input'));
+  sr.getElementById('renameOk').click(); await sleep(60);
+  check('renamed in Home Assistant, and its LIBI name taken away', JSON.stringify(types()) === '["config/entity_registry/update","libi/local_name_set"]'
+        && sent.find(m => m.type === 'config/entity_registry/update').name === 'Hall light'
+        && sent.find(m => m.type === 'libi/local_name_set').name === '' && !('light.hall' in stored), JSON.stringify(sent));
+  check('the block shows the name Home Assistant now has', label('e3').startsWith('Hall light'), label('e3'));
+
+  // ---- Home Assistant refuses: the name is kept in LIBI only, and the user is told
+  sent.length = 0; told.length = 0;
+  await rename(block('e4').querySelector('.el-lbl'), 'Porch light', 'renameOk');
+  check('a rename Home Assistant refuses is kept in LIBI only', JSON.stringify(types()) === '["config/entity_registry/update","libi/local_name_set"]'
+        && stored['light.porch'] === 'Porch light', JSON.stringify(sent));
+  check('and the user is told why', told.length === 1 && told[0].includes('Entity is read only') && told[0].includes('kept in LIBI only'), told.join(' | '));
+  check('the block shows it', label('e4').startsWith('Porch light'), label('e4'));
+
+  // ---- The LIBI name taken away again
+  sent.length = 0;
+  await rightClick(pin('e2', 'sourceB'));
+  sr.getElementById('ctxRename').click(); await sleep(20);
+  sr.getElementById('renameLocalClear').click(); await sleep(40);
+  check('Remove the LIBI name takes it away', JSON.stringify(types()) === '["libi/local_name_set"]' && sent[0].name === '' && !('input_number.litres' in stored));
+  check('and the pin shows the entity id again', pin('e2', 'sourceB').textContent === 'input_number.litres');
+
+  // ---- Change the entity from a pin's menu opens the chooser for that pin
+  await rightClick(pin('e2', 'sourceB'));
+  sr.getElementById('ctxChange').click(); await sleep(20);
+  check('Change the entity, from a pin, picks for that pin', panel._ep && panel._ep.prop === 'sourceB' && panel._modal === 'entity_picker', JSON.stringify(panel._ep));
+  panel._modal = null; panel._ep = null; panel._render(); await sleep(20);
+
+  // ---- A name is text, wherever it is shown
+  await rename(pin('e2', 'sourceB'), '<img src=x onerror="window.__x=1">', 'renameLocal');
+  await sleep(30);
+  check('a name with markup is shown as text on the pin', pin('e2', 'sourceB').textContent.startsWith('<img') && !sr.querySelector('.libi-el img'),
+        pin('e2', 'sourceB').innerHTML);
+  check('and in the variables bar', (rowName('input_number.litres') || '').startsWith('<img') && !sr.querySelector('.vars-table img'));
+  check('and nothing ran', window.__x === undefined);
+
+  // ---- A backend that does not know the command yet
+  const real = hass.connection.sendMessagePromise;
+  hass.connection.sendMessagePromise = async (m) => {
+    if (m.type === 'libi/local_name_set') throw { code: 'unknown_command', message: 'Unknown command.' };
+    return real(m);
+  };
+  told.length = 0;
+  await rename(pin('e2', 'sourceA'), 'X', 'renameLocal');
+  check('a Home Assistant still running the previous LIBI is said, and the dialog stays', told.length === 1 && told[0].includes('Restart Home Assistant')
+        && !!sr.getElementById('renameInput') && stored['sensor.meter'] === 'Meter.Total', told.join(' | '));
+  hass.connection.sendMessagePromise = real;
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

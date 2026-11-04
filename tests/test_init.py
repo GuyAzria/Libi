@@ -13,6 +13,8 @@
 # more details. <https://www.gnu.org/licenses/>.
 """Setup, unload and reload of the config entry."""
 import logging
+import re
+from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -81,3 +83,26 @@ async def test_reload_does_not_fail(hass: HomeAssistant) -> None:
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
     assert PANEL_URL in hass.data["frontend_panels"]
+
+
+async def test_the_panel_and_every_module_it_imports_carry_one_version(hass: HomeAssistant) -> None:
+    """[ADDED 2026-11-04, v3.86.1] The browser keeps a file by its address, ?v= and all. The panel is registered with
+    LIBI_VERSION, it imports every module with it, and it prints it: one number everywhere, or a browser mixes an old
+    module with a new panel - the panel stayed blank when libi-core.js was a copy from an earlier 3.86.0."""
+    from custom_components.libi import LIBI_VERSION
+
+    entry = await _setup(hass)
+    assert entry.state is ConfigEntryState.LOADED
+    module_url = hass.data["frontend_panels"][PANEL_URL].config["_panel_custom"]["module_url"]
+    assert module_url.endswith(f"/libi-panel.js?v={LIBI_VERSION}")
+    frontend = Path(__file__).resolve().parent.parent / "custom_components" / "libi" / "frontend"
+    panel = (frontend / "libi-panel.js").read_text(encoding="utf-8")
+    imports = re.findall(r"^import [^;]* from '\./([a-z0-9-]+\.js)\?v=([^']*)';", panel, re.M)
+    assert {name for name, _ in imports} == {"libi-core.js", "libi-css.js", "libi-svg.js", "libi-online.js", "libi-ai.js"}
+    assert all(v == LIBI_VERSION for _, v in imports), imports
+    assert all((frontend / name).is_file() for name, _ in imports)
+    assert re.findall(r"^export const LIBI_BUILD = '([^']*)';", panel, re.M) == [LIBI_VERSION]
+    # Every other ?v= a module writes out, in any frontend file, is the same number.
+    for js in frontend.glob("*.js"):
+        for v in re.findall(r"\?v=([0-9][0-9.]*)", js.read_text(encoding="utf-8")):
+            assert v == LIBI_VERSION, (js.name, v)

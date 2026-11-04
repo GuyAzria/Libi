@@ -1,0 +1,234 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-04] Purpose: The user's report and request (2026-11-04). A click on an element redrew the panel
+  and threw the ladder back to its start, so the right-click menu opened where the block had been: the canvas and the
+  rungs of each NET keep their scroll across a redraw, and the menu opens where the click was, on the screen, even inside
+  a container that moves what is fixed in it. The title of a NET chooses it - the variables bar lists that NET's
+  variables only - and the arrow on the right still folds it; the project's name lists the variables of every NET.
+  Phone, tablet and desktop widths, and a right-to-left page. ?mod= runs it against another copy of the panel.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1460,900"><title>libi select net test</title></head>
+<body style="margin:0">
+<pre id="out">RUNNING</pre>
+<div id="frames"></div>
+<script type="module">
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const MOD = new URLSearchParams(location.search).get('mod') || '../../custom_components/libi/frontend/libi-panel.js';
+
+const INNER = (dir) => `<!doctype html><html dir="${dir}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="margin:0">
+<script type="module">
+import '${MOD}';
+window.alert = () => {}; window.confirm = () => false;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+const states = {};
+const st = (id, name) => { states[id] = { entity_id: id, state: 'off', attributes: { friendly_name: name } }; };
+st('binary_sensor.door', 'Door'); st('light.hall', 'Hall'); st('switch.valve', 'Valve'); st('input_number.litres', 'Litres');
+st('light.porch', 'Porch'); st('input_boolean.night', 'Night');
+for (let i = 1; i <= 16; i++) st('binary_sensor.g' + i, 'Garden ' + i);
+const hass = { states, entities: { 'light.hall': { entity_id: 'light.hall' } }, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true }, localize: (k) => k, callService: async () => {}, callApi: async () => ({}),
+  connection: { sendMessagePromise: async (m) => m.type === 'libi/ai_status' ? { configured: false }
+                  : (m.type === 'libi/project_list' ? { projects: [] } : []),
+                subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {} } };
+localStorage.clear();
+const panel = document.createElement('libi-panel');
+panel.style.height = '100vh'; panel.style.display = 'block';
+document.body.appendChild(panel);
+panel.hass = hass;
+const el = (id, type, label, trig) => ({ id, type, label, isTrigger: !!trig });
+// NET 1 is tall (eight rungs), NET 2 is wide (sixteen contacts in one rung), NET 3 is small.
+const lamp = { id: 'n1', name: 'Lamp', level: 'automation', collapsed: false, links: [],
+  rungs: Array.from({ length: 8 }, (_, i) => ({ id: 'r' + (i + 1), comment: '',
+    elements: [el('e' + (2 * i + 1), 'contact_no', 'binary_sensor.door', true), el('e' + (2 * i + 2), 'coil_s', 'light.hall')] })) };
+const garden = { id: 'n2', name: 'Garden <b>x</b> & co', level: 'automation', collapsed: false, links: [],
+  rungs: [{ id: 'r1', comment: '', elements: [
+    ...Array.from({ length: 16 }, (_, i) => el('e' + (i + 1), 'contact_no', 'binary_sensor.g' + (i + 1), i === 0)),
+    el('e17', 'coil_s', 'switch.valve')] }], vars: ['input_number.litres'] };
+const night = { id: 'n3', name: 'Night', level: 'automation', collapsed: false, links: [],
+  rungs: [{ id: 'r1', comment: '', elements: [el('e1', 'contact_no', 'input_boolean.night', true), el('e2', 'coil_s', 'light.porch')] }] };
+setTimeout(() => {
+  panel.core.nets = [lamp, garden, night];
+  panel.core.syncCounters(); panel.core.repairAST(); panel.core.validateAST();
+  panel._project = { slug: 'p', name: 'Home' };
+  panel._markSaved();
+  panel._render();
+  window.__ready = panel;
+}, 250);
+<\/script></body></html>`;
+
+function frame(width, dir) {
+  return new Promise(resolve => {
+    const f = document.createElement('iframe');
+    f.style.cssText = `width:${width}px;height:800px;border:0;display:block`;
+    f.srcdoc = INNER(dir);
+    document.getElementById('frames').appendChild(f);
+    const poll = () => (f.contentWindow && f.contentWindow.__ready) ? resolve(f) : setTimeout(poll, 50);
+    poll();
+  });
+}
+
+const near = (a, b, d = 2) => Math.abs(a - b) <= d;
+const LAMP = ['binary_sensor.door', 'light.hall'];
+const GARDEN = [...Array.from({ length: 16 }, (_, i) => 'binary_sensor.g' + (i + 1)), 'input_number.litres', 'switch.valve'].sort();
+const NIGHT = ['input_boolean.night', 'light.porch'];
+const ALL = [...LAMP, ...GARDEN, ...NIGHT].sort();
+
+try {
+  for (const [width, dir] of [[1400, 'ltr'], [1024, 'ltr'], [390, 'ltr'], [390, 'rtl']]) {
+    const f = await frame(width, dir);
+    const win = f.contentWindow, panel = win.__ready, sr = panel.shadowRoot;
+    const tag = `${width}px ${dir}:`;
+    await sleep(80);
+    const canvas = () => sr.querySelector('.canvas');
+    const wide = () => sr.querySelector('.rung-scroll[data-nid="n2"]');
+    const block = (nid, eid) => sr.querySelector(`.libi-el[data-nid="${nid}"][data-eid="${eid}"]`);
+    const rows = () => [...sr.querySelectorAll('.vars-table tr.vars-drag')].map(r => r.getAttribute('data-eid')).sort();
+
+    // The inspector opens on the first click; the layout settles before anything is measured.
+    block('n1', 'e1').click(); await sleep(30);
+    check(`${tag} the canvas can scroll down (harness)`, canvas().scrollHeight > canvas().clientHeight + 200,
+          `${canvas().scrollHeight} / ${canvas().clientHeight}`);
+    check(`${tag} NET 2 can scroll sideways (harness)`, wide().scrollWidth > wide().clientWidth + 100,
+          `${wide().scrollWidth} / ${wide().clientWidth}`);
+
+    // ---- A click on an element keeps the ladder where it was
+    const down = Math.min(400, canvas().scrollHeight - canvas().clientHeight - 10);
+    canvas().scrollTop = down;
+    wide().scrollLeft = 150;
+    const sideways = wide().scrollLeft;
+    const before = block('n2', 'e6').getBoundingClientRect();
+    block('n2', 'e6').click(); await sleep(30);
+    check(`${tag} the element is in the inspector`, panel._inspectedEl && panel._inspectedEl.netId === 'n2' && panel._inspectedEl.elId === 'e6',
+          JSON.stringify(panel._inspectedEl));
+    check(`${tag} the canvas stays scrolled down`, near(canvas().scrollTop, down, 1), `${canvas().scrollTop} != ${down}`);
+    check(`${tag} the rungs of NET 2 stay scrolled sideways`, near(wide().scrollLeft, sideways, 1), `${wide().scrollLeft} != ${sideways}`);
+    const after = block('n2', 'e6').getBoundingClientRect();
+    check(`${tag} so the clicked element did not move`, near(after.top, before.top) && near(after.left, before.left),
+          `${before.left},${before.top} -> ${after.left},${after.top}`);
+
+    // ---- The right-click menu opens where the click was
+    // A right click is on something on the screen: the block is scrolled into view first, as the user would.
+    block('n2', 'e7').scrollIntoView({ block: 'center', inline: 'center' }); await sleep(30);
+    const lbl = block('n2', 'e7').querySelector('.el-lbl');
+    const lr = lbl.getBoundingClientRect();
+    const cx = Math.round(lr.left + lr.width / 2), cy = Math.round(lr.top + lr.height / 2);
+    check(`${tag} the block is on the screen (harness)`, cx > 0 && cx < win.innerWidth && cy > 0 && cy < win.innerHeight, `${cx},${cy}`);
+    lbl.dispatchEvent(new win.MouseEvent('contextmenu', { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 2 }));
+    await sleep(30);
+    let menu = sr.getElementById('ctxMenu');
+    check(`${tag} the right-click menu opens`, !!menu && panel._ctx && panel._ctx.entityId === 'binary_sensor.g7', JSON.stringify(panel._ctx));
+    let mr = menu ? menu.getBoundingClientRect() : { left: -1, top: -1, right: 0, bottom: 0 };
+    const lr2 = block('n2', 'e7').querySelector('.el-lbl').getBoundingClientRect();
+    check(`${tag} the block it was opened on stays where it was`, near(lr2.left, lr.left) && near(lr2.top, lr.top),
+          `${lr.left},${lr.top} -> ${lr2.left},${lr2.top}`);
+    check(`${tag} the menu is at the click`, near(mr.top, cy) && (near(mr.left, cx) || near(mr.right, win.innerWidth - 4)),
+          `menu ${mr.left},${mr.top} click ${cx},${cy}`);
+    check(`${tag} the menu is on the screen`, mr.left >= 0 && mr.top >= 0 && mr.right <= win.innerWidth && mr.bottom <= win.innerHeight,
+          `${mr.left},${mr.top},${mr.right},${mr.bottom} in ${win.innerWidth}x${win.innerHeight}`);
+    // Near the corner of the screen it stays on it.
+    panel._ctx = { ...panel._ctx, x: win.innerWidth - 3, y: win.innerHeight - 3 };
+    panel._render(); await sleep(20);
+    mr = sr.getElementById('ctxMenu').getBoundingClientRect();
+    check(`${tag} a click in the corner keeps the menu on the screen`, mr.right <= win.innerWidth && mr.bottom <= win.innerHeight && mr.left >= 0 && mr.top >= 0,
+          `${mr.left},${mr.top},${mr.right},${mr.bottom}`);
+    panel._ctx = null; panel._render(); await sleep(20);
+
+    // ---- The title of a NET chooses it: the bar lists its variables only
+    const scrolled = canvas().scrollTop;
+    sr.querySelector('.net[data-nid="n2"] .net-name > span').click(); await sleep(30);
+    check(`${tag} the title of NET 2 chooses it`, panel._selectedNetId === 'n2' && panel._varsScope === 'net', `${panel._selectedNetId} ${panel._varsScope}`);
+    check(`${tag} the bar opens on its variables`, panel._varsTab === 'vars' && panel._varsOpen && !sr.getElementById('varsBar').classList.contains('rail'));
+    check(`${tag} and lists the variables of NET 2 only`, JSON.stringify(rows()) === JSON.stringify(GARDEN), rows().join());
+    check(`${tag} the chip names it, as written`, sr.getElementById('varsScopeNet').classList.contains('on')
+          && sr.getElementById('varsScopeNet').textContent === 'Net · Garden <b>x</b> & co', sr.getElementById('varsScopeNet').textContent);
+    check(`${tag} NET 2 is outlined, no other`, sr.querySelector('.net[data-nid="n2"]').classList.contains('net-selected')
+          && sr.querySelectorAll('.net.net-selected').length === 1);
+    const cut = [...sr.querySelectorAll('.vars-filters > *')].filter(c => c.getBoundingClientRect().right > win.innerWidth + 1).map(c => c.textContent);
+    check(`${tag} the three scope chips and the filters fit the screen`, cut.length === 0 && !!sr.getElementById('varsScopeProject'), cut.join(' | '));
+    check(`${tag} the title does not fold it`, panel.core.nets[1].collapsed === false);
+    check(`${tag} and the ladder stays where it was`, near(canvas().scrollTop, scrolled, 1), `${canvas().scrollTop} != ${scrolled}`);
+
+    sr.querySelector('.net[data-nid="n3"] .net-name > span').click(); await sleep(30);
+    check(`${tag} the title of NET 3 lists its variables`, JSON.stringify(rows()) === JSON.stringify(NIGHT), rows().join());
+
+    // ---- The arrow on the right folds it, and is a target of its own
+    const fold = () => sr.querySelector('.net[data-nid="n3"] .net-fold');
+    const fr = fold().getBoundingClientRect();
+    check(`${tag} the arrow is on the screen and at least 40px wide`, fr.width >= 40 && fr.left >= 0 && fr.right <= win.innerWidth, `${fr.left},${fr.right},${fr.width}`);
+    fold().click(); await sleep(30);
+    check(`${tag} the arrow folds the NET`, panel.core.nets[2].collapsed === true);
+    fold().click(); await sleep(30);
+    check(`${tag} and unfolds it`, panel.core.nets[2].collapsed === false);
+
+    // ---- Clicking into the name chooses the NET and keeps the caret there to rename it
+    const name = sr.querySelector('.net-name-input[data-nid="n1"]');
+    name.focus(); name.setSelectionRange(2, 2);
+    name.click(); await sleep(30);
+    const active = sr.activeElement;
+    check(`${tag} clicking into the name chooses the NET`, panel._selectedNetId === 'n1' && JSON.stringify(rows()) === JSON.stringify(LAMP), rows().join());
+    check(`${tag} and the name keeps the caret, to be renamed`, active && active.classList.contains('net-name-input') && active.getAttribute('data-nid') === 'n1'
+          && active.selectionStart === 2, active ? `${active.className} ${active.selectionStart}` : 'nothing focused');
+    active.blur();
+
+    // ---- The project's name lists the variables of every NET
+    sr.getElementById('projectChip').click(); await sleep(30);
+    check(`${tag} the project's name lists the variables of every NET`, panel._varsScope === 'project' && JSON.stringify(rows()) === JSON.stringify(ALL), rows().join());
+    check(`${tag} the project chip and the bar's chip are marked, no NET is outlined`, sr.getElementById('projectChip').classList.contains('on')
+          && sr.getElementById('varsScopeProject').classList.contains('on') && sr.getElementById('varsScopeProject').textContent === 'Project · Home'
+          && !sr.querySelector('.net.net-selected'));
+    check(`${tag} the Variables tab counts them`, sr.getElementById('varsTabVars').textContent === 'Variables' + ALL.length, sr.getElementById('varsTabVars').textContent);
+    block('n1', 'e3').click(); await sleep(30);
+    check(`${tag} an element clicked keeps the whole project in the bar`, panel._varsScope === 'project' && JSON.stringify(rows()) === JSON.stringify(ALL));
+    sr.getElementById('varsScopeNet').click(); await sleep(30);
+    check(`${tag} and "Net" then lists that element's NET`, JSON.stringify(rows()) === JSON.stringify(LAMP), rows().join());
+    sr.getElementById('projectChip').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await sleep(30);
+    check(`${tag} Enter on the project's name does the same`, panel._varsScope === 'project');
+
+    // ---- The rename dialog, with its three buttons, fits the screen
+    block('n1', 'e2').scrollIntoView({ block: 'center', inline: 'center' }); await sleep(30);
+    const hl = block('n1', 'e2').querySelector('.el-lbl'), hr = hl.getBoundingClientRect();
+    hl.dispatchEvent(new win.MouseEvent('contextmenu', { bubbles: true, cancelable: true, composed: true,
+      clientX: Math.round(hr.left + 5), clientY: Math.round(hr.top + 5), button: 2 }));
+    await sleep(20);
+    sr.getElementById('ctxRename').click(); await sleep(20);
+    const btns = ['closeModalBtn', 'renameLocal', 'renameOk'].map(id => sr.getElementById(id));
+    const off = btns.filter(b => !b || b.getBoundingClientRect().left < 0 || b.getBoundingClientRect().right > win.innerWidth
+      || b.getBoundingClientRect().bottom > win.innerHeight).map(b => b ? b.id : 'missing');
+    check(`${tag} the rename dialog's buttons are all on the screen`, off.length === 0, off.join());
+    check(`${tag} and the name box too`, sr.getElementById('renameInput').getBoundingClientRect().right <= win.innerWidth);
+    sr.getElementById('closeModalBtn').click(); await sleep(20);
+
+    // ---- A container of Home Assistant that moves what is fixed inside it
+    if (width === 1400) {
+      panel.style.transform = 'translateX(0)'; panel.style.marginLeft = '60px'; panel.style.width = 'calc(100% - 60px)';
+      panel._render(); await sleep(30);
+      block('n3', 'e1').scrollIntoView({ block: 'center', inline: 'center' }); await sleep(30);
+      const lb = block('n3', 'e1').querySelector('.el-lbl'), r = lb.getBoundingClientRect();
+      const x = Math.round(r.left + 10), y = Math.round(r.top + 5);
+      lb.dispatchEvent(new win.MouseEvent('contextmenu', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 2 }));
+      await sleep(30);
+      const m = sr.getElementById('ctxMenu').getBoundingClientRect();
+      check(`${tag} inside a moved container the menu is still at the click`, near(m.left, x) && near(m.top, y), `menu ${m.left},${m.top} click ${x},${y}`);
+      panel._ctx = null;
+      panel.style.transform = ''; panel.style.marginLeft = ''; panel.style.width = '';
+      // Another project starts with nothing chosen, at its top.
+      panel._markSaved();
+      await panel._projectClose(); await sleep(30);
+      check(`${tag} closing the project forgets the chosen NET`, panel._selectedNetId === null && panel.core.nets.length === 0);
+    }
+  }
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

@@ -14,11 +14,12 @@
  */
 /**
  * LIBI Panel - Styles
- * v3.85.0
+ * v3.86.0
  */
-// [ADDED v3.82.0 | 2026-11-02] Purpose: The AI chat's local variables window: one row each, Use a helper or make a New one.
 // [ADDED v3.85.0 | 2026-11-04] Purpose: The panel's question with answers of its own (leaving with changes not saved,
 //   deleting a NET) and the Original tag of the versions list.
+// [ADDED v3.86.0 | 2026-11-04] Purpose: The NET chosen for the variables bar is outlined, the project's name is marked
+//   while the bar lists every NET, and the arrow that folds a NET has a target of its own.
 export const getStyles = () => `
 :host { display: block; height: 100vh; overflow-y: hidden; background: var(--primary-background-color, #f5f5f5); color: var(--primary-text-color, #212121); font-family: var(--primary-font-family, sans-serif); box-sizing: border-box; direction: ltr !important; text-align: left; }
 /* [ADDED v3.35.0] Colour tokens. The light values are the colours the panel always used; the
@@ -196,6 +197,14 @@ export const getStyles = () => `
    of the labels of the blocks either side and hid them, so it is a badge under the block instead,
    in the same place and the same shape as the Trigger badge, in red. */
 /* [ADDED v3.28.0] The little menu a right click on a block name opens. */
+/* [ADDED v3.86.0] The NET whose variables the bar lists, and the project's name while the bar lists every NET. The arrow
+   on the right of a NET's header folds it, its title chooses it. */
+.net.net-selected { box-shadow: 0 0 0 2px var(--primary-color, #03a9f4), 0 2px 8px rgba(0,0,0,.08); }
+.net-name[data-sel] { cursor: pointer; }
+.net-fold { min-width: 40px; min-height: 32px; justify-content: center; }
+.project-chip { cursor: pointer; }
+.project-chip.on { border-color: var(--primary-color, #03a9f4); box-shadow: inset 0 0 0 1px var(--primary-color, #03a9f4); }
+@media (pointer: coarse) { .net-fold { min-height: 40px; } }
 .ctx-menu { position: fixed; z-index: 900; min-width: 190px; background: var(--card-background-color, #fff); border: 1px solid var(--divider-color, #e0e0e0); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.2); padding: 5px 0; }
 .ctx-item { display: flex; align-items: center; gap: 9px; width: 100%; background: none; border: none; text-align: left; padding: 9px 14px; font-size: 13px; color: var(--primary-text-color, #212121); cursor: pointer; font-family: inherit; }
 .ctx-item:hover { background: var(--secondary-background-color, #f2f2f2); }

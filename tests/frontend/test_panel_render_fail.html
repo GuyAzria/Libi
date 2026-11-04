@@ -1,0 +1,128 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-04] Purpose: A page LIBI cannot draw says so on the screen. After the update the panel stayed
+  blank: the browser held an older libi-core.js under the same ?v= as the new panel, the first pin drawn threw, and the
+  error was in the browser's console only - nothing in Home Assistant's log. Here a core without localName (as that
+  older file was) must give a box that says what happened and how to reload, with the error as text; a drawing that
+  works afterwards replaces it with the page.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi render fail test</title></head>
+<body style="margin:0; width:1400px; height:860px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { LIBI_BUILD } from '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const errors = [];
+const rejections = [];
+console.error = (...a) => { errors.push(a.map(x => (x && x.message) ? x.message : String(x)).join(' ')); };
+window.addEventListener('unhandledrejection', (e) => { rejections.push(String(e.reason && e.reason.message || e.reason)); });
+window.alert = () => {};
+window.confirm = () => false;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const states = {};
+const st = (id, name) => { states[id] = { entity_id: id, state: '3', attributes: { friendly_name: name } }; };
+st('binary_sensor.door', 'Door'); st('sensor.meter', 'Meter'); st('input_number.litres', 'Litres'); st('light.hall', 'Hall');
+const NET = { id: 'n1', name: 'Garden', level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r1', comment: '', elements: [
+  { id: 'e1', type: 'contact_no', isTrigger: true, label: 'binary_sensor.door' },
+  { id: 'e2', type: 'cmp_gt', sourceA: 'sensor.meter', sourceB: 'input_number.litres' },
+  { id: 'e3', type: 'coil_s', label: 'light.hall' }] }] };
+const hass = {
+  states, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en', user: { is_admin: true },
+  localize: (k) => k, callService: async () => {}, callApi: async () => ({}),
+  connection: {
+    sendMessagePromise: async (m) => {
+      if (m.type === 'libi/ai_status') return { configured: false };
+      if (m.type === 'libi/local_names') return { names: {} };
+      if (m.type === 'libi/project_list') return { projects: [{ slug: 'p', name: 'P', nets: 1 }] };
+      if (m.type === 'libi/project_open') return { slug: 'p', name: 'P', nets: [JSON.parse(JSON.stringify(NET))], versions: {}, stats: {} };
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+
+try {
+  localStorage.clear();
+  localStorage.setItem('libi_project', JSON.stringify({ slug: 'p', name: 'P' }));
+  const panel = document.createElement('libi-panel');
+  // The older libi-core.js had no localName: take it away, as the browser that kept that file did.
+  const proto = Object.getPrototypeOf(panel.core);
+  const realLocalName = proto.localName;
+  delete proto.localName;
+  panel.style.height = '860px';
+  panel.style.display = 'block';
+  // As Home Assistant does it: hass first, then the page.
+  panel.hass = hass;
+  document.body.appendChild(panel);
+  await sleep(300);
+  const sr = panel.shadowRoot;
+  const box = () => sr.getElementById('renderFail');
+  const errText = () => (box() ? box().querySelector('.render-fail-error').textContent : '');
+
+  // ---- What the user sees instead of a blank page
+  check('a page that cannot be drawn is not blank: a box says so', box() && box().getAttribute('role') === 'alert',
+    sr.innerHTML.slice(0, 300));
+  check('it says LIBI could not draw the page, and how to reload without the cache',
+    box() && /LIBI could not draw this page/.test(box().textContent) && /Ctrl\+Shift\+R/.test(box().textContent),
+    box() && box().textContent);
+  check('it names the error and the build', errText().startsWith(`LIBI ${LIBI_BUILD}: `) && errText().includes('localName'), errText());
+  check('the error goes to the console, and nothing is left as an unhandled rejection',
+    errors.some(e => e.includes(`[LIBI ${LIBI_BUILD}] the page could not be drawn:`) && e.includes('localName')) && !rejections.length,
+    JSON.stringify({ errors, rejections }));
+  const btn = sr.getElementById('renderFailReload');
+  check('a Reload button, a touch target of at least 40px', btn && btn.tagName === 'BUTTON' && btn.getBoundingClientRect().height >= 40,
+    btn && btn.getBoundingClientRect().height);
+  check('the box fits the screen', box() && box().getBoundingClientRect().right <= window.innerWidth
+    && box().scrollWidth <= box().clientWidth + 1, box() && JSON.stringify(box().getBoundingClientRect()));
+
+  // ---- Drawn again and failing again: one box, never a pile of them
+  panel._render(); panel._render();
+  check('a failure drawn again is still one box', sr.querySelectorAll('#renderFail').length === 1, sr.querySelectorAll('#renderFail').length);
+
+  // ---- The error is text: a message that carries markup from the user's files is never run
+  proto.localName = realLocalName;
+  panel._netHtml = () => { throw new Error('<img src=x onerror="window.__xss=1"> in <b>Garden</b>'); };
+  panel._render();
+  await sleep(50);
+  check('the error is shown as text, never as markup',
+    errText().includes('<img src=x') && errText().includes('<b>Garden</b>') && !box().querySelector('img, b') && window.__xss === undefined,
+    errText());
+  delete panel._netHtml;
+
+  // ---- A core that works again: the next drawing replaces the box with the page
+  panel._render();
+  await sleep(50);
+  check('a drawing that works replaces the box with the page',
+    !box() && sr.querySelector('.header') && sr.querySelectorAll('.libi-el[data-nid="n1"]').length === 3,
+    sr.innerHTML.slice(0, 300));
+  check('and the pins show what they did before', [...sr.querySelectorAll('.libi-el[data-eid="e2"] .pin-val')].map(p => p.textContent.trim()).join('|')
+    === 'sensor.meter|input_number.litres', [...sr.querySelectorAll('.libi-el[data-eid="e2"] .pin-val')].map(p => p.textContent.trim()).join('|'));
+
+  // ---- At a phone's width the box still fits, the error wraps
+  panel.style.width = '390px';
+  delete proto.localName;
+  panel._render();
+  await sleep(50);
+  const r = box() && box().getBoundingClientRect();
+  check('at 390px the box fits and nothing in it is wider than the box',
+    r && r.left >= 0 && r.right <= 390 && box().scrollWidth <= box().clientWidth + 1, r && JSON.stringify(r));
+  proto.localName = realLocalName;
+  panel._render();
+  await sleep(50);
+  check('and goes away again', !box(), 'still there');
+} catch (err) {
+  results.push({ name: 'the test ran to the end', ok: false, detail: String(err && err.stack || err) });
+}
+
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed });
+</script>
+</body></html>

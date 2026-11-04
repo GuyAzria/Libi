@@ -14,21 +14,24 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.85.0
+ * v3.86.1
  */
-// [ADDED v3.84.0 | 2026-11-02] Purpose: Imports at 3.84.0, for the AI chat's zone chosen on the card.
-// [ADDED v3.85.0 | 2026-11-04] Purpose: SAVE & COMPILE compiles first and saves through Home Assistant's own config API
-//   (the HACS review); deleting a NET asks what becomes of its entry; leaving with changes not saved asks Yes or No; the
-//   versions list says which version is the original.
-import { LibiCore } from './libi-core.js?v=3.85.0';
-import { getStyles } from './libi-css.js?v=3.85.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.85.0';
-import { LibiOnline } from './libi-online.js?v=3.85.0';
-import { LibiAiChat } from './libi-ai.js?v=3.85.0';
+// [ADDED v3.86.0 | 2026-11-04] Purpose: The ladder keeps its place across a redraw - a click on an element threw the
+//   canvas back to the top, and the right-click menu opened where the block had been. The title of a NET chooses it:
+//   the variables bar lists that NET's variables only; the project's name lists the variables of every NET. A name in
+//   LIBI only: Rename offers it (and falls back to it when Home Assistant cannot rename), a pin's entity has the
+//   right-click menu too, and the name is shown wherever LIBI shows the entity.
+// [ADDED v3.86.1 | 2026-11-04] Purpose: Imports at 3.86.1 - the browser kept the libi-core.js of the earlier 3.86.0 next to
+//   this panel, and the panel stayed blank. A page that cannot be drawn now says so on the screen (_renderFailed).
+import { LibiCore } from './libi-core.js?v=3.86.1';
+import { getStyles } from './libi-css.js?v=3.86.1';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.86.1';
+import { LibiOnline } from './libi-online.js?v=3.86.1';
+import { LibiAiChat } from './libi-ai.js?v=3.86.1';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.85.0';
+export const LIBI_BUILD = '3.86.1';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -125,10 +128,13 @@ class LibiPanel extends HTMLElement {
         this._epOpen = {};             // which groups are unfolded
         this._renameFor = '';          // the entity being renamed
         this._renameTo = '';
+        this._renameFrom = 'label';    // [ADDED v3.86.0] label | pin: what the right click was on
         this._hkPick = null;           // the kind chosen in the Create helper dialog
         this._hkForm = {};
         this._hkQuery = '';
-        this._varsScope = 'net';       // net | all
+        this._varsScope = 'net';       // net | project | all
+        // [ADDED v3.86.0] The NET whose variables the bar lists: its title or one of its elements clicked last.
+        this._selectedNetId = null;
         this._varsFilter = 'ALL';      // ALL | BOOL | INT | FLOAT | TEXT | TIME | HA
         this._varsQuery = '';
         this._varsNewName = '';
@@ -226,6 +232,8 @@ class LibiPanel extends HTMLElement {
         // they were left, so a half drawn rung is still half drawn.
         let remembered = null;
         try { remembered = JSON.parse(localStorage.getItem('libi_project') || 'null'); } catch (err) { remembered = null; }
+        // [ADDED v3.86.0] The names given in LIBI only, before anything is drawn with a name.
+        await this._loadLocalNames();
         await this._projectRefreshList();
         if (remembered && (this._projectList || []).some(p => p.slug === remembered.slug)) {
             try {
@@ -703,7 +711,54 @@ class LibiPanel extends HTMLElement {
         return `<div class="fm-overlay" id="fmOverlay"></div>${bounds.arrowStyle}<div class="palette" style="left:${x}px; top:${bounds.yPos}px; --arrow-x:${arrow}px; ${bounds.transformStyle}" id="fmBox">${rows.join('')}</div>`;
     }
 
+    // [ADDED v3.86.1] A page that cannot be drawn says so on the screen. It stayed blank, with the error in the browser's
+    // console only and nothing in Home Assistant's log (2026-11-04: the browser held an older libi-core.js under the
+    // same ?v= as the new panel, and the first pin drawn threw).
     _render() {
+        try {
+            this._renderPage();
+        } catch (err) {
+            this._renderFailed(err);
+        }
+    }
+
+    // [ADDED v3.86.1] Built with textContent: the error can carry text from the user's files. One box, on top of what
+    // is on the screen; the next drawing that works replaces it with the rest.
+    _renderFailed(err) {
+        console.error(`[LIBI ${LIBI_BUILD}] the page could not be drawn:`, err);
+        const sr = this.shadowRoot;
+        if (!sr) return;
+        let box = sr.getElementById('renderFail');
+        if (!box) {
+            box = document.createElement('div');
+            box.id = 'renderFail';
+            box.setAttribute('role', 'alert');
+            box.style.cssText = 'margin:16px; padding:16px; max-width:720px; box-sizing:border-box; border:1px solid var(--error-color, #db4437); '
+                + 'border-radius:8px; background:var(--card-background-color, #fff); color:var(--primary-text-color, #212121); '
+                + 'font-family:var(--paper-font-body1_-_font-family, Roboto, sans-serif); font-size:14px; line-height:1.5;';
+            const title = document.createElement('div');
+            title.style.cssText = 'font-weight:700; font-size:16px; margin-block-end:8px;';
+            title.textContent = 'LIBI could not draw this page';
+            const help = document.createElement('div');
+            help.textContent = 'If LIBI was just updated, the browser is most likely still using an older copy of one of its files. '
+                + 'Reload the page without the cache: Ctrl+Shift+R (Cmd+Shift+R on a Mac). In the Home Assistant app, reset '
+                + 'the frontend cache in the app settings.';
+            const what = document.createElement('div');
+            what.className = 'render-fail-error';
+            what.style.cssText = 'margin-block-start:8px; font-family:monospace; font-size:12px; color:var(--secondary-text-color, #757575); overflow-wrap:anywhere;';
+            const btn = document.createElement('button');
+            btn.id = 'renderFailReload';
+            btn.textContent = 'Reload the page';
+            btn.style.cssText = 'margin-block-start:12px; min-height:40px; padding-inline:16px; border:0; border-radius:4px; '
+                + 'background:var(--primary-color, #03a9f4); color:var(--text-primary-color, #fff); font-weight:600; cursor:pointer;';
+            btn.addEventListener('click', () => location.reload());
+            box.append(title, help, what, btn);
+            sr.prepend(box);
+        }
+        box.querySelector('.render-fail-error').textContent = `LIBI ${LIBI_BUILD}: ${err && err.message ? err.message : String(err)}`;
+    }
+
+    _renderPage() {
         if (!this._initialized) return;
 
         localStorage.setItem('libi_draft', JSON.stringify(this.core.nets));
@@ -767,6 +822,9 @@ class LibiPanel extends HTMLElement {
         }
 
         const allCollapsed = this.core.nets.length > 0 && this.core.nets.every(n => n.collapsed);
+        // [ADDED v3.86.0] Where the ladder is scrolled to, put back after the redraw: every click on an element redraws
+        // the panel, and the canvas went back to the top - so the right-click menu also opened where the block had been.
+        const keep = this._scrollPlaces();
         this.shadowRoot.innerHTML = `
         <style>${getStyles()}</style>
         <div class="panel-layout">
@@ -847,6 +905,62 @@ class LibiPanel extends HTMLElement {
         this._injectNativePickers(); 
         this._paintOnline();
         this.aiChat.attach(this.shadowRoot.getElementById('aiChatMount'));
+        this._restoreScrollPlaces(keep);
+        this._placeCtxMenu();
+    }
+
+    // [ADDED v3.86.0] The scroll of the canvas, and of the rungs of each NET by its id, in the project open now.
+    _scrollPlaces() {
+        const sr = this.shadowRoot;
+        const canvas = sr && sr.querySelector('.canvas');
+        if (!canvas) return null;
+        const nets = {};
+        sr.querySelectorAll('.rung-scroll[data-nid]').forEach(sc => { nets[sc.getAttribute('data-nid')] = sc.scrollLeft; });
+        return { project: this._project ? this._project.slug : '', top: canvas.scrollTop, left: canvas.scrollLeft, nets };
+    }
+
+    _restoreScrollPlaces(keep) {
+        // Another project starts at its top.
+        if (!keep || keep.project !== (this._project ? this._project.slug : '')) return;
+        const sr = this.shadowRoot;
+        const canvas = sr.querySelector('.canvas');
+        if (canvas) { canvas.scrollTop = keep.top; canvas.scrollLeft = keep.left; }
+        sr.querySelectorAll('.rung-scroll[data-nid]').forEach(sc => {
+            const left = keep.nets[sc.getAttribute('data-nid')];
+            if (left) sc.scrollLeft = left;
+        });
+    }
+
+    // [ADDED v3.86.0] The right-click menu opens where the click was, measured once it is drawn - a container of Home
+    // Assistant that moves what is fixed inside it would put it elsewhere - and stays on the screen near an edge.
+    _placeCtxMenu() {
+        const menu = this.shadowRoot.getElementById('ctxMenu');
+        if (!menu || !this._ctx) return;
+        const r = menu.getBoundingClientRect();
+        const x = Math.max(4, Math.min(this._ctx.x, window.innerWidth - r.width - 4));
+        const y = Math.max(4, Math.min(this._ctx.y, window.innerHeight - r.height - 4));
+        menu.style.left = `${parseFloat(menu.style.left) + (x - r.left)}px`;
+        menu.style.top = `${parseFloat(menu.style.top) + (y - r.top)}px`;
+    }
+
+    // [ADDED v3.86.0] The user's choice (2026-11-04): the title of a NET shows the variables of that NET only in the bar
+    // at the bottom, the title of the project the variables of all its NETs.
+    _selectNet(nid) {
+        this._selectedNetId = nid;
+        this._varsScope = 'net';
+        this._showVarsTab();
+    }
+
+    _selectProject() {
+        this._varsScope = 'project';
+        this._showVarsTab();
+    }
+
+    _showVarsTab() {
+        this._varsTab = 'vars';
+        this._varsOpen = true;
+        this._saveVars();
+        this._render();
     }
 
     _paintOnline() {
@@ -1507,17 +1621,38 @@ class LibiPanel extends HTMLElement {
         </div>`;
     }
 
+    // [CHANGED v3.86.0] Two ways to rename - the user's request (2026-11-04): in Home Assistant, when its entity registry
+    // has the entity, or in LIBI only - Home Assistant is not changed, and LIBI shows the name wherever it shows the entity.
+    // An entity Home Assistant cannot rename (no unique ID) has the second one only. From a pin, LIBI only comes first:
+    // a pin shows the entity id, or its name in LIBI.
+    _renameCanHa() {
+        const h = this._hass;
+        return !!(h && h.entities && h.entities[this._renameFor]);
+    }
+
+    _renameInHaFirst() {
+        return this._renameCanHa() && this._renameFrom !== 'pin';
+    }
+
     _renameDialogHtml() {
         const eid = this._renameFor;
-        return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:440px;">
+        const canHa = this._renameCanHa();
+        const haFirst = this._renameInHaFirst();
+        const local = this.core.localName(eid);
+        const note = canHa
+            ? `<b>Rename in Home Assistant</b> changes the name Home Assistant shows for this entity everywhere; the entity id does not change, so nothing that points at it breaks. <b>In LIBI only</b> leaves Home Assistant as it is and shows your name wherever LIBI shows this entity${this._renameFrom === 'pin' ? ' - a pin shows the entity id, or the name it has in LIBI' : ''}.`
+            : 'Home Assistant cannot rename this entity: it has no unique ID (it was written in YAML, for example). The name is kept in LIBI only and shown wherever LIBI shows this entity; Home Assistant keeps its own.';
+        return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:460px;">
             <h2 class="modal-title">Rename</h2>
             <p style="font-size:12px; color:var(--secondary-text-color, #757575); margin:0 0 10px 0; font-family:monospace; word-break:break-all;">${this._esc(eid)}</p>
             <div class="fgrp"><label>Name</label>
-                <input type="text" id="renameInput" value="${this._esc(this._renameTo)}" dir="auto" placeholder="New name" /></div>
-            <p style="font-size:12px; color:var(--secondary-text-color, #757575); margin:0;">This is the name Home Assistant shows for this entity everywhere, not only in LIBI. The entity id itself does not change, so nothing that points at it breaks.</p>
-            <div class="modal-actions">
+                <input type="text" id="renameInput" value="${this._esc(this._renameTo)}" dir="auto" maxlength="100" placeholder="New name" /></div>
+            <p class="rename-note" style="font-size:12px; color:var(--secondary-text-color, #757575); margin:0;">${note}</p>
+            ${local ? `<p class="rename-local" style="font-size:12px; margin:10px 0 0 0;">In LIBI it is called <b dir="auto">${this._esc(local)}</b>. <button class="ha-text-btn" id="renameLocalClear">Remove the LIBI name</button></p>` : ''}
+            <div class="modal-actions" style="flex-wrap:wrap;">
                 <button class="btn btn-ghost" id="closeModalBtn">Cancel</button>
-                <button class="btn" id="renameOk">Rename</button>
+                <button class="btn${haFirst ? ' btn-ghost' : ''}" id="renameLocal">In LIBI only</button>
+                ${canHa ? `<button class="btn${haFirst ? '' : ' btn-ghost'}" id="renameOk">Rename in Home Assistant</button>` : ''}
             </div>
         </div></div>`;
     }
@@ -1538,11 +1673,57 @@ class LibiPanel extends HTMLElement {
             // name is shown straight away and the drawing is repeated when the real one arrives.
             this.core.nameOverrides = this.core.nameOverrides || {};
             this.core.nameOverrides[eid] = name;
+            // [ADDED v3.86.0] Renamed in Home Assistant, the name given in LIBI goes: it would hide the new one.
+            if (this.core.localName(eid)) await this._setLocalName(eid, '');
             this._render();
             this._settleRename(eid, name);
         } catch (err) {
-            alert('Could not rename it: ' + (err && err.message ? err.message : err));
+            // [CHANGED v3.86.0] What Home Assistant cannot rename is named in LIBI only - the user's rule (2026-11-04).
+            const why = err && err.message ? err.message : String(err);
+            if (name && await this._setLocalName(eid, name)) {
+                this._modal = null;
+                this._renameFor = '';
+                this._render();
+                alert(`Home Assistant could not rename it (${why}), so the name is kept in LIBI only: LIBI shows it wherever it shows this entity, and Home Assistant keeps its own.`);
+                return;
+            }
+            alert('Could not rename it: ' + why);
         }
+    }
+
+    // [ADDED v3.86.0] The names given in LIBI only, from config/libi/local_names.json. Without them LIBI shows Home
+    // Assistant's names, as before.
+    async _loadLocalNames() {
+        try {
+            const res = await this._hass.connection.sendMessagePromise({ type: 'libi/local_names' });
+            const names = res && res.names;
+            this.core.localNames = names && typeof names === 'object' && !Array.isArray(names) ? names : {};
+        } catch (err) {
+            console.warn('LIBI could not read the names given in LIBI', err);
+            this.core.localNames = {};
+        }
+    }
+
+    // [ADDED v3.86.0] Gives an entity a name in LIBI only, or takes it away (''). True when LIBI kept it.
+    async _setLocalName(entityId, name) {
+        try {
+            const res = await this._hass.connection.sendMessagePromise({ type: 'libi/local_name_set', entity_id: entityId, name });
+            const names = res && res.names;
+            this.core.localNames = names && typeof names === 'object' && !Array.isArray(names) ? names : {};
+            return true;
+        } catch (err) {
+            alert('Could not keep the name in LIBI: ' + (this._staleBackend(err) || (err && err.message ? err.message : err)));
+            return false;
+        }
+    }
+
+    async _doRenameLocal() {
+        const eid = this._renameFor;
+        if (!eid) return;
+        if (!(await this._setLocalName(eid, String(this._renameTo || '').trim()))) return;
+        this._modal = null;
+        this._renameFor = '';
+        this._render();
     }
 
     // Waits for Home Assistant to push the renamed entity, then draws once more with the real value
@@ -2026,11 +2207,11 @@ class LibiPanel extends HTMLElement {
         const levelBadge = `<span style="font-size:11px; font-weight:800; background:${lv.bg}; color:${lv.fg}; padding:2px 6px; border-radius:4px; margin-left:8px;" title="${lv.tip}">[${lv.text}]</span>`;
         
         return `
-        <div class="net ${isCol}" data-nid="${net.id}">
+        <div class="net ${isCol}${this._selectedNetId === net.id && this._varsScope === 'net' ? ' net-selected' : ''}" data-nid="${net.id}">
             <div class="net-hdr" data-tog="${net.id}">
                 <div class="net-hdr-l">
                     <span style="color:var(--success-color,#4caf50);">●</span>
-                    <div class="net-name">
+                    <div class="net-name" data-sel="${this._esc(net.id)}" title="Click to show the variables of this NET">
                         <span style="font-weight:900; margin-right:4px;">NET&nbsp;${index + 1}</span>
                         <input type="text" class="net-name-input" data-nid="${this._esc(net.id)}" value="${this._esc(net.name)}" title="Click to rename" placeholder="Automation Name" />
                         ${levelBadge}
@@ -2039,7 +2220,7 @@ class LibiPanel extends HTMLElement {
                         ${this._versionBadgeHtml(net)}
                     </div>
                 </div>
-                <div class="net-hdr-r">
+                <div class="net-hdr-r net-fold" title="${net.collapsed ? 'Unfold this NET' : 'Fold this NET'}">
                     <span class="chevron" style="font-size:12px; color:var(--secondary-text-color, #888);">${net.collapsed ? '▼' : '▲'}</span>
                 </div>
             </div>
@@ -2391,7 +2572,12 @@ class LibiPanel extends HTMLElement {
     }
 
     // The net the bar is scoped to: the one holding the selected element, else the first one.
+    // [CHANGED v3.86.0] The NET chosen last - its title or one of its elements clicked - comes first.
     _currentNet() {
+        if (this._selectedNetId) {
+            const n = this.core.nets.find(x => x.id === this._selectedNetId);
+            if (n) return n;
+        }
         if (this._inspectedEl) {
             const n = this.core.nets.find(x => x.id === this._inspectedEl.netId);
             if (n) return n;
@@ -2406,7 +2592,9 @@ class LibiPanel extends HTMLElement {
     _varsRows() {
         const states = (this._hass && this._hass.states) || {};
         const net = this._currentNet();
-        const scoped = this._varsScope === 'net' && net ? this._netEntities(net) : null;
+        // [CHANGED v3.86.0] Or every NET of the project, when its name was clicked.
+        const scoped = this._varsScope === 'project' ? this._projectEntities()
+            : (this._varsScope === 'net' && net ? this._netEntities(net) : null);
         const q = String(this._varsQuery || '').trim().toLowerCase();
 
         let ids = scoped ? [...scoped] : Object.keys(states);
@@ -2464,7 +2652,9 @@ class LibiPanel extends HTMLElement {
                </tr></thead><tbody>${rows.map(e => this._varsRowHtml(e)).join('')}</tbody></table>`
             : `<div class="vars-empty">${this._varsScope === 'net'
                     ? (net ? `This net uses no variables yet. Make one below and it is added to ${this._esc(net.name)}.` : 'There is no net to scope to yet.')
-                    : 'Nothing matches. Try another filter or another word.'}</div>`;
+                    : this._varsScope === 'project' && !projectCount
+                        ? 'The NETs of this project use no variables yet.'
+                        : 'Nothing matches. Try another filter or another word.'}</div>`;
 
         const body = this._varsTab === 'search'
             ? `<div class="vars-filters">
@@ -2491,7 +2681,8 @@ class LibiPanel extends HTMLElement {
                     return sect('In this project', mine) + sect('Everywhere in Home Assistant', rest);
                })()}`
             : `<div class="vars-filters">
-                    ${chip('varsScopeNet', net ? `Net · ${this._esc(net.name)}` : 'This net', this._varsScope === 'net', 'Only the variables this net uses')}
+                    ${chip('varsScopeNet', net ? `Net · ${net.name}` : 'This net', this._varsScope === 'net', 'Only the variables this net uses')}
+                    ${chip('varsScopeProject', this._project ? `Project · ${this._project.name}` : 'All NETs', this._varsScope === 'project', 'The variables of every NET of this project')}
                     ${chip('varsScopeAll', `All of Home Assistant`, this._varsScope === 'all', 'Every variable in the house')}
                     <div class="vars-sep"></div>${filterChips}
                </div>
@@ -3006,7 +3197,8 @@ class LibiPanel extends HTMLElement {
         const spec = VAR_TYPES[nextKey];
         const domain = entityId.split('.')[0];
         const objectId = entityId.split('.').slice(1).join('.');
-        const name = this.core.friendlyName(entityId, this._hass) || objectId;
+        // [CHANGED v3.86.0] Home Assistant's own name: a name given in LIBI only is never sent to Home Assistant.
+        const name = this.core.haName(entityId, this._hass) || objectId;
 
         if (spec.domain === domain) {
             try {
@@ -3148,10 +3340,10 @@ class LibiPanel extends HTMLElement {
     // [ADDED v3.14.0] The name of the open workspace, or a note that none is open.
     _projectChipHtml() {
         if (!this._project) {
-            return `<span class="project-chip none" title="No project is open. Open one, or make a new one, from the menu on the right."><span class="dot"></span><span class="nm">No project</span></span>`;
+            return `<span class="project-chip none${this._varsScope === 'project' ? ' on' : ''}" id="projectChip" role="button" tabindex="0" title="No project is open. Open one, or make a new one, from the menu on the right. Click to show the variables of every NET on the canvas."><span class="dot"></span><span class="nm">No project</span></span>`;
         }
         const dirty = this._hasUnsavedChanges() ? '<span class="dirty" title="There are unsaved changes">●</span>' : '';
-        return `<span class="project-chip" title="Project ${this._esc(this._project.name)} — stored as ${this._esc(this._project.slug)}.libi"><span class="dot"></span><span class="nm">${this._esc(this._project.name)}</span>${dirty}</span>`;
+        return `<span class="project-chip${this._varsScope === 'project' ? ' on' : ''}" id="projectChip" role="button" tabindex="0" title="Project ${this._esc(this._project.name)} — stored as ${this._esc(this._project.slug)}.libi. Click to show the variables of all its NETs."><span class="dot"></span><span class="nm">${this._esc(this._project.name)}</span>${dirty}</span>`;
     }
 
     _rememberProject() {
@@ -3187,6 +3379,7 @@ class LibiPanel extends HTMLElement {
             this._versions = res.versions || {};
             this._markSaved();
             this._inspectedEl = null;
+            this._selectedNetId = null;
             this._modal = null;
             this._rememberProject();
             this._render();
@@ -3209,6 +3402,7 @@ class LibiPanel extends HTMLElement {
             this._project = { slug: res.slug, name: res.name };
             this._versions = {};
             this._markSaved();
+            this._selectedNetId = null;
             this._modal = null;
             this._rememberProject();
             this._render();
@@ -3244,6 +3438,7 @@ class LibiPanel extends HTMLElement {
         this.core.pushHistory();
         this._markSaved();
         this._inspectedEl = null;
+        this._selectedNetId = null;
         this._rememberProject();
         this._render();
     }
@@ -3425,12 +3620,18 @@ class LibiPanel extends HTMLElement {
     }
 
     _elBody(el, errs) {
+        // [ADDED v3.86.0] A pin shows the entity id, or the name the user gave it in LIBI; the hover keeps the id.
+        const pinShown = (v) => {
+            if (typeof v !== 'string') return v;
+            const local = this.core.localName(v);
+            return local ? local + ((v.match(/\s*\+\d+$/) || [''])[0]) : v;
+        };
         const varPin = (side, name, val, errClass, propName, extra = '') => {
             if (!name && val === null) return `<div class="plc-col-${side} empty"></div>`;
             return `
                 <div class="plc-col-${side} ${extra} ${errClass ? 'has-error' : ''}">
                     ${name ? `<span class="pin-lbl">${this._esc(name)}</span>` : ''}
-                    ${val !== null ? `<div class="pin-val ${errClass ? 'has-error' : ''}" data-prop="${propName}" title="${this._esc(val)}" dir="auto">${this._formatDisplayVal(val)}</div>` : ''}
+                    ${val !== null ? `<div class="pin-val ${errClass ? 'has-error' : ''}" data-prop="${propName}" title="${this._esc(val)}" dir="auto">${this._formatDisplayVal(pinShown(val))}</div>` : ''}
                 </div>
             `;
         };
@@ -3667,29 +3868,44 @@ class LibiPanel extends HTMLElement {
 
         // [ADDED v3.28.0] The right click menu on the name of a block.
         this._bindGroup('rename menu', () => {
-            all('.el-lbl', 'contextmenu', e => {
-                const block = e.currentTarget.closest('.libi-el');
-                if (!block) return;
-                const el = this.core.findEl(block.getAttribute('data-nid'),
-                    block.getAttribute('data-rid'), block.getAttribute('data-eid'));
-                const eid = String((el && (el.label || el.target)) || '').replace(/\s*\+\d+$/, '').trim();
+            // [CHANGED v3.86.0] The same menu on a pin that holds an entity (IN1, IN2, OUT, ...): the variables inside a
+            // block had none, so they could not be renamed - the user's report (2026-11-04).
+            const openCtx = (e, block, eid, prop) => {
                 if (!/^[a-z_][a-z0-9_]*\.[a-z0-9_]+$/.test(eid)) return;  // nothing to rename
                 e.preventDefault();
                 e.stopPropagation();
-                this._ctx = { entityId: eid, x: Math.min(e.clientX, window.innerWidth - 210), y: e.clientY,
+                // [CHANGED v3.86.0] Where the click was; _placeCtxMenu keeps it on the screen by its real size.
+                this._ctx = { entityId: eid, x: e.clientX, y: e.clientY, prop,
                               netId: block.getAttribute('data-nid'), rungId: block.getAttribute('data-rid'),
                               elId: block.getAttribute('data-eid') };
                 this._render();
+            };
+            const elOf = (block) => this.core.findEl(block.getAttribute('data-nid'),
+                block.getAttribute('data-rid'), block.getAttribute('data-eid'));
+            all('.el-lbl', 'contextmenu', e => {
+                const block = e.currentTarget.closest('.libi-el');
+                if (!block) return;
+                const el = elOf(block);
+                openCtx(e, block, String((el && (el.label || el.target)) || '').replace(/\s*\+\d+$/, '').trim(), null);
+            });
+            all('.pin-val[data-prop]', 'contextmenu', e => {
+                const block = e.currentTarget.closest('.libi-el');
+                const prop = e.currentTarget.getAttribute('data-prop');
+                if (!block || !prop || prop === 'null') return;
+                const el = elOf(block);
+                const val = el ? el[prop] : '';
+                openCtx(e, block, typeof val === 'string' ? val.replace(/\s*\+\d+$/, '').trim() : '', prop);
             });
             on('ctxChange', 'click', (e) => {
                 e.stopPropagation();
                 const c = this._ctx;
                 this._ctx = null;
-                if (c) this._openEntityPicker(c.netId, c.rungId, c.elId, null);
+                if (c) this._openEntityPicker(c.netId, c.rungId, c.elId, c.prop || null);
             });
             on('ctxRename', 'click', (e) => {
                 e.stopPropagation();
                 this._renameFor = this._ctx ? this._ctx.entityId : '';
+                this._renameFrom = this._ctx && this._ctx.prop ? 'pin' : 'label';
                 this._renameTo = this.core.friendlyName(this._renameFor, this._hass) || '';
                 this._ctx = null;
                 this._modal = 'rename_entity';
@@ -3712,10 +3928,18 @@ class LibiPanel extends HTMLElement {
             const ri = sr.getElementById('renameInput');
             if (ri) {
                 ri.addEventListener('input', ev => { this._renameTo = ev.target.value; });
-                ri.addEventListener('keydown', ev => { if (ev.key === 'Enter') this._doRename(); });
+                // [CHANGED v3.86.0] Enter is the dialog's first choice: in Home Assistant, or in LIBI only.
+                ri.addEventListener('keydown', ev => {
+                    if (ev.key !== 'Enter') return;
+                    if (this._renameInHaFirst()) this._doRename();
+                    else this._doRenameLocal();
+                });
                 ri.focus();
             }
             on('renameOk', 'click', (e) => { e.stopPropagation(); this._doRename(); });
+            // [ADDED v3.86.0] A name in LIBI only, and taking it away again.
+            on('renameLocal', 'click', (e) => { e.stopPropagation(); this._doRenameLocal(); });
+            on('renameLocalClear', 'click', (e) => { e.stopPropagation(); this._renameTo = ''; this._doRenameLocal(); });
         });
 
         this._bindGroup('variables bar', () => {
@@ -3731,6 +3955,12 @@ class LibiPanel extends HTMLElement {
             on('varsTabSearch', 'click', (e) => { e.stopPropagation(); this._varsTab = 'search'; this._varsOpen = true; this._saveVars(); this._render(); });
             on('varsScopeNet', 'click', (e) => { e.stopPropagation(); this._varsScope = 'net'; this._render(); });
             on('varsScopeAll', 'click', (e) => { e.stopPropagation(); this._varsScope = 'all'; this._render(); });
+            // [ADDED v3.86.0] Every NET of the project, from the chip in the bar or from the project's name in the header.
+            on('varsScopeProject', 'click', (e) => { e.stopPropagation(); this._varsScope = 'project'; this._render(); });
+            on('projectChip', 'click', (e) => { e.stopPropagation(); this._selectProject(); });
+            on('projectChip', 'keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._selectProject(); }
+            });
             all('.vars-filter', 'click', e => {
                 e.stopPropagation();
                 this._varsFilter = e.currentTarget.getAttribute('data-f');
@@ -4071,7 +4301,26 @@ class LibiPanel extends HTMLElement {
             this._render();
         });
 
-        all('.net-name-input', 'click', e => e.stopPropagation());
+        // [ADDED v3.86.0] The title of a NET chooses it, the bar at the bottom lists its variables; folding is the arrow.
+        all('.net-name[data-sel]', 'click', e => {
+            if (e.target.closest('button, select, .net-name-input')) return;
+            e.stopPropagation();
+            this._selectNet(e.currentTarget.getAttribute('data-sel'));
+        });
+
+        // [CHANGED v3.86.0] Clicking into the name chooses the NET too; the redraw gives the caret back where it was.
+        all('.net-name-input', 'click', e => {
+            e.stopPropagation();
+            const nid = e.target.getAttribute('data-nid');
+            if (this._selectedNetId === nid && this._varsScope === 'net' && this._varsTab === 'vars' && this._varsOpen) return;
+            const at = [e.target.selectionStart, e.target.selectionEnd];
+            this._selectNet(nid);
+            const box = [...this.shadowRoot.querySelectorAll('.net-name-input')].find(b => b.getAttribute('data-nid') === nid);
+            if (box) {
+                box.focus({ preventScroll: true });
+                try { box.setSelectionRange(at[0], at[1]); } catch (err) { /* no caret to give back */ }
+            }
+        });
         
         all('.net-name-input', 'change', e => { 
             const net = this.core.nets.find(n => n.id === e.target.getAttribute('data-nid')); 
@@ -4118,6 +4367,7 @@ class LibiPanel extends HTMLElement {
             const nid = e.currentTarget.getAttribute('data-nid'); 
             this._inspectedEl = null; 
             this._inspectedNetYaml = nid;
+            this._selectedNetId = nid;
             this._netYamlKind = 'yaml';
             this._wakeSidebar();
             this._previewYamlContent = 'Generating YAML...';
@@ -4149,6 +4399,7 @@ class LibiPanel extends HTMLElement {
             const nid = e.currentTarget.getAttribute('data-nid');
             this._inspectedEl = null;
             this._inspectedNetYaml = nid;
+            this._selectedNetId = nid;
             this._netYamlKind = 'card';
             this._wakeSidebar();
             this._previewYamlContent = 'Building the card...';
@@ -4197,7 +4448,8 @@ class LibiPanel extends HTMLElement {
         });
         
         all('[data-tog]', 'click', e => { 
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' || e.target.closest('.net-menu-wrapper')) return; 
+            // [CHANGED v3.86.0] Not the title either: it chooses the NET (below).
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' || e.target.closest('.net-menu-wrapper') || e.target.closest('.net-name')) return; 
             const net = this.core.nets.find(n => n.id === e.currentTarget.getAttribute('data-tog')); 
             if (net) { 
                 net.collapsed = !net.collapsed; 
@@ -4290,6 +4542,8 @@ class LibiPanel extends HTMLElement {
                 focusProp = e.target.closest('.pin-val').getAttribute('data-prop');
             }
 
+            // [ADDED v3.86.0] And its NET, for the variables bar.
+            this._selectedNetId = parent.getAttribute('data-nid');
             this._inspectedEl = { 
                 netId: parent.getAttribute('data-nid'), 
                 rungId: parent.getAttribute('data-rid'), 

@@ -11,12 +11,13 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.84.0 | 2026-11-02] Purpose: libi/ai_plan makes the zone chosen on the card a dropdown of the user's zones
-#   (ai.zone_choices), before anything is proposed for it.
 # [ADDED v3.85.0 | 2026-11-04] Purpose: LIBI writes none of Home Assistant's files - the HACS review: SAVE & COMPILE is
 #   libi/compile_project (compile, check, plan; nothing written), the panel's calls to Home Assistant's config API, and
 #   libi/save_done (what reached Home Assistant is read back, recorded, and its reload waited for). An automation opened
 #   the first time is V1, the original as it was, and V2 its copy; deleting a NET asks what becomes of its entry.
+# [ADDED v3.86.0 | 2026-11-04] Purpose: Names in LIBI only (libi/local_names, libi/local_name_set): the name the user gives
+#   an entity in LIBI - one Home Assistant cannot rename, or by the user's choice - kept in config/libi/local_names.json
+#   and shown wherever LIBI shows the entity. Home Assistant is not changed.
 import asyncio
 import copy
 import json
@@ -282,6 +283,55 @@ def _record_original_sync(hass: HomeAssistant, slug: str, net: dict, key: str, c
     """[ADDED v3.85.0] An automation loaded into a NET from the list: its V1, the original, and V2, its copy."""
     with _FILE_LOCK:
         return _update_versions_locked(hass, slug, [], "external", originals=[(net, "automation", key, config)])
+
+
+# [ADDED v3.86.0] The names the user gave entities in LIBI only, the user's request (2026-11-04): shown wherever LIBI shows
+# the entity, never written to Home Assistant. One file for every project, next to them; not a project (.libi).
+LOCAL_NAMES_FILE = "local_names.json"
+MAX_LOCAL_NAME = 100
+_LOCAL_NAME_ENTITY = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+
+
+def _local_names_path(hass: HomeAssistant) -> str:
+    return os.path.join(_get_projects_dir(hass), LOCAL_NAMES_FILE)
+
+
+def _read_local_names_sync(hass: HomeAssistant) -> dict | None:
+    """[ADDED v3.86.0] entity_id -> name. A file that does not exist yet is no names; one that cannot be read is None, and
+    None is never written over."""
+    path = _local_names_path(hass)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.error("[libi] %s could not be read, leaving it untouched: %s", LOCAL_NAMES_FILE, err)
+        return None
+    names = data.get("names") if isinstance(data, dict) else None
+    if not isinstance(names, dict):
+        _LOGGER.error("[libi] %s is not in the expected shape, leaving it untouched", LOCAL_NAMES_FILE)
+        return None
+    return {str(k): v for k, v in names.items() if isinstance(v, str)}
+
+
+def _set_local_name_sync(hass: HomeAssistant, entity_id: str, name: str) -> dict | None:
+    """[ADDED v3.86.0] Gives an entity its name in LIBI, or takes it away (an empty name). Nothing is written when nothing
+    changes, and nothing when the file cannot be read (None)."""
+    with _FILE_LOCK:
+        names = _read_local_names_sync(hass)
+        if names is None:
+            return None
+        if names.get(entity_id, "") == name:
+            return names
+        if name:
+            names[entity_id] = name
+        else:
+            del names[entity_id]
+        os.makedirs(_get_projects_dir(hass), exist_ok=True)
+        write_utf8_file_atomic(_local_names_path(hass), json.dumps(
+            {"libi_local_names": 1, "names": dict(sorted(names.items()))}, indent=2, ensure_ascii=False))
+        return names
 
 
 def _net_versions_sync(hass: HomeAssistant, slug: str, net_id: str) -> dict | None:
@@ -851,7 +901,7 @@ def async_register_websockets(hass: HomeAssistant) -> None:
         ws_handle_project_list, ws_handle_project_open, ws_handle_project_create,
         ws_handle_project_delete, ws_handle_preview_yaml, ws_handle_net_card,
         ws_handle_ai_status, ws_handle_ai_plan, ws_handle_ai_build,
-        ws_handle_net_versions, ws_handle_net_helpers,
+        ws_handle_net_versions, ws_handle_net_helpers, ws_handle_local_names, ws_handle_local_name_set,
     ):
         websocket_api.async_register_command(hass, handler)
     _LOGGER.debug("[libi] WebSocket commands registered")
@@ -1285,6 +1335,45 @@ async def ws_handle_project_open(hass: HomeAssistant, connection: websocket_api.
         "versions": versions,
         "updated": data.get("updated") or "",
     })
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/local_names",
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_local_names(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.86.0] The names the user gave entities in LIBI only."""
+    names = await hass.async_add_executor_job(_read_local_names_sync, hass)
+    if names is None:
+        connection.send_error(msg["id"], "read_failed", f"{LOCAL_NAMES_FILE} could not be read")
+        return
+    connection.send_result(msg["id"], {"names": names})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/local_name_set",
+    vol.Required("entity_id"): str,
+    vol.Required("name"): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_local_name_set(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.86.0] Gives an entity a name in LIBI only, or an empty name takes it away. Home Assistant is not changed:
+    the name is shown by LIBI alone. One line of plain text; the panel escapes it wherever it shows it."""
+    entity_id = str(msg["entity_id"]).strip()
+    if not _LOCAL_NAME_ENTITY.match(entity_id):
+        connection.send_error(msg["id"], "invalid_entity_id", "Not an entity id")
+        return
+    name = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", str(msg["name"])).split())
+    if len(name) > MAX_LOCAL_NAME:
+        connection.send_error(msg["id"], "name_too_long", f"A name in LIBI is at most {MAX_LOCAL_NAME} characters")
+        return
+    names = await hass.async_add_executor_job(_set_local_name_sync, hass, entity_id, name)
+    if names is None:
+        connection.send_error(msg["id"], "read_failed", f"{LOCAL_NAMES_FILE} could not be read, so nothing was changed")
+        return
+    connection.send_result(msg["id"], {"names": names})
 
 
 @websocket_api.websocket_command({

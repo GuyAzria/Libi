@@ -51,6 +51,8 @@ The software is built upon the **IEC 61131-3** standard, the international stand
 * **SAVE & COMPILE:** LIBI compiles every NET first and checks it with Home Assistant's own validator. When anything does not hold, nothing is saved and LIBI says which NET and why. Otherwise each change goes to Home Assistant, which writes and reloads it, and LIBI waits until Home Assistant has reloaded it before it says it is saved.
 * **Deleting a NET** asks what becomes of its automation: **Delete completely** (the automation is deleted from Home Assistant too), **Delete and go back to V1** (the original logic is put back; Home Assistant writes it in its own format, as it does with every save), or **Remove from LIBI only** (the automation stays in Home Assistant as it is now).
 * **Changes not saved:** closing a project, opening another one or leaving LIBI with changes that are not saved asks whether to save them first.
+* **The variables of a NET, or of the whole project:** click the title of a NET and the **Variables** bar at the bottom lists only the variables that NET uses; click the project's name in the header and it lists the variables of every NET in the project. Clicking an element chooses its NET too.
+* **Rename - in Home Assistant, or in LIBI only:** right-click an entity's name above a block, or a variable inside the block, and choose **Rename**. **Rename in Home Assistant** changes the name Home Assistant shows everywhere (the entity id stays the same, so nothing that points at it breaks). **In LIBI only** leaves Home Assistant as it is and shows your name wherever LIBI shows that entity: above the block, inside it, in the Variables bar and in the list of entities. An entity Home Assistant cannot rename - it has no unique ID, for example because it was written in YAML - gets its name in LIBI only, and LIBI tells you so. **Remove the LIBI name** brings Home Assistant's name back.
 
 ## **Installation**
 
@@ -84,6 +86,8 @@ Or step by step:
 
 When a new version is released, HACS shows it under **Settings** as an available update. Install it there and restart Home Assistant. Your projects in `config/libi/` and your automations are kept.
 
+After the restart, reload the LIBI page once. If LIBI says it could not draw the page, the browser is still using an older copy of one of its files: reload the page without the cache (**Ctrl+Shift+R**, or **Cmd+Shift+R** on a Mac). In the Home Assistant app, reset the frontend cache in the app's settings.
+
 ### Manually
 
 Download `libi.zip` from the [latest release](https://github.com/GuyAzria/Libi/releases/latest), unpack it into `config/custom_components/libi/`, restart Home Assistant, and add the integration as in step 4. With a manual install, HACS does not tell you about updates.
@@ -96,6 +100,7 @@ Download `libi.zip` from the [latest release](https://github.com/GuyAzria/Libi/r
 * `libi_automations.yaml`, the file LIBI used before version 3.5.0, is left alone: if it still holds automations, the log says so.
 * Projects are stored as `.libi` files in `config/libi/`, so they are part of your Home Assistant backup.
 * The version history of each project is stored next to it, as `<project>.versions.json` (up to 30 versions per NET; the one that runs is always kept). Deleting a project deletes its history; the automations stay in Home Assistant.
+* A name you give an entity **in LIBI only** (Rename ▸ *In LIBI only*, for example for an entity Home Assistant cannot rename because it has no unique ID) is stored in `config/libi/local_names.json`, one file for every project. LIBI shows it wherever it shows that entity; Home Assistant never sees it.
 
 ## **🤖 AI Chat (beta)**
 

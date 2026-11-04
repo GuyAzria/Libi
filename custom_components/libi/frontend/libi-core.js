@@ -14,12 +14,12 @@
  */
 /**
  * LIBI Panel - Core Engine
- * v3.79.1
+ * v3.86.0
  */
-// [ADDED v3.72.0 | 2026-10-29] Purpose: The head a rung hangs from is the trigger and the TON of its for when one
-//   follows it (headLength), so the drop comes down after that TON.
 // [ADDED v3.79.1 | 2026-11-01] Purpose: English only in the comments (CLAUDE.md RULE 17, the user's request): the
 //   examples of names an entity has in the user's language are written in English.
+// [ADDED v3.86.0 | 2026-11-04] Purpose: A name in LIBI only (localNames, from libi/local_names) wins wherever the panel
+//   shows an entity's name; haName is Home Assistant's own, for what goes to Home Assistant.
 export class LibiCore {
     constructor() {
         this.nets = [];
@@ -388,6 +388,21 @@ export class LibiCore {
         if (this.nameOverrides && Object.prototype.hasOwnProperty.call(this.nameOverrides, id)) {
             return this.nameOverrides[id];
         }
+        // [ADDED v3.86.0] Then the name the user gave it in LIBI only (the user's request, 2026-11-04).
+        return this.localName(id) || this.haName(id, h);
+    }
+
+    // [ADDED v3.86.0] The name the user gave an entity in LIBI only, or ''. Home Assistant does not know it.
+    localName(entityId) {
+        const id = String(entityId || '').replace(/\s*\+\d+$/, '').trim();
+        const names = this.localNames || {};
+        return Object.prototype.hasOwnProperty.call(names, id) ? String(names[id] || '') : '';
+    }
+
+    // [ADDED v3.86.0] Home Assistant's own name for an entity, whatever LIBI shows - for what is sent to Home Assistant.
+    haName(entityId, hass) {
+        const h = hass || this.hass;
+        const id = String(entityId || '').replace(/\s*\+\d+$/, '').trim();
         if (!h || !id.includes('.')) return '';
         const st = h.states && h.states[id];
         if (st && st.attributes && st.attributes.friendly_name) return String(st.attributes.friendly_name);

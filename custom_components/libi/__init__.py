@@ -12,16 +12,16 @@
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
 """The LIBI integration: a ladder editor panel for Home Assistant automations."""
-# v3.85.0
+# v3.86.1
 # [ADDED v3.34.0 | 2026-10-26] Purpose: The static path and the websocket commands are registered once
 #   in async_setup, so reloading the config entry no longer fails on a route that already exists. The
 #   panel is admin only and is removed through the frontend API on unload, the entry data lives on
 #   entry.runtime_data, and CONFIG_SCHEMA declares that LIBI is set up from the UI only.
-# [ADDED v3.84.0 | 2026-11-02] Purpose: LIBI_VERSION 3.84.0 (the AI chat's zone chosen on the dashboard card is a dropdown
-#   of the user's zones; one list of people and zones is split into who and where).
-# [ADDED v3.85.0 | 2026-11-04] Purpose: LIBI_VERSION 3.85.0 (Home Assistant's config API saves; the old
-#   libi_automations.yaml is only read, and the log says when it still holds automations; the days row is loaded by
-#   Home Assistant's legacy build too).
+# [ADDED v3.86.0 | 2026-11-04] Purpose: LIBI_VERSION 3.86.0 (the ladder keeps its scroll when an element is clicked; the
+#   title of a NET or of the project chooses what the variables bar lists; names in LIBI only, libi/local_names).
+# [ADDED v3.86.1 | 2026-11-04] Purpose: LIBI_VERSION 3.86.1. The names in LIBI went out under 3.86.0 too, and a browser
+#   that had loaded the earlier 3.86.0 kept its libi-core.js next to the new panel: the panel stayed blank. Every
+#   change that reaches the browser gets a version of its own.
 import logging
 import os
 
@@ -46,7 +46,7 @@ _PANEL_ELEMENT = "libi-panel"
 _DAYS_ROW_JS = "libi-days-row.js"
 # One version number for the whole integration. The panel and every module it imports are served
 # with this string, so the browser can never mix an old file with a new one.
-LIBI_VERSION = "3.85.0"
+LIBI_VERSION = "3.86.1"
 
 # [CHANGED v3.15.2] The frontend used to be served from /local/libi. /local is Home Assistant's own
 # alias for the config/www folder and it is registered before any custom integration, so if a folder
