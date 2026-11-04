@@ -1,10 +1,16 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>libi-ai behaviour test</title></head>
 <body>
-<div id="mount"></div>
+<div id="mount" style="width:320px"></div>
 <pre id="out">RUNNING</pre>
 <script type="module">
 import { LibiAiChat } from '../../custom_components/libi/frontend/libi-ai.js';
+// The panel's real styles, so a layout check measures what the sidebar shows.
+import { getStyles } from '../../custom_components/libi/frontend/libi-css.js';
+// [ADDED 2026-11-01] The user's own words, in Hebrew as they wrote them, are data (CLAUDE.md RULE 17: English only in
+// the code); the same file the Python tests read.
+import HE from '../fixtures/user_text_he.json' with { type: 'json' };
+document.head.appendChild(Object.assign(document.createElement('style'), { textContent: getStyles() }));
 
 const results = [];
 const check = (name, cond, detail = '') => results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
@@ -34,15 +40,30 @@ const BUILD = {
   net: { id: 'n_libi_ai_1', ha_id: 'libi_ai_1', name: 'Salon 10 min', level: 'automation', rungs: [] },
 };
 let responses = { 'libi/ai_status': { configured: true, mode: 'cloud', provider: 'gemini', model: 'gemini-x' },
-                  'libi/ai_plan': PLAN, 'libi/ai_build': BUILD };
+                  'libi/ai_plan': PLAN, 'libi/ai_build': BUILD,
+                  'libi/verify_automation': { results: [{ id: 'libi_ai_1', ok: true, issues: [] }], ok: true } };
 const calls = [];
+// [v3.67.0] The panel's SAVE & COMPILE, as the chat calls it after adding a NET: what it was given, what it answers.
+const saves = [];
+let saveResult = { saved: true, written: ['automation'], reloaded: ['automation'], errors: [], versions: {}, message: 'Saved.' };
+const asked = [];
+let confirmAnswer = true;
+window.confirm = (question) => { asked.push(question); return confirmAnswer; };
 const panel = {
   _hass: { connection: { sendMessagePromise: async (m) => { calls.push(JSON.parse(JSON.stringify(m)));
-    const r = responses[m.type]; if (r instanceof Error) throw r; return JSON.parse(JSON.stringify(r)); } } },
+    const r = responses[m.type]; if (r instanceof Error) throw r; return JSON.parse(JSON.stringify(r)); } },
+    states: { 'automation.salon_10_min': { entity_id: 'automation.salon_10_min', state: 'on', attributes: { id: 'libi_ai_1' } } } },
   core: { nets: [], nid: 5, pushed: 0,
     duplicateNet(n) { const c = JSON.parse(JSON.stringify(n)); c.id = 'n' + this.nid++; c.name = n.name + ' COPY'; c.ha_id = n.ha_id + '_copy'; return c; },
     syncCounters() {}, pushHistory() { this.pushed++; } },
   _projectDirty: false, rendered: 0, _render() { this.rendered++; }, shadowRoot: document,
+  async _saveProject() {
+    saves.push(JSON.parse(JSON.stringify(this.core.nets)));
+    // The real save answers after a round trip to Home Assistant; until then the project is still unsaved.
+    await new Promise(r => setTimeout(r, 0));
+    if (saveResult.saved !== false) this._projectDirty = false;
+    return JSON.parse(JSON.stringify(saveResult));
+  },
 };
 
 try {
@@ -84,12 +105,24 @@ try {
   check('yaml shown as text', root().querySelector('.ai-yaml pre')?.textContent.includes('</pre><img'));
   check('card yaml shown', root().querySelector('.ai-card pre')?.textContent === 'type: entities\n');
 
+  // [v3.59.0] New logic goes into the next NET, and the button says which. [v3.67.0] Adding saves and compiles it.
+  check('the add button names the next NET and says it saves', root().querySelector('.ai-add').textContent === 'Add as NET 1, save and compile', root().querySelector('.ai-add').textContent);
   root().querySelector('.ai-add').click();
   check('net added to the canvas', panel.core.nets.length === 1);
   check('net keeps its name and ha_id', panel.core.nets[0].name === 'Salon 10 min' && panel.core.nets[0].ha_id === 'libi_ai_1', JSON.stringify(panel.core.nets[0]));
   check('net gets a fresh canvas id', panel.core.nets[0].id === 'n5');
   check('history pushed, project dirty, panel rendered', panel.core.pushed === 1 && panel._projectDirty === true && panel.rendered === 1);
+  check('while it saves, the chat says so', !!root().querySelector('.ai-save-saving') && root().querySelector('.ai-save').textContent.includes('Saving and compiling'));
+  for (let i = 0; i < 6; i++) await tick();
+  check('adding saves and compiles at once, the new NET included', saves.length === 1 && saves[0].length === 1 && saves[0][0].ha_id === 'libi_ai_1');
+  check('the add button says where it went', root().querySelector('.ai-add').textContent === 'Added as NET 1');
   check('add button disabled after adding', root().querySelector('.ai-add').disabled === true);
+  const said = [...root().querySelectorAll('.ai-save .ai-note')].map(n => n.textContent);
+  check('the chat says what the save did, line by line', !!root().querySelector('.ai-save-saved') && said.join('|') === [
+    '✓ Home Assistant wrote automations.yaml.', '✓ Reloaded in Home Assistant (automation).',
+    '✓ Read back from automations.yaml, the ladder draws it exactly as built.',
+    '✓ automation.salon_10_min is on in Home Assistant.'].join('|'), said.join('|'));
+  check('the saved automation is read back by its id', calls.filter(c => c.type === 'libi/verify_automation').pop()?.automation_id === 'libi_ai_1');
 
   // rejected draft
   responses['libi/ai_build'] = { ok: false, errors: ['The draft names light.kitchen, which you did not pick.'] };
@@ -156,12 +189,17 @@ try {
       questions: [] },
     candidates: { valve: { exact: true, items: [
       { entity_id: 'switch.garden_valve', name: 'Garden valve', area: '', state: 'off', current: true },
-      { entity_id: 'switch.other', name: 'Other', area: '', state: 'off' }] } },
+      { entity_id: 'switch.other', name: 'Other', area: '', state: 'off', on_canvas: 'NET 2 · Kitchen' }] } },
     preselect: { valve: ['switch.garden_valve'] } };
-  chat.draft = 'water on four mornings instead of the button'; await chat.send();
-  check('a change names the net it changes', chat.root.querySelector('.ai-plan-title')?.textContent.includes('Change: Garden'));
+  // [v3.59.0] NET 1 runs version 2; a change becomes version 3 and version 2 stays.
+  panel._versions = { n_garden: { active: 2, latest: 2, count: 2 } };
+  chat.draft = 'update NET 1: water on four mornings instead of the button'; await chat.send();
+  check('a change names the net it changes by its number', chat.root.querySelector('.ai-plan-title')?.textContent.includes('Change: NET 1 · Garden'), chat.root.querySelector('.ai-plan-title')?.textContent);
   check('the device already in the net is ticked', chat.selections.valve.has('switch.garden_valve') && !chat.selections.valve.has('switch.other'));
   check('the device already in the net is marked current', !!chat.root.querySelector('.ai-current'));
+  const netTag = chat.root.querySelector('.ai-on-canvas');
+  check('a device another net on the page uses names that net', !!netTag && netTag.textContent === 'NET 2' && netTag.title === 'Used in NET 2 · Kitchen', netTag && netTag.outerHTML);
+  check('a device used on the page is offered, not ticked', !chat.selections.valve.has('switch.other'));
 
   responses['libi/ai_build'] = { ok: true, errors: [], level: 'automation', reply: 'Changed.', notes: [], yaml: 'alias: Garden',
     card_yaml: '', sensitive: [], round_trip: { ok: true, issues: [] }, intent: 'modify', target_net: 'n_garden',
@@ -170,24 +208,226 @@ try {
   check('the build sends the nets too', lastCall('libi/ai_build').nets.length === 1);
   check('the build sends the share flag', lastCall('libi/ai_build').share === true);
   const rep = chat.root.querySelector('.ai-replace');
-  check('a change offers Replace NET', !!rep && rep.textContent.includes('Replace NET Garden'), rep && rep.textContent);
+  check('a change offers Replace NET as the next version, saved and compiled', !!rep
+    && rep.textContent === 'Replace NET 1 · Garden - becomes version 3, saved and compiled' && !rep.disabled, rep && rep.textContent);
+  check('a change says the version that runs now stays', chat.root.querySelector('.ai-version-note')?.textContent.includes('Version 2 stays in'));
+  check('a change can still go into the next NET instead', [...chat.root.querySelectorAll('.ai-add')].pop()?.textContent === 'Add as NET 2, save and compile');
   const netsBefore = panel.core.nets.length;
+  saveResult = { ...saveResult, versions: { n_garden: { active: 3, latest: 3, count: 3 } } };
+  panel._hass.states['automation.garden'] = { entity_id: 'automation.garden', state: 'on', attributes: { id: 'garden_watering' } };
+  responses['libi/verify_automation'] = { results: [{ id: 'garden_watering', ok: true, issues: [] }], ok: true };
   rep.click();
   check('Replace keeps the number of nets', panel.core.nets.length === netsBefore);
   check('Replace keeps the net id and the automation id', panel.core.nets[0].id === 'n_garden' && panel.core.nets[0].ha_id === 'garden_watering',
     JSON.stringify(panel.core.nets[0]));
   check('Replace puts the new version in place', panel.core.nets[0].rungs.length === 1);
   check('Replace marks the project unsaved', panel._projectDirty === true);
-  check('the Replace button says it is done', chat.root.querySelector('.ai-replace').disabled && chat.root.querySelector('.ai-replace').textContent.includes('was replaced'));
+  for (let i = 0; i < 6; i++) await tick();
+  check('the Replace button says it is done, and as which version', chat.root.querySelector('.ai-replace').disabled && chat.root.querySelector('.ai-replace').textContent.includes('was replaced') && chat.root.querySelector('.ai-replace').textContent.includes('version 3'));
+  check('a replace is saved at once, as the next version', saves.length === 2 && saves[1][0].ha_id === 'garden_watering'
+    && [...chat.root.querySelectorAll('.ai-save')].pop()?.textContent.includes('Saved as version 3; the one before stays in 🕘 Versions.'));
 
   responses['libi/ai_build'] = { ...responses['libi/ai_build'], round_trip: { ok: false, issues: ['length .action: 7 to 2'] } };
   chat.draft = 'again'; await chat.send();
   chat.root.querySelector('.ai-build').click(); await tick(); await tick(); await tick();
   const warn = [...chat.root.querySelectorAll('.ai-note.danger')].pop();
   check('a draft the ladder cannot hold is said to change on saving', !!warn && warn.textContent.includes('would change it') && warn.textContent.includes('7 to 2'));
+  // [v3.67.0] Such a draft is added, not saved on its own.
+  const holdBtn = [...chat.root.querySelectorAll('.ai-add')].pop();
+  check('a draft the ladder would change does not save on its own', holdBtn.textContent === 'Add as NET 2 to the canvas', holdBtn.textContent);
+  const savesHeld = saves.length;
+  holdBtn.click(); for (let i = 0; i < 4; i++) await tick();
+  check('adding it holds the save and says why', saves.length === savesHeld
+    && [...chat.root.querySelectorAll('.ai-save')].pop()?.textContent.includes('Not saved: the ladder would change this draft'));
+  panel.core.nets.pop(); panel._projectDirty = false;
+
+  // [v3.59.0] A net with no saved version could not be brought back, so the chat does not replace it.
+  panel._versions = {};
+  responses['libi/ai_build'] = { ...responses['libi/ai_build'], round_trip: { ok: true, issues: [] } };
+  chat.draft = 'update NET 1 once more'; await chat.send();
+  chat.root.querySelector('.ai-build').click(); await tick(); await tick(); await tick();
+  const noVer = [...chat.root.querySelectorAll('.ai-replace')].pop();
+  check('no saved version: Replace is not offered', !!noVer && noVer.disabled && noVer.textContent === 'Replace NET 1 · Garden', noVer && noVer.textContent);
+  const noVerNote = [...chat.root.querySelectorAll('.ai-version-note')].pop();
+  check('no saved version: the chat says why and what to do', !!noVerNote && noVerNote.classList.contains('warn') && noVerNote.textContent.includes('Save the project first'));
+  // A long name without spaces wraps inside the 320 px sidebar instead of widening the button. The chat was
+  // moved into a mount without a width above, so the sidebar width is set here for the measurement.
+  const host = chat.root.parentElement, keepWidth = host.style.width, keepName = panel.core.nets[0].name;
+  host.style.width = '320px';
+  panel.core.nets[0].name = 'Garden_watering_by_schedule_amount_and_weather_with_a_time_limit';
+  chat.render(true);
+  const wide = [...chat.root.querySelectorAll('.ai-replace')].pop();
+  check('a long NET name wraps inside the button', !!wide && wide.scrollWidth <= wide.clientWidth + 1 && wide.getBoundingClientRect().width <= 321,
+    wide && `${wide.scrollWidth} / ${wide.clientWidth} / ${wide.getBoundingClientRect().width}`);
+  // The control: without the rule the same name does not fit, so the check above measures the rule.
+  wide.style.overflowWrap = 'normal';
+  check('without overflow-wrap the long name would not fit', wide.scrollWidth > wide.clientWidth + 1, `${wide.scrollWidth} / ${wide.clientWidth}`);
+  wide.style.overflowWrap = '';
+  host.style.width = keepWidth;
+  panel.core.nets[0].name = keepName;
+  chat.render(true);
+  const netsKept = JSON.stringify(panel.core.nets);
+  chat._replaceOnCanvas(chat.log.filter(e => e.kind === 'result').pop(), 0);
+  check('no saved version: a replace does nothing', JSON.stringify(panel.core.nets) === netsKept);
+
+  // [v3.59.0] The model wanted a change of a net the user did not name: the plan says it is new logic.
+  responses['libi/ai_plan'] = { plan: { reply: 'I will update the watering.', intent: 'create', target_net: '', forced_new: true,
+      level: 'automation', name: 'Garden', roles: [], questions: [] }, candidates: {}, preselect: {} };
+  chat.draft = 'water the garden on fixed days'; await chat.send();
+  check('a forced new NET says why', [...chat.root.querySelectorAll('.ai-plan .ai-note')].some(n => n.textContent.includes('name it by its number')));
+  check('a forced new NET is not a change', !chat.root.querySelector('.ai-plan-title')?.textContent.includes('Change:'));
+
+  // [v3.60.0] A helper the user's message names: an optional role of its own, ticked, tagged, and who else uses it.
+  // [CHANGED v3.82.0] A setting is a local variable: a row of the variables window, its helper chosen in a list.
+  responses['libi/ai_plan'] = { plan: { reply: 'Pick the valve.', intent: 'create', target_net: '', level: 'automation', name: 'Garden',
+      roles: [{ id: 'valve', label: 'Valve', purpose: 'target', domains: ['switch'] },
+        { id: 'schedule_garden', label: 'Garden schedule', purpose: 'trigger', domains: ['schedule'], optional: true, named: true, variable: true }],
+      questions: [] },
+    candidates: { valve: { exact: true, items: [{ entity_id: 'switch.valve', name: 'Valve' }, { entity_id: 'switch.other', name: 'Other' }] },
+      schedule_garden: { exact: true, items: [{ entity_id: 'schedule.garden', name: 'Garden schedule', named: true, used_by: ['Old watering', XSS] }] } },
+    preselect: { schedule_garden: ['schedule.garden'] } };
+  chat.draft = 'water by my helper Garden schedule'; await chat.send();
+  check('a helper the message names starts ticked', !!chat.selections.schedule_garden && chat.selections.schedule_garden.has('schedule.garden'));
+  const namedRow = () => chat.root.querySelector('.ai-var[data-role="schedule_garden"]');
+  check('its row says the message names it, and that it may be left out', !!namedRow() && namedRow().textContent.includes('Not used - your message names it, but leave it out')
+    && !namedRow().textContent.includes('NET you named'));
+  check('it is tagged named in the list to use, its entity id under it', namedRow()?.querySelector('.ai-var-pick option:checked')?.textContent === 'Garden schedule (named)'
+    && namedRow().querySelector('.ai-var-id')?.textContent === 'schedule.garden',
+    namedRow() && namedRow().querySelector('.ai-var-pick')?.textContent);
+  check('the chat says who else uses it', !!namedRow() && namedRow().textContent.includes('Also used by Old watering, ' + XSS + ': setting it changes it there too.'));
+  check('build waits for the valve only', chat.root.querySelector('.ai-build').disabled === true && chat.root.querySelector('.ai-build').title === 'Pick: Valve', chat.root.querySelector('.ai-build').title);
+  chat.root.querySelector('.ai-list[data-role="valve"] input[value="switch.valve"]').click();
+  check('build is ready with the named helper ticked', chat.root.querySelector('.ai-build').disabled === false);
+  namedRow().querySelector('input[type=radio][value="none"]').click();
+  check('a named helper left out does not hold build back', !chat.selections.schedule_garden.has('schedule.garden') && chat.root.querySelector('.ai-build').disabled === false);
+
+  // [v3.62.0] A message service the user named that does not exist is said in the plan; a phone role is optional,
+  // says why, and is not ticked by itself although it found one exact match.
+  responses['libi/ai_plan'] = { plan: { reply: 'Pick the valve.', intent: 'create', target_net: '', level: 'automation', name: 'Garden',
+      missing_services: ['notify.mobile_app_mi_9t_pro'],
+      roles: [{ id: 'valve', label: 'Valve', purpose: 'target', domains: ['switch'] },
+        { id: 'phone', label: 'Phone', purpose: 'target', domains: ['notify'], optional: true, message: true }],
+      questions: [] },
+    candidates: { valve: { exact: true, items: [{ entity_id: 'switch.valve', name: 'Valve' }] },
+      phone: { exact: true, items: [{ entity_id: 'notify.phone', name: 'Phone' }] } },
+    preselect: {} };
+  chat.draft = 'message notify.mobile_app_sm and notify.mobile_app_mi_9t_pro'; await chat.send();
+  check('a missing message service is said in the plan', [...chat.root.querySelectorAll('.ai-plan .ai-note.warn')]
+    .some(n => n.textContent.startsWith('notify.mobile_app_mi_9t_pro does not exist in this Home Assistant')));
+  const phoneRole = [...chat.root.querySelectorAll('.ai-role')].find(r => r.querySelector('.ai-list[data-role="phone"]'));
+  check('a phone role says why it is optional', !!phoneRole && phoneRole.textContent.includes('your message names the notify services'));
+  check('an optional role is not ticked by itself', chat.selections.phone.size === 0 && chat.selections.valve.has('switch.valve'));
+  check('build does not wait for the phone', chat.root.querySelector('.ai-build').disabled === false);
+  // A draft the AI corrected says what was corrected; one that still does not hold says how many answers it took.
+  responses['libi/ai_build'] = { ok: true, errors: [], level: 'automation', reply: 'Built.', notes: [], yaml: 'alias: Garden',
+    card_yaml: '', sensitive: [], round_trip: { ok: true, issues: [] }, intent: 'create', target_net: '', tries: 2,
+    repaired: ['The service notify.mobile_app_mi_9t_pro does not exist in this Home Assistant.', XSS],
+    net: { id: 'n_libi_y', ha_id: 'libi_y', name: 'Garden', level: 'automation', rungs: [] } };
+  chat.root.querySelector('.ai-build').click();
+  check('while building, the chat says LIBI checks the drafts', (chat.root.querySelector('.ai-busy')?.textContent || '').includes('has the AI correct what does not hold'));
+  await tick(); await tick(); await tick();
+  const fixedNote = [...chat.root.querySelectorAll('.ai-repaired')].pop();
+  check('a corrected draft says what the AI corrected', !!fixedNote && fixedNote.textContent.includes('(2 answers)')
+    && fixedNote.textContent.includes('mobile_app_mi_9t_pro does not exist') && fixedNote.textContent.includes(XSS));
+  responses['libi/ai_build'] = { ok: false, errors: ["Home Assistant rejected the draft: expected float at 'above'"], tries: 3 };
+  chat.draft = 'again'; await chat.send();
+  chat.root.querySelector('.ai-build').click(); await tick(); await tick(); await tick();
+  const stillBad = [...chat.root.querySelectorAll('.ai-msg.error')].pop();
+  check('a draft not accepted says how many corrections were tried', !!stillBad
+    && stillBad.textContent.startsWith('The draft was not accepted, also after 2 corrections by the AI:')
+    && stillBad.textContent.includes("expected float at 'above'"), stillBad && stillBad.textContent);
+
+  // [v3.64.0] The phones LIBI offers when the message names notify services: why some are ticked, and another
+  // phone can be ticked in place of the one that no longer exists.
+  responses['libi/ai_plan'] = { plan: { reply: 'ok', intent: 'create', target_net: '', level: 'automation', name: 'Garden',
+      missing_services: ['notify.mobile_app_mi_9t_pro'],
+      roles: [{ id: 'phones_to_notify', label: 'Phones to notify', purpose: 'target', domains: ['notify'], phones: true, optional: false }],
+      questions: [] },
+    candidates: { phones_to_notify: { exact: true, items: [
+      { entity_id: 'notify.guy_phone', name: 'guy_phone', named: true, owner: 'Guy', device: 'samsung SM-N985F' },
+      { entity_id: 'notify.sm_s938b', name: 'SM-S938B', owner: XSS, device: 'samsung SM-S938B' }] } },
+    preselect: { phones_to_notify: ['notify.guy_phone'] } };
+  chat.draft = 'notify.mobile_app_guy_phone and notify.mobile_app_mi_9t_pro'; await chat.send();
+  const phonesRole = [...chat.root.querySelectorAll('.ai-role')].find(r => r.querySelector('.ai-list[data-role="phones_to_notify"]'));
+  check('the phones list says why some are ticked', !!phonesRole && phonesRole.textContent.includes('The phones your message names are ticked'));
+  // [v3.66.0] Whose each phone is and what it is; the note about the named phone that does not exist is in the list.
+  const owners = phonesRole ? [...phonesRole.querySelectorAll('.ai-owner')].map(t => t.textContent) : [];
+  check('each phone says whose it is', owners.length === 2 && owners[0] === 'Guy' && owners[1] === XSS, JSON.stringify(owners));
+  check('each phone says what it is', !!phonesRole && [...phonesRole.querySelectorAll('.ai-item-id')][0]?.textContent === 'notify.guy_phone · samsung SM-N985F');
+  check('the missing phone is said in the phones list, with what to do', !!phonesRole
+    && phonesRole.querySelector('.ai-phones-missing')?.textContent.startsWith('notify.mobile_app_mi_9t_pro does not exist in this Home Assistant')
+    && phonesRole.querySelector('.ai-phones-missing').textContent.includes('Tick the phone that should get the message instead'));
+  check('and not again above the plan', ![...chat.root.querySelectorAll('.ai-plan > .ai-note.warn')].some(n => n.textContent.includes('mi_9t_pro')));
+  check('the named phone is ticked and tagged as a phone', chat.selections.phones_to_notify.has('notify.guy_phone')
+    && !chat.selections.phones_to_notify.has('notify.sm_s938b')
+    && [...phonesRole.querySelectorAll('.ai-on-canvas')].some(t => t.textContent === 'named' && t.title === 'Your message names this phone'));
+  phonesRole.querySelector('input[value="notify.sm_s938b"]').click();
+  check('another phone can be ticked in place of the missing one', chat.selections.phones_to_notify.has('notify.sm_s938b')
+    && chat.root.querySelector('.ai-build').disabled === false);
 
 
-  // ---------------------------------------------------------------- helpers the AI proposes (v3.43.0)
+  // [v3.67.0] What saving after adding says when it does not go well, and what is not saved without asking.
+  {
+    responses['libi/ai_plan'] = { plan: { reply: 'ok', intent: 'create', target_net: '', level: 'automation', name: 'Light', roles: [],
+      questions: [] }, candidates: {}, preselect: {} };
+    const draft = (extra = {}) => ({ ok: true, errors: [], level: 'automation', reply: 'Built.', notes: [], yaml: 'alias: Light',
+      card_yaml: '', sensitive: [], round_trip: { ok: true, issues: [] }, intent: 'create', target_net: '',
+      net: { id: 'n_x', ha_id: 'libi_ai_9', name: 'Light', level: 'automation', rungs: [] }, ...extra });
+    const addLast = async (build) => {
+      responses['libi/ai_build'] = build;
+      chat.draft = 'again'; await chat.send();
+      chat.root.querySelector('.ai-build').click(); for (let i = 0; i < 4; i++) await tick();
+      [...chat.root.querySelectorAll('.ai-add')].pop().click(); for (let i = 0; i < 6; i++) await tick();
+      return [...[...chat.root.querySelectorAll('.ai-result')].pop().querySelectorAll('.ai-save .ai-note')].map(n => n.textContent);
+    };
+    const lastSave = () => [...chat.root.querySelectorAll('.ai-save')].pop();
+    panel._projectDirty = false;
+    panel._hass.states['automation.light'] = { entity_id: 'automation.light', state: 'unavailable', attributes: { id: 'libi_ai_9' } };
+    responses['libi/verify_automation'] = { results: [{ id: 'libi_ai_9', ok: true, issues: [] }], ok: true };
+    saveResult = { saved: true, written: ['automation'], reloaded: [], errors: ['automation reload failed: boom'], versions: {} };
+    let lines = await addLast(draft());
+    check('a reload that failed is said, not hidden behind saved', lines.includes('⚠ automation reload failed: boom')
+      && lines.includes('✓ Home Assistant wrote automations.yaml.'), lines.join('|'));
+    check('an automation Home Assistant did not accept is said', lines.some(l => l.startsWith('⚠ automation.light is unavailable')), lines.join('|'));
+    check('a save with problems is not shown as done', lastSave().classList.contains('ai-save-problem'));
+    saveResult = { saved: false, refused: true };
+    panel._projectDirty = false;
+    lines = await addLast(draft());
+    check('a drawing with errors is not saved, and the chat says what to do', lines.length === 1
+      && lines[0].startsWith('⚠ Not saved: the drawing has errors') && lastSave().classList.contains('ai-save-failed'), lines.join('|'));
+    // [ADDED 2026-11-04, v3.85.0] SAVE & COMPILE compiles first: when that does not hold, nothing is saved, and why is said.
+    saveResult = { saved: false, compileErrors: ['NET 2 "Porch": Home Assistant does not accept it: bad trigger'] };
+    panel._projectDirty = false;
+    lines = await addLast(draft());
+    check('a compile that does not hold saves nothing, and the chat says why', lines.length === 1
+      && lines[0] === '⚠ Not saved: the compile failed, so nothing was written: NET 2 "Porch": Home Assistant does not accept it: bad trigger'
+      && lastSave().classList.contains('ai-save-failed'), lines.join('|'));
+    // Other unsaved changes on the canvas are saved only when the user says so.
+    saveResult = { saved: true, written: ['automation'], reloaded: ['automation'], errors: [], versions: {} };
+    panel._projectDirty = true; confirmAnswer = false; asked.length = 0;
+    const before = saves.length;
+    lines = await addLast(draft());
+    check('with other unsaved changes the chat asks first', asked.length === 1 && asked[0].startsWith('Other changes on the canvas are not saved yet'));
+    check('and saves nothing when the user says no', saves.length === before
+      && lines[0] === '⚠ Not saved: press SAVE & COMPILE when the other changes are ready.', lines.join('|'));
+    // A security-sensitive device is saved only after asking (RULE 9).
+    panel._projectDirty = false; confirmAnswer = true; asked.length = 0;
+    panel._hass.states['automation.light'].state = 'on';
+    lines = await addLast(draft({ sensitive: ['lock.front_door'] }));
+    check('a NET that controls a lock asks before it is saved', asked.length === 1 && asked[0] === 'This NET controls lock.front_door. Save it to Home Assistant now?');
+    check('and is saved when the user says yes', saves.length === before + 1 && lines.includes('✓ automation.light is on in Home Assistant.'), lines.join('|'));
+    // A save that never reached Home Assistant is said as such.
+    saveResult = { saved: false, failed: 'connection lost' };
+    panel._projectDirty = false;
+    lines = await addLast(draft());
+    check('a save that did not get through says so', lines.length === 1 && lines[0] === '⚠ Not saved: connection lost', lines.join('|'));
+    saveResult = { saved: true, written: ['automation'], reloaded: ['automation'], errors: [], versions: {} };
+    panel._projectDirty = false;
+  }
+
+  // ---------------------------------------------------------------- the local variables (v3.43.0; one window, v3.82.0)
+  // [CHANGED v3.82.0] The user: "all the local variables at the start, in the same window, always with the option to
+  // create them all new; and if a variable is free, choose it instead of creating a new one".
   panel._hass.states = panel._hass.states || {};
   const created = [];
   const realWs = panel._hass.connection.sendMessagePromise;
@@ -203,38 +443,469 @@ try {
   responses['libi/ai_plan'] = {
     plan: { reply: 'Set it from the screen.', intent: 'create', target_net: '', level: 'automation', name: 'Garden plan',
       roles: [
-        { id: 'litres', label: 'Litres', purpose: 'condition', domains: ['input_number'], device_classes: [], keywords: [], area_keywords: [] },
-        { id: 'day_sun', label: 'Sunday', purpose: 'condition', domains: ['input_boolean'], device_classes: [], keywords: [], area_keywords: [] },
+        { id: 'valve', label: 'Valve', purpose: 'target', domains: ['switch'], device_classes: [], keywords: [], area_keywords: [] },
+        { id: 'litres', label: 'Litres', purpose: 'condition', domains: ['input_number'], device_classes: [], keywords: [], area_keywords: [], variable: true },
+        { id: 'day_sun', label: 'Sunday', purpose: 'condition', domains: ['input_boolean'], device_classes: [], keywords: [], area_keywords: [], variable: true },
+        { id: 'minutes', label: 'Max minutes', purpose: 'condition', domains: ['input_number'], device_classes: [], keywords: [], area_keywords: [], variable: true },
       ],
       questions: [],
       new_helpers: [
         { role: 'litres', domain: 'input_number', name: 'Garden litres', settings: { min: 0, max: 500, step: 10, unit_of_measurement: 'L' } },
         { role: 'day_sun', domain: 'input_boolean', name: 'Garden Sunday', settings: {} },
-      ] },
-    candidates: { litres: { items: [], exact: false }, day_sun: { items: [], exact: false } }, preselect: {} };
+      ],
+      // A free helper of the user's fits the most minutes: it is the pick, and the new one LIBI would make its alternative.
+      alternatives: [{ role: 'minutes', domain: 'input_number', name: 'Max minutes (2)', settings: { min: 1, max: 120 }, pick: 'input_number.minutes_free' }] },
+    // [v3.51.0] The user's screen: other people's settings offered as the "closest" for the litres.
+    candidates: { valve: { exact: true, items: [{ entity_id: 'switch.valve', name: 'Valve' }] },
+      litres: { items: [{ entity_id: 'input_number.work_alert_offset_guy', name: 'Work Alert Offset Guy', area: '', state: '5' },
+        { entity_id: 'input_number.minutes_free', name: 'Max minutes', area: '', state: '30' }], exact: false },
+      day_sun: { items: [{ entity_id: 'input_boolean.sunday_free', name: 'Sunday free', area: '', state: 'off', exists: true }], exact: true },
+      minutes: { items: [{ entity_id: 'input_number.minutes_free', name: 'Max minutes', area: '', state: '30', exists: true }], exact: true } },
+    preselect: {} };
   chat._reset(); chat.draft = 'let me set the litres and the days on the screen'; await chat.send();
-  const helpersBox = chat.root.querySelector('.ai-helpers');
+  const varsBox = chat.root.querySelector('.ai-vars');
+  const varRow = (id) => chat.root.querySelector(`.ai-var[data-role="${id}"]`);
+  check('the local variables are one window, first in the plan', !!varsBox && varsBox.querySelector('.ai-role-head strong')?.textContent === 'Local variables'
+    && [...chat.root.querySelectorAll('.ai-vars, .ai-role')][0] === varsBox && varsBox.querySelectorAll('.ai-var').length === 3);
+  check('a device keeps its list below them, and a variable is in the window only', !!chat.root.querySelector('.ai-list[data-role="valve"]') && !varsBox.querySelector('[data-role="valve"]')
+    && ['litres', 'day_sun', 'minutes'].every(id => !chat.root.querySelector(`.ai-list[data-role="${id}"]`)));
   // The names sit in editable fields, whose text is their value, not textContent.
-  const helperNames = [...chat.root.querySelectorAll('.ai-helper-name')].map(i => i.value);
-  check('proposed helpers are listed', !!helpersBox && helperNames.includes('Garden litres') && helperNames.includes('Garden Sunday') && helpersBox.textContent.includes('0–500 L'), JSON.stringify(helperNames));
+  check('a variable LIBI proposes starts New, under the name proposed', varRow('litres')?.querySelector('input[value="new"]')?.checked === true
+    && varRow('litres').querySelector('.ai-var-name')?.value === 'Garden litres' && varRow('litres').textContent.includes('Number · 0–500 L'));
+  check('the helpers that exist can be used instead, the closest too', [...varRow('litres').querySelectorAll('.ai-var-pick option')].some(o => o.value === 'input_number.work_alert_offset_guy'));
+  check('a free helper that fits is chosen at the start, the new one in reach', varRow('minutes')?.querySelector('input[value="existing"]')?.checked === true
+    && varRow('minutes').querySelector('.ai-var-pick').value === 'input_number.minutes_free' && varRow('minutes').querySelector('.ai-var-name')?.value === 'Max minutes (2)'
+    && chat.selections.minutes.has('input_number.minutes_free') && chat.newHelpers.find(x => x.role === 'minutes').keep === false);
+  check('a helper is one variable at a time', [...varRow('litres').querySelectorAll('.ai-var-pick option')].find(o => o.value === 'input_number.minutes_free')?.disabled === true
+    && [...varRow('litres').querySelectorAll('.ai-var-pick option')].find(o => o.value === 'input_number.minutes_free').textContent.endsWith('(chosen for Max minutes)'));
+  check('two helpers of one name are told apart in the list', (() => { const side = Object.create(Object.getPrototypeOf(chat));
+    Object.assign(side, { panel: chat.panel, busy: '', filters: {}, answers: {}, vars: { x: { mode: 'existing', pick: 'input_number.a' } }, selections: {}, newHelpers: [],
+      plan: { roles: [{ id: 'x', label: 'X', domains: ['input_number'], variable: true }] },
+      candidates: { x: { exact: true, items: [{ entity_id: 'input_number.a', name: 'Litres' }, { entity_id: 'input_number.b', name: 'Litres' }] } } });
+    const texts = [...side._variableRow(side.plan.roles[0]).querySelectorAll('option')].map(o => o.textContent);
+    return texts.join('|') === 'Litres · input_number.a|Litres · input_number.b'; })());
   check('nothing is created before the click', created.length === 0);
-  check('a role a new helper fills says so', chat.root.textContent.includes('Filled by the new helper'));
-  check('build waits for the helpers', chat.root.querySelector('.ai-build').disabled === true);
+  const nameW = varRow('litres').querySelector('.ai-var-name').getBoundingClientRect().width;
+  const rowW = varRow('litres').getBoundingClientRect().width;
+  check('the name field is wide enough to read', nameW >= rowW * 0.5, `${nameW} of ${rowW}`);
+  check('build waits for the variables, and says so', chat.root.querySelector('.ai-build').disabled === true
+    && chat.root.querySelector('.ai-vars-unset')?.textContent === 'Create the new local variables above, or pick a helper for each, to build.');
+  // [v3.53.0] A schedule helper: its marked days, Monday first, or where to mark them.
+  const sched = chat._helperSummary({ domain: 'schedule', settings: { monday: [{ from: '06:00:00', to: '06:30:00' }], tuesday: [], thursday: [{ from: '06:00:00', to: '06:30:00' }] } });
+  check('a schedule helper lists its days', sched === 'Schedule (weekly calendar) · mon 06:00–06:30 · thu 06:00–06:30', sched);
+  check('an empty schedule says where to mark it', chat._helperSummary({ domain: 'schedule', settings: {} }).includes('Settings ▸ Helpers'));
+  // [v3.54.0] Built on a side object, so the chat's own state above is left as it is.
+  {
+    const side = Object.create(Object.getPrototypeOf(chat));
+    Object.assign(side, { panel: chat.panel, busy: '', filters: {}, answers: {}, vars: {},
+      plan: { level: 'automation', intent: 'create', name: 'Garden', questions: [], roles: [
+        { id: 'valve', label: 'Valve', purpose: 'target', domains: ['switch'] },
+        { id: 'net1_meter', label: 'Meter of NET 1', purpose: 'measure', domains: ['sensor'], optional: true },
+        { id: 'when', label: 'When', purpose: 'trigger', domains: ['schedule'], variable: true }] },
+      candidates: { valve: { items: [{ entity_id: 'switch.valve', name: 'Valve' }], exact: true },
+        net1_meter: { items: [{ entity_id: 'sensor.meter', name: 'Meter' }], exact: true },
+        when: { items: [{ entity_id: 'schedule.work_days', name: 'Work Days' }], exact: true } },
+      selections: { valve: new Set(['switch.valve']) },
+      newHelpers: [{ role: 'when', domain: 'schedule', name: 'Garden schedule', settings: {}, keep: true, created: '', error: '' }] });
+    side._initVar(side.plan.roles[2]);
+    let view = side._planView();
+    const whenRow = () => view.querySelector('.ai-var[data-role="when"]');
+    check('an optional role says so', view.textContent.includes('optional') && view.textContent.includes('Pick it if the new logic should use it'));
+    check('a variable LIBI proposes starts New, with the helpers that exist to use instead', whenRow()?.querySelector('input[value="new"]')?.checked === true
+      && [...whenRow().querySelectorAll('.ai-var-pick option')].some(o => o.value === 'schedule.work_days'));
+    check('build waits only for the required roles', view.querySelector('.ai-build').disabled === true && view.querySelector('.ai-build').title === 'Pick: When', view.querySelector('.ai-build').title);
+    side.vars.when = { mode: 'existing', pick: 'schedule.work_days' }; side._syncVar('when');
+    view = side._planView();
+    check('a helper that exists used instead: the new one is not made', side.newHelpers[0].keep === false && side.selections.when.has('schedule.work_days')
+      && whenRow().querySelector('.ai-var-pick').value === 'schedule.work_days');
+    check('an unpicked optional role does not hold build back', view.querySelector('.ai-build').disabled === false);
+    // [v3.56.0] A helper that already exists is tagged; helpers in use elsewhere are counted, not listed.
+    side.candidates.when = { items: [{ entity_id: 'schedule.garden', name: 'Garden schedule', exists: true }], exact: true, hidden_used: 2 };
+    side.vars.when = { mode: 'existing', pick: 'schedule.garden' }; side._syncVar('when');
+    view = side._planView();
+    check('a free helper is tagged so', whenRow()?.querySelector('.ai-var-pick option:checked')?.textContent === 'Garden schedule (free)',
+      whenRow() && whenRow().querySelector('.ai-var-pick')?.textContent);
+    check('the row says how many helpers in use are left out', !!whenRow() && whenRow().textContent.includes('2 helpers used by other automations or scripts are not listed.'));
+  }
+  // [ADDED v3.78.0] The user's chat of 2026-11-01: the message named a schedule and a litres helper deleted with NET 3.
+  {
+    const side = Object.create(Object.getPrototypeOf(chat));
+    const GONE = HE.water_amount_in_litres;
+    Object.assign(side, { panel: chat.panel, busy: '', filters: {}, answers: {}, vars: {},
+      plan: { level: 'automation', intent: 'create', name: 'Garden', questions: [], roles: [
+        { id: 'litres', label: HE.helper_water_amount_in_litres, purpose: 'condition', domains: ['input_number'], missing: GONE, variable: true },
+        { id: 'xss', label: 'Other', purpose: 'condition', domains: ['input_number'], missing: XSS, variable: true },
+        { id: 'gone', label: 'Garden schedule', purpose: 'trigger', domains: ['schedule'], optional: true, replaced: true, missing: HE.garden_watering_schedule, variable: true },
+        { id: 'unfit', label: 'Some schedule', purpose: 'trigger', domains: ['schedule'], optional: true, replaced: true, variable: true },
+        { id: 'named', label: 'Named schedule', purpose: 'trigger', domains: ['schedule'], optional: true, replaced: true, variable: true }] },
+      candidates: { litres: { items: [{ entity_id: 'input_number.work_alert_offset_guy', name: 'Work Alert Offset Guy' }], exact: false },
+        xss: { items: [], exact: false }, gone: { items: [], exact: false },
+        unfit: { items: [{ entity_id: 'schedule.work_days_guy', name: 'Work Days Guy' }], exact: false },
+        named: { items: [{ entity_id: 'schedule.garden', name: 'Garden', named: true }], exact: true } },
+      selections: {},
+      newHelpers: [{ role: 'litres', domain: 'input_number', name: GONE, settings: {}, keep: true, created: '', error: '' }] });
+    for (const r of side.plan.roles) side._initVar(r);
+    const rowOf = (view, id) => view.querySelector(`.ai-var[data-role="${id}"]`);
+    let view = side._planView();
+    const gone = rowOf(view, 'litres').querySelector('.ai-missing')?.textContent || '';
+    check('a named helper that is gone says so in its row, made again under its name',
+      gone === `Your message names "${GONE}", but no helper in this Home Assistant has that name. The new one gets that name.`
+      && rowOf(view, 'litres').querySelector('.ai-var-name')?.value === GONE, gone);
+    check('the name the message gave is shown as text', !rowOf(view, 'xss').querySelector('img') && rowOf(view, 'xss').textContent.includes(XSS) && !window.pwned);
+    const said = (id) => rowOf(view, id).querySelector('.ai-replaced')?.textContent || '';
+    check('a named schedule that is gone gave way to the alarm clock, and says so',
+      said('gone').startsWith(`Your message names the schedule "${HE.garden_watering_schedule}", but this Home Assistant has no schedule by that name.`)
+      && said('gone').includes('set as on an alarm clock') && !rowOf(view, 'gone').querySelector('input'), said('gone'));
+    check('a schedule nothing fits gave way, and says so', said('unfit').startsWith('No schedule of yours fits') && said('unfit').endsWith('and no schedule is used.')
+      && !rowOf(view, 'unfit').textContent.includes('schedule.work_days_guy'), said('unfit'));
+    check('a named schedule that exists still says the message names it', said('named').startsWith('Your message names this schedule, but'), said('named'));
+    check('no schedule that gave way holds Build back', !view.querySelector('.ai-build').title.includes('schedule'), view.querySelector('.ai-build').title);
+    side.vars.litres = { mode: 'existing', pick: 'input_number.work_alert_offset_guy' }; side._syncVar('litres');
+    view = side._planView();
+    check('used instead, the note no longer says it is made, and that helper is the one', (rowOf(view, 'litres').querySelector('.ai-missing')?.textContent || '').endsWith('has that name.')
+      && rowOf(view, 'litres').querySelector('.ai-var-pick')?.value === 'input_number.work_alert_offset_guy' && side.newHelpers[0].keep === false);
+    side.vars.litres.mode = 'new'; side.newHelpers[0].created = 'input_number.kmvt_mym_lhshqyh_blytrym'; side._syncVar('litres');
+    view = side._planView();
+    check('once it is created the note is gone', !rowOf(view, 'litres').querySelector('.ai-missing'));
+  }
 
-  // untick one, rename the other, then create
-  chat.root.querySelectorAll('.ai-helper input[type=checkbox]')[1].click();
-  const nameBox = chat.root.querySelector('.ai-helper-name');
+  // Sunday: the free switch is used instead of a new one; the litres renamed, then made.
+  const sunday = varRow('day_sun').querySelector('.ai-var-pick');
+  sunday.value = 'input_boolean.sunday_free'; sunday.dispatchEvent(new Event('change'));
+  check('a helper chosen in the list is used, and the new one is not made', chat.vars.day_sun.mode === 'existing' && chat.selections.day_sun.has('input_boolean.sunday_free')
+    && chat.newHelpers.find(x => x.role === 'day_sun').keep === false && varRow('day_sun').querySelector('input[value="existing"]').checked);
+  // The next message plans again: each variable stays as the user set it, as long as that still holds.
+  chat.draft = 'and the minutes too'; await chat.send();
+  check('a new plan keeps the variables as the user set them', chat.vars.day_sun.mode === 'existing' && chat.vars.day_sun.pick === 'input_boolean.sunday_free'
+    && chat.selections.day_sun.has('input_boolean.sunday_free') && varRow('day_sun').querySelector('input[value="existing"]').checked
+    && chat.vars.litres.mode === 'new' && chat.vars.minutes.mode === 'existing');
+  const nameBox = varRow('litres').querySelector('.ai-var-name');
   nameBox.value = 'Litres for the garden'; nameBox.dispatchEvent(new Event('input'));
   const createBtn = chat.root.querySelector('.ai-create-helpers');
-  check('the button counts the ticked helpers', createBtn && createBtn.textContent.includes('Create the 1 ticked helper'), createBtn && createBtn.textContent);
+  check('the button counts the new variables', createBtn && createBtn.textContent === 'Create the 1 new variable', createBtn && createBtn.textContent);
   createBtn.click(); for (let i = 0; i < 8; i++) await tick();
   await new Promise(r => setTimeout(r, 50));
-  check('only the ticked helper is created', created.length === 1 && created[0].type === 'input_number/create', JSON.stringify(created));
+  check('only the new variable is created', created.length === 1 && created[0].type === 'input_number/create', JSON.stringify(created));
   check('it is created with the settings LIBI checked', created[0].min === 0 && created[0].max === 500 && created[0].unit_of_measurement === 'L');
   check('it is created under the name the user typed', created[0].name === 'Litres for the garden');
-  check('the new helper becomes the pick for its role', chat.selections.litres && chat.selections.litres.has('input_number.litres_for_the_garden'));
-  check('the list says it was created', chat.root.querySelector('.ai-helpers').textContent.includes('created: input_number.litres_for_the_garden'));
+  check('the new helper becomes the pick for its variable', chat.selections.litres && chat.selections.litres.has('input_number.litres_for_the_garden'));
+  check('its row says it was created', varRow('litres').textContent.includes('created: input_number.litres_for_the_garden') && varRow('litres').querySelector('.ai-var-name').disabled);
+  check('every variable has its helper, so Build is ready', chat.root.querySelector('.ai-build').disabled === false && !chat.root.querySelector('.ai-vars-unset'));
+  // "All new": every variable that uses a helper of the user's is switched to a new one.
+  chat.root.querySelector('.ai-all-new').click();
+  check('All new makes every variable new', chat.vars.day_sun.mode === 'new' && chat.vars.minutes.mode === 'new' && chat.vars.litres.mode === 'new'
+    && chat.root.querySelector('.ai-create-helpers')?.textContent === 'Create the 2 new variables' && !chat.root.querySelector('.ai-all-new')
+    && chat.root.querySelector('.ai-build').disabled === true);
   panel._hass.connection.sendMessagePromise = realWs;
+
+  // ---------------------------------------------------------------- the request, line by line (v3.73.0)
+  {
+    panel._projectDirty = false;
+    responses['libi/ai_plan'] = { plan: { reply: 'Pick the valve.', intent: 'create', target_net: '', level: 'automation', name: 'Garden',
+        requirements: [{ id: 'r1', text: 'Start at the time I set', kind: 'time' }, { id: 'r2', text: XSS, kind: 'other' }],
+        roles: [{ id: 'valve', label: 'Valve', purpose: 'target', domains: ['switch'] },
+          // [v3.74.0] The schedule the message names, which gave way to the alarm clock.
+          { id: 'schedule_garden', label: 'Garden schedule', purpose: 'trigger', domains: ['schedule'], optional: true, named: true, replaced: true, variable: true },
+          // [v3.76.0] The days of the alarm clock: ONE helper of 8 bits, not a switch for each day. [v3.82.0] A free one fits.
+          { id: 'days', label: 'Days', purpose: 'condition', domains: ['input_number'], variable: true }],
+        new_helpers: [],
+        alternatives: [{ role: 'days', domain: 'input_number', name: 'Watering - days (2)', settings: { min: 0, max: 255, step: 1, mode: 'box' }, days_bits: true, pick: 'input_number.watering_days' }],
+        questions: [] },
+      candidates: { valve: { exact: true, items: [{ entity_id: 'switch.valve', name: 'Valve' }] },
+        schedule_garden: { exact: true, items: [{ entity_id: 'schedule.garden', name: 'Garden schedule', named: true }] },
+        days: { exact: true, items: [{ entity_id: 'input_number.watering_days', name: 'Watering - days', exists: true }] } }, preselect: {} };
+    chat._reset(); chat.draft = 'water the garden at the time I set'; await chat.send();
+    const reqs = chat.root.querySelector('.ai-reqs');
+    check('the plan shows the request line by line', !!reqs && [...reqs.querySelectorAll('li')].map(li => li.textContent).join('|') === `Start at the time I set|${XSS}`, reqs && reqs.textContent);
+    const alarmNote = chat.root.querySelector('.ai-alarm-note')?.textContent || '';
+    check('the days helper says its 8 bits are the days, tapped as round buttons on the card', alarmNote.includes('its 8 bits are the days, bit 1 Sunday to bit 7 Saturday')
+      && alarmNote.includes('seven round buttons under the time') && alarmNote.includes('tap a day to turn it on or off'), alarmNote);
+    check('the days helper says what its bits are, not its range', chat._helperSummary({ domain: 'input_number', settings: { min: 0, max: 255, step: 1, mode: 'box' }, days_bits: true }) === 'Number · 8 bits: bit 1 Sun … bit 7 Sat'
+      && chat._helperSummary({ domain: 'input_number', settings: { min: 0, max: 500, unit_of_measurement: 'L' } }) === 'Number · 0–500 L');
+    const gaveWay = chat.root.querySelector('.ai-var[data-role="schedule_garden"]');
+    check('a schedule the message names that gave way says why', !!gaveWay && (gaveWay.querySelector('.ai-replaced')?.textContent || '').includes('a dashboard card cannot set the days and hours of a schedule')
+      && !gaveWay.textContent.includes('Untick it if the new logic should not use it'), gaveWay && gaveWay.textContent);
+    // [v3.75.0] It is not used: no list to tick it in, and the head says so where "optional" would stand.
+    check('a schedule that gave way has no list and nothing to tick', !!gaveWay && !gaveWay.querySelector('input') && !gaveWay.querySelector('select')
+      && !gaveWay.querySelector('.ai-list') && !gaveWay.querySelector('.ai-count') && gaveWay.querySelector('.ai-optional')?.textContent === 'not used'
+      && (gaveWay.querySelector('.ai-replaced')?.textContent || '').endsWith('and this schedule is not used.'), gaveWay && gaveWay.textContent);
+    check('and it is not ticked, nor does it hold Build back', chat.selections.schedule_garden.size === 0 && chat.root.querySelector('.ai-build').disabled === false);
+    // [v3.75.0] Not even with a tick kept from an earlier plan of the same chat: ticked, it started the user's NET 3.
+    chat.selections.schedule_garden = new Set(['schedule.garden']);
+    chat.draft = 'the same, once more'; await chat.send();
+    check('a tick kept from an earlier plan is dropped for a schedule that gave way', chat.selections.schedule_garden.size === 0, [...chat.selections.schedule_garden].join());
+    responses['libi/ai_build'] = { ok: true, errors: [], level: 'automation', reply: 'Built.', notes: [], yaml: 'alias: Garden',
+      card_yaml: 'type: entities\n', sensitive: [], round_trip: { ok: true, issues: [] }, intent: 'create', target_net: '',
+      net: { id: 'n_libi_c', ha_id: 'libi_c', name: 'Garden', level: 'automation', rungs: [] },
+      checklist: [
+        { id: 'r1', text: 'Start at the time I set', kind: 'time', ok: true, rung: 1, how: '', missing: '' },
+        { id: 'r2', text: 'Skip when rain is expected today', kind: 'forecast', ok: false, rung: 0, how: '', missing: 'it never reads the forecast (weather.get_forecasts)' },
+        { id: 'r3', text: XSS, kind: 'other', ok: null, rung: 3, how: XSS, missing: '' },
+        { id: 'r4', text: 'A card', kind: 'card', ok: true, rung: 0, how: '', missing: '' }] };
+    chat.root.querySelector('.ai-build').click(); await tick(); await tick(); await tick();
+    const list = [...chat.root.querySelectorAll('.ai-checklist')].pop();
+    const lines = list ? [...list.querySelectorAll('.ai-check')] : [];
+    const where = (i) => lines[i]?.querySelector('.ai-check-where')?.textContent;
+    const mark = (i) => lines[i]?.querySelector('.ai-check-mark')?.textContent;
+    check('the draft shows every line of the request', lines.length === 4, lines.length);
+    check('a line LIBI saw in the logic is ticked, with its rung', lines[0]?.classList.contains('ok') && mark(0) === '✓' && where(0) === 'rung 1 · checked by LIBI', where(0));
+    check('a line the logic misses is marked, with what is missing', lines[1]?.classList.contains('missing') && mark(1) === '✗' && where(1) === 'missing: it never reads the forecast (weather.get_forecasts)', where(1));
+    check('a line only the AI places says so, with what the AI says, as text', lines[2]?.classList.contains('unchecked') && mark(2) === '•'
+      && where(2) === 'rung 3 · not checked by LIBI' && lines[2].querySelector('.ai-check-how')?.textContent === `the AI: ${XSS}`
+      && lines[2].querySelector('.ai-check-text span').textContent === XSS, where(2));
+    check('only a line LIBI did not check carries the AI word', chat.root.querySelectorAll('.ai-checklist .ai-check-how').length === 1);
+    check('each line takes the direction of its text', lines.every(li => li.getAttribute('dir') === 'auto'));
+    check('the card line points at the card', where(3) === 'the card below · checked by LIBI', where(3));
+    check('the list says how many lines are missing', !!list && list.classList.contains('missing')
+      && list.querySelector('.ai-checklist-head').textContent === 'Your request, line by line: 1 of 4 lines is not in the logic', list && list.querySelector('.ai-checklist-head').textContent);
+    const add = [...chat.root.querySelectorAll('.ai-add')].pop();
+    check('a draft that misses a line is not saved on its own', add.textContent === `Add as NET ${panel.core.nets.length + 1} to the canvas`, add.textContent);
+    const savesBefore = saves.length;
+    add.click(); for (let i = 0; i < 4; i++) await tick();
+    check('adding it holds the save and says why', saves.length === savesBefore
+      && ([...chat.root.querySelectorAll('.ai-save')].pop()?.textContent || '').includes('Not saved: the draft does not do every line of your request'));
+    panel.core.nets.pop(); panel._projectDirty = false;
+    // Every line done: the list is not marked, and the draft is saved at once, as before.
+    responses['libi/ai_build'] = { ...responses['libi/ai_build'], checklist: [{ id: 'r1', text: 'Start at the time I set', kind: 'time', ok: true, rung: 1, how: '', missing: '' }] };
+    chat.draft = 'again'; await chat.send();
+    chat.root.querySelector('.ai-build').click(); await tick(); await tick(); await tick();
+    const done = [...chat.root.querySelectorAll('.ai-checklist')].pop();
+    check('a draft that does every line is not marked', !!done && !done.classList.contains('missing') && done.querySelector('.ai-checklist-head').textContent === 'Your request, line by line');
+    check('and it is saved at once', [...chat.root.querySelectorAll('.ai-add')].pop().textContent.endsWith('save and compile'));
+    // [v3.75.0] Two rungs of one trigger: Home Assistant runs only the first that holds - not saved on its own.
+    check('a draft with two rungs of one trigger is not saved on its own', chat._holdReason({ round_trip: { ok: true }, checklist: [], shared_rungs: ['start'] }).includes('two rungs start with the same trigger')
+      && chat._holdReason({ round_trip: { ok: true }, checklist: [], shared_rungs: [] }) === '' && chat._autoSaves({ round_trip: { ok: true }, checklist: [] }) === true);
+  }
+
+  // ---------------------------------------------------------------- LIBI's own questions (v3.80.0)
+  // The user: "things I would expect it to ask me - an enable button for the whole automation, what to do when the
+  // valve's battery runs out and it is offline, a message when the battery is almost empty".
+  {
+    chat._reset();
+    const SWITCH = 'input_boolean.garden_watering_enabled';
+    const role = { id: 'enabled', label: 'On/off switch', purpose: 'condition', domains: ['input_boolean'], device_classes: [],
+      keywords: [], area_keywords: [], optional: false, named: false };
+    const enable = (helper, candidates) => ({ id: 'libi_enable', libi: true, text: 'An on/off switch for the whole automation, on the card?',
+      note: 'Off stops it at once.', choices: ['Yes', 'No'], yes: ['Yes'], adds: { role, helper, candidates } });
+    const proposal = { role: 'enabled', domain: 'input_boolean', name: 'Garden watering - enabled', settings: { icon: 'mdi:power' } };
+    const offline = { id: 'libi_offline', libi: true, text: `What if ${XSS} is offline (unavailable) - its battery ran out, for example?`,
+      note: XSS, choices: ['Tell me, and do not start', 'Do not start, no message', 'Nothing'] };
+    const battery = { id: 'libi_battery', libi: true, text: 'A message when a battery is low? Now: valve_garden 87%.', note: '',
+      choices: ['Yes, below 20%', 'Yes, below 10%', 'No'] };
+    const planWith = (first) => ({ plan: { reply: 'Pick the valve.', intent: 'create', target_net: '', level: 'automation',
+      name: 'Garden watering', roles: [{ id: 'valve', label: 'Valve', purpose: 'target', domains: ['switch'], device_classes: [], keywords: [], area_keywords: [] }],
+      questions: [{ id: 'duration', text: 'How long?', choices: ['10 minutes'] }, first, offline, battery], new_helpers: [] },
+      candidates: { valve: { exact: true, items: [{ entity_id: 'switch.valve_garden_switch', name: 'valve_garden Switch', area: '', state: 'off' }] } },
+      preselect: {} });
+    responses['libi/ai_plan'] = planWith(enable(proposal, { items: [], exact: false }));
+    chat.draft = 'water the garden'; await chat.send();
+    const asks = chat.root.querySelector('.ai-libi-asks');
+    const qs = asks ? [...asks.querySelectorAll('.ai-libi-question')] : [];
+    check('LIBI asks its own questions in a box of their own', !!asks && asks.querySelector('.ai-role-head strong')?.textContent === 'LIBI asks'
+      && qs.map(q => q.dataset.question).join() === 'libi_enable,libi_offline,libi_battery', asks && asks.textContent);
+    check("the AI's own question stays outside it, with its free answer", !!asks && !asks.querySelector('[data-question="duration"]')
+      && !!chat.root.querySelector('[data-question="duration"] input.ai-filter'));
+    check("each of LIBI's questions is asked once, in that box", ['libi_enable', 'libi_offline', 'libi_battery'].every(id =>
+      chat.root.querySelectorAll(`[data-question="${id}"]`).length === 1 && !!asks.querySelector(`[data-question="${id}"]`)));
+    check("LIBI's questions take only LIBI's choices", qs.length === 3 && qs.every(q => !q.querySelector('input')) && qs[1].querySelectorAll('.ai-chip').length === 3);
+    check('a question says what its answer does, as text', qs[0]?.querySelector('.ai-q-note')?.textContent === 'Off stops it at once.'
+      && qs[1]?.querySelector('.ai-q-note')?.textContent === XSS && qs[1].querySelector('.ai-q-text').textContent.includes(XSS));
+    check('a question with no note shows none', !!qs[2] && !qs[2].querySelector('.ai-q-note'));
+    // The sidebar is narrow (320 px, and a phone's sheet not much wider): long words wrap, and the choices go onto a line
+    // of their own instead of out of the box.
+    const holder = chat.root.parentNode, wide = holder.style.width;
+    holder.style.width = '320px';
+    check('nothing in the box is wider than the sidebar', !!asks && asks.scrollWidth <= asks.clientWidth + 1
+      && asks.getBoundingClientRect().right <= holder.getBoundingClientRect().right + 1 && holder.getBoundingClientRect().width === 320,
+      asks && `${asks.scrollWidth} / ${asks.clientWidth} in ${holder.getBoundingClientRect().width}`);
+    holder.style.width = wide;
+    const buildBtn = () => chat.root.querySelector('.ai-build');
+    check("Build waits until LIBI's questions are answered, and says so", buildBtn().disabled === true
+      && chat.root.querySelector('.ai-unanswered')?.textContent === "Answer LIBI's 3 questions above to build." && buildBtn().title === "Answer LIBI's questions first", buildBtn().title);
+    const enabledRow = () => chat.root.querySelector('.ai-var[data-role="enabled"]');
+    check('the switch is not in the plan before a yes', !chat.plan.roles.some(r => r.id === 'enabled') && chat.newHelpers.length === 0 && !enabledRow());
+    const chip = (qid, text) => [...chat.root.querySelectorAll(`[data-question="${qid}"] .ai-chip`)].find(c => c.textContent === text);
+    chip('libi_enable', 'Yes').click();
+    check('a yes to the switch adds it to the local variables, new', chat.plan.roles.some(r => r.id === 'enabled' && r.optional === false)
+      && chat.newHelpers.length === 1 && chat.newHelpers[0].keep === true && !!enabledRow() && !!chat.root.querySelector('.ai-vars [data-role="enabled"]')
+      && enabledRow().querySelector('.ai-var-name')?.value === 'Garden watering - enabled');
+    check('its row waits for the new switch', enabledRow()?.querySelector('input[value="new"]')?.checked === true && !!chat.root.querySelector('.ai-vars-unset'));
+    check('the chosen answer is marked', chip('libi_enable', 'Yes').classList.contains('on') && !chip('libi_enable', 'No').classList.contains('on'));
+    chip('libi_enable', 'No').click();
+    check('a no takes them out again', !chat.plan.roles.some(r => r.id === 'enabled') && chat.newHelpers.length === 0
+      && !('enabled' in chat.selections) && !enabledRow());
+    chip('libi_enable', 'Yes').click();
+    chip('libi_offline', 'Tell me, and do not start').click();
+    chip('libi_battery', 'Yes, below 20%').click();
+    check('answered, Build still waits for the switch to be created', buildBtn().disabled === true && !chat.root.querySelector('.ai-unanswered')
+      && buildBtn().title === 'Pick: On/off switch', buildBtn().title);
+    responses['input_boolean/create'] = { id: 'garden_watering_enabled' };
+    panel._hass.states[SWITCH] = { entity_id: SWITCH, state: 'off', attributes: { friendly_name: 'Garden watering - enabled' } };
+    await chat.createHelpers();
+    const made = calls.filter(c => c.type === 'input_boolean/create').pop();
+    check('the switch is created with the name and the icon proposed', !!made && made.name === 'Garden watering - enabled' && made.icon === 'mdi:power', JSON.stringify(made));
+    check('and it is the pick of its role', !!chat.selections.enabled && chat.selections.enabled.has(SWITCH) && buildBtn().disabled === false);
+    // Made, then answered no: out of the logic and of the list; yes again picks the one made - nothing is made twice.
+    chip('libi_enable', 'No').click();
+    check('a no after it was made takes it out of the logic and of the list', !chat.plan.roles.some(r => r.id === 'enabled')
+      && !('enabled' in chat.selections) && !enabledRow());
+    chip('libi_enable', 'Yes').click();
+    check('yes again picks the switch made, and proposes none', !!chat.selections.enabled && chat.selections.enabled.has(SWITCH)
+      && chat.newHelpers.length === 1 && chat.newHelpers[0].created === SWITCH && !chat.root.querySelector('.ai-create-helpers'));
+    // The next plan finds the switch made (it exists and nothing uses it): a yes kept from before uses it, nothing is made
+    // twice - and a new one stays in reach, under a name of its own.
+    responses['libi/ai_plan'] = planWith(enable({ ...proposal, name: 'Garden watering - enabled (2)', pick: SWITCH },
+      { exact: true, items: [{ entity_id: SWITCH, name: 'Garden watering - enabled', area: '', state: 'off', exists: true }] }));
+    chat.draft = 'the same, at six'; await chat.send();
+    check('a new plan keeps the answers, and the yes uses the free switch', chat.answers.libi_enable === 'Yes' && chat.answers.libi_battery === 'Yes, below 20%'
+      && chat.plan.roles.some(r => r.id === 'enabled') && !!chat.selections.enabled && chat.selections.enabled.has(SWITCH)
+      && chat.newHelpers.filter(x => x.keep).length === 0 && buildBtn().disabled === false
+      && enabledRow()?.querySelector('.ai-var-pick')?.value === SWITCH && enabledRow().querySelector('.ai-var-name')?.value === 'Garden watering - enabled (2)',
+      JSON.stringify([...(chat.selections.enabled || [])]));
+    responses['libi/ai_build'] = { ok: false, errors: ['x'] };
+    buildBtn().click(); await tick(); await tick(); await tick();
+    const sent = calls.filter(c => c.type === 'libi/ai_build').pop();
+    check("the build gets LIBI's answers, the switch's role and its pick", sent.answers.libi_enable === 'Yes' && sent.answers.libi_offline === 'Tell me, and do not start'
+      && sent.answers.libi_battery === 'Yes, below 20%' && sent.plan.roles.some(r => r.id === 'enabled')
+      && JSON.stringify(sent.selections.enabled) === JSON.stringify([SWITCH]), JSON.stringify(sent.selections));
+    // A no after the switch was made: it is no longer in the logic, nor listed to create.
+    chat.draft = 'once more'; await chat.send();
+    chip('libi_enable', 'No').click();
+    check('a no after it was made leaves it out of the logic', !chat.plan.roles.some(r => r.id === 'enabled') && !('enabled' in chat.selections) && buildBtn().disabled === false);
+
+    // [v3.81.0] A message when it starts and when it ends, always asked; the phones LIBI offers for its own messages, when
+    // the plan has none, are optional and say so.
+    const message = (id, text) => ({ id, libi: true, text, note: 'It goes to the phones picked in this plan.',
+      choices: ['A notification', 'Spoken', 'Notification and spoken', 'No'] });
+    const offered = planWith(enable(proposal, { items: [], exact: false }));
+    offered.plan.questions.splice(2, 0, message('libi_start_message', 'A message when it starts - when it turns valve_garden on?'),
+      message('libi_end_message', 'A message when it ends - when valve_garden turns off, whatever turned it off?'));
+    offered.plan.roles.unshift({ id: 'phones_to_notify', label: 'Phones to notify', purpose: 'target', domains: ['notify'], device_classes: [],
+      keywords: [], area_keywords: [], optional: true, named: false, phones: true, offered: true });
+    offered.candidates.phones_to_notify = { exact: true, items: [{ entity_id: 'notify.sm_s918b', name: 'SM-S918B', area: '', state: 'unknown', owner: 'Guy' }] };
+    responses['libi/ai_plan'] = offered;
+    chat.draft = 'with messages'; await chat.send();
+    const phonesRole = [...chat.root.querySelectorAll('.ai-role')].find(r => r.querySelector('.ai-role-head strong')?.textContent === 'Phones to notify');
+    check('the phones LIBI offers say they are optional and where a message goes without one', !!phonesRole
+      && (phonesRole.querySelector('.ai-phones-offered')?.textContent || '').startsWith("Optional: the phones LIBI's own messages go to")
+      && !phonesRole.textContent.includes('The phones your message names are ticked') && !phonesRole.textContent.includes('A device of the NET you named'),
+      phonesRole && phonesRole.textContent);
+    check('none is ticked, and Build does not wait for one', chat.selections.phones_to_notify.size === 0);
+    const asked = [...chat.root.querySelectorAll('.ai-libi-asks .ai-libi-question')].map(q => q.dataset.question).join();
+    // [v3.83.0] A request whose point is a message, and no phone in it: the phones are offered, one to be ticked.
+    const asMessage = JSON.parse(JSON.stringify(offered));
+    asMessage.plan.roles[0] = { ...asMessage.plan.roles[0], optional: false, offered: false, for_message: true };
+    // Two phones: one alone would be ticked by itself, as one exact match is.
+    asMessage.candidates.phones_to_notify.items.push({ entity_id: 'notify.sm_s938b', name: 'SM-S938B', area: '', state: 'unknown', owner: 'Yulia' });
+    responses['libi/ai_plan'] = asMessage;
+    chat.draft = 'a spoken reminder'; await chat.send();
+    const phoneList = [...chat.root.querySelectorAll('.ai-role')].find(r => r.querySelector('.ai-role-head strong')?.textContent === 'Phones to notify');
+    check('the phones of a message say to tick one, and that a spoken one is read aloud', !!phoneList
+      && (phoneList.querySelector('.ai-phones-message')?.textContent || '') === 'Tick the phones the message goes to. A spoken message is read aloud by the phone - the Home Assistant app on Android.'
+      && !phoneList.textContent.includes('Optional:'), phoneList && phoneList.textContent);
+    check('and Build waits for one', chat.root.querySelector('.ai-build').disabled === true && chat.root.querySelector('.ai-build').title.includes('Phones to notify'),
+      chat.root.querySelector('.ai-build').title);
+    responses['libi/ai_plan'] = offered;
+    chat.draft = 'with messages again'; await chat.send();
+    check('LIBI asks for a message when it starts and when it ends, in its box, with four choices', [...chat.root.querySelectorAll('.ai-libi-asks .ai-libi-question')].map(q => q.dataset.question).join() === 'libi_enable,libi_start_message,libi_end_message,libi_offline,libi_battery'
+      && [...chat.root.querySelectorAll('[data-question="libi_start_message"] .ai-chip')].map(c => c.textContent).join('|') === 'A notification|Spoken|Notification and spoken|No', asked);
+  }
+
+  // ---------------------------------------------------------------- the zone chosen on the card (v3.84.0)
+  {
+    // [ADDED 2026-11-02, v3.84.0] The user's train reminder: the zone chosen on the dashboard card is a dropdown of the
+    // user's zones, a local variable like the time; who must be there is a list of its own.
+    const variable = (id, label, domains, extra = {}) => ({ id, label, purpose: 'condition', domains, device_classes: [],
+      keywords: [], area_keywords: [], variable: true, ...extra });
+    responses['libi/ai_plan'] = { plan: { reply: 'Pick who must be there.', intent: 'create', target_net: '', level: 'automation',
+      name: 'Train reminder', questions: [], requirements: [], alternatives: [],
+      roles: [{ id: 'who', label: 'Who must be there', purpose: 'condition', domains: ['device_tracker', 'person'], device_classes: [],
+                keywords: [], area_keywords: [] },
+              variable('selected_zone', 'The zone chosen', ['input_select'], { zone_choice: true }),
+              variable('reminder_time', 'Reminder time', ['input_datetime'], { purpose: 'trigger' })],
+      new_helpers: [{ role: 'selected_zone', domain: 'input_select', name: 'The zone chosen',
+                      settings: { icon: 'mdi:map-marker', options: ['home', 'Guy at work', 'Yulia in Lod'] } },
+                    { role: 'reminder_time', domain: 'input_datetime', name: 'Reminder time', settings: { has_time: true, has_date: false } }] },
+      candidates: { who: { exact: true, items: [{ entity_id: 'person.guy', name: 'Guy', area: '', state: 'home' },
+                                                { entity_id: 'person.yulia', name: 'Yulia', area: '', state: 'home' }] },
+                    selected_zone: { exact: false, items: [] }, reminder_time: { exact: false, items: [] } } };
+    chat._reset(); chat.draft = 'a spoken reminder at the zone I choose on the card'; await chat.send();
+    const zoneRow = chat.root.querySelector('.ai-var[data-role="selected_zone"]');
+    check('the zone chosen on the card says what it is', !!zoneRow
+      && (zoneRow.querySelector('.ai-zone-choice')?.textContent || '') === 'The zone is chosen on the dashboard card, from a list of your zones - "home" is your Home zone. Who must be there is in it when their state is the zone chosen. When you add or rename a zone later, change this list too, in the helper\'s settings (Settings ▸ Helpers).',
+      zoneRow && zoneRow.textContent);
+    check('it is a new dropdown of the zones, created with the others', zoneRow.querySelector('.ai-var-name')?.value === 'The zone chosen'
+      && zoneRow.textContent.includes('Dropdown · home / Guy at work / Yulia in Lod')
+      && chat.root.querySelector('.ai-create-helpers')?.textContent === 'Create the 2 new variables', zoneRow.textContent);
+    check('another variable says nothing of zones', !chat.root.querySelector('.ai-var[data-role="reminder_time"] .ai-zone-choice'));
+    check('who must be there is a list of its own, not a variable', !chat.root.querySelector('.ai-var[data-role="who"]')
+      && [...chat.root.querySelectorAll('.ai-role .ai-role-head strong')].some(s => s.textContent === 'Who must be there')
+      && !chat.root.querySelector('.ai-list[data-role="who"]')?.parentElement.textContent.includes('No exact match'));
+  }
+
+  // ---------------------------------------------------------------- the message box fits its text (v3.61.0)
+  {
+    // A sidebar of a fixed height, as in the panel: the chat fills it and the box takes its room from the log.
+    const bar = Object.assign(document.createElement('div'), { className: 'sidebar' });
+    bar.style.height = '600px';
+    const slot = bar.appendChild(Object.assign(document.createElement('div'), { className: 'ai-mount' }));
+    document.body.appendChild(bar);
+    chat._reset(); chat.attach(slot); chat.render(); await tick();
+    const box = () => chat.root.querySelector('.ai-input');
+    const type = (text) => { box().value = text; box().dispatchEvent(new Event('input')); };
+    const high = () => box().getBoundingClientRect().height;
+    const lines = (n) => Array.from({ length: n }, (_, i) => `line ${i + 1}: water the garden on the days I pick`).join('\n');
+    const empty = high();
+    check('an empty box is two lines high', empty >= 40 && empty < 70, empty);
+    type(lines(8));
+    const eight = high();
+    check('the box grows with what is written', eight > empty * 2, `${empty} -> ${eight}`);
+    check('all of it shows: nothing scrolls inside the box', box().scrollHeight <= box().clientHeight + 1 && getComputedStyle(box()).overflowY === 'hidden',
+      `${box().scrollHeight} / ${box().clientHeight}`);
+    check('what is typed is the draft', chat.draft === lines(8));
+    type(lines(80));
+    const body = chat.root.querySelector('.ai-body').clientHeight;
+    check('a very long text stops at half the chat and scrolls', Math.abs(high() - Math.floor(body / 2)) <= 1 && box().scrollHeight > box().clientHeight
+      && getComputedStyle(box()).overflowY === 'auto', `${high()} of ${body}`);
+    check('the conversation keeps the other half', chat.root.querySelector('.ai-log').clientHeight >= body / 2 - 70, `${chat.root.querySelector('.ai-log').clientHeight} of ${body}`);
+    type(lines(8)); chat.render(true);
+    check('a redraw keeps the box as tall as its text', Math.abs(high() - eight) <= 1, `${high()} vs ${eight}`);
+    const asked = calls.length;
+    box().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }));
+    check('Shift+Enter is a new line, not a send', calls.length === asked && chat.draft === lines(8));
+    // Sent: the box is empty and small again.
+    type('short');
+    await chat.send();
+    check('after sending the box is small again', Math.abs(high() - empty) <= 1, `${high()} vs ${empty}`);
+    bar.remove();
+
+    // A smaller sheet, as on a phone: the size watcher fits the box to the new room. A ResizeObserver reports at the
+    // next frame, and the runner's virtual time gives no frame here (measured: no requestAnimationFrame in 300 ms),
+    // so a chat is made with an observer the test holds, and its callback is called as the browser would call it.
+    const watchers = [], RealObserver = window.ResizeObserver;
+    window.ResizeObserver = class { constructor(cb) { this.cb = cb; watchers.push(this); } observe(el) { this.target = el; } };
+    let sized;
+    try { sized = new LibiAiChat(panel); } finally { window.ResizeObserver = RealObserver; }
+    check('the chat watches its own size', watchers.length === 1 && watchers[0].target === sized.root);
+    const sheet = Object.assign(document.createElement('div'), { className: 'sidebar' });
+    sheet.style.height = '600px';
+    const spot = sheet.appendChild(Object.assign(document.createElement('div'), { className: 'ai-mount' }));
+    document.body.appendChild(sheet);
+    sized.statusAsked = true; sized.attach(spot); sized.render();
+    const box2 = sized.root.querySelector('.ai-input');
+    box2.value = lines(80); box2.dispatchEvent(new Event('input'));
+    const before = box2.getBoundingClientRect().height;
+    sheet.style.height = '300px';
+    watchers[0].cb([]);
+    const room = sized.root.querySelector('.ai-body').clientHeight, after = box2.getBoundingClientRect().height;
+    check('a smaller chat fits the box to its new room', after < before && Math.abs(after - Math.max(120, Math.floor(room / 2))) <= 1,
+      `${before} -> ${after} of ${room}`);
+    sheet.style.height = '600px';
+    watchers[0].cb([]);
+    check('a taller chat lets the box grow again', Math.abs(box2.getBoundingClientRect().height - before) <= 1,
+      `${box2.getBoundingClientRect().height} vs ${before}`);
+    sheet.remove();
+  }
   check('no HTML injected anywhere', document.querySelectorAll('img').length === 0 && window.pwned === undefined);
 } catch (err) {
   results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });

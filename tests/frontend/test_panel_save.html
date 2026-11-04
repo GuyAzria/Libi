@@ -1,0 +1,231 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-04] Purpose: SAVE & COMPILE through Home Assistant's own config API - the HACS review - and
+  the user's rules: compile first, and save nothing when that does not hold, saying why; each change is a POST or a
+  DELETE of config/<domain>/config/<key>, in order, the first one Home Assistant refuses stopping the rest; LIBI is told
+  what reached Home Assistant. Leaving the editor with changes not saved asks Yes or No - closing the project, opening
+  another, leaving for another page of Home Assistant - and closing the browser tab warns. The editor's own marks are
+  no change.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi save test</title></head>
+<body style="margin:0; width:1280px; height:800px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const until = async (cond, ms = 3000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await sleep(10); return cond(); };
+const asked = [], told = [];
+let confirmAnswer = false;
+window.confirm = (q) => { asked.push(String(q)); return confirmAnswer; };
+window.alert = (m) => { told.push(String(m)); };
+window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const sent = [], api = [];
+let plan, saved, refuse;
+const reset = () => {
+  sent.length = 0; api.length = 0; asked.length = 0; told.length = 0; confirmAnswer = false; refuse = '';
+  plan = { ok: true, errors: [], unchanged: 0, stamp: '2026-11-04T05:00:00+00:00',
+    upserts: [{ domain: 'automation', key: 'a1', config: { id: 'a1', alias: 'Lamp' }, label: 'NET 1 "Lamp"' },
+              { domain: 'script', key: 'night', config: { alias: 'Night', sequence: [] }, label: 'NET 2 "Night"' }],
+    removals: [{ domain: 'scene', key: 'old' }] };
+  saved = { status: 'ok', saved: true, message: 'Saved. 1 automations, 1 scripts, 0 scenes in this project; 3 change(s) sent to Home Assistant.',
+    written: ['automation', 'scene', 'script'], reloaded: ['automation', 'scene', 'script'], errors: [], versions: {} };
+};
+const hass = {
+  states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+  // Home Assistant's own config API, as the panel calls it; a key in `refuse` is refused as an entry it does not accept.
+  callApi: async (method, path, body) => {
+    api.push([method, path, body === undefined ? null : JSON.parse(JSON.stringify(body))]);
+    if (refuse && path.endsWith('/' + refuse)) throw { error: 'Request error', status_code: 400, body: { message: 'Message malformed: bad trigger' } };
+    return { result: 'ok' };
+  },
+  connection: {
+    sendMessagePromise: async (m) => {
+      sent.push(JSON.parse(JSON.stringify(m)));
+      if (m.type === 'libi/ai_status') return { configured: false };
+      if (m.type === 'libi/project_list') return { projects: [] };
+      if (m.type === 'libi/compile_project') return JSON.parse(JSON.stringify(plan));
+      if (m.type === 'libi/save_done') return JSON.parse(JSON.stringify(saved));
+      if (m.type === 'libi/project_open') return { slug: m.slug, name: 'Q', nets: [], stats: {}, versions: {} };
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+const LAMP = { id: 'n1', ha_id: 'a1', name: 'Lamp', level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r1', comment: '', elements: [
+  { id: 'e1', type: 'contact_no', isTrigger: true, label: 'binary_sensor.door' },
+  { id: 'e2', type: 'coil_s', label: 'light.x' }] }] };
+
+try {
+  localStorage.clear();
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '800px';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await sleep(300);
+  const sr = panel.shadowRoot;
+  const core = panel.core;
+  const canvas = () => {
+    core.nets = [JSON.parse(JSON.stringify(LAMP))];
+    core.syncCounters(); core.repairAST(); core.validateAST();
+    panel._project = { slug: 'p', name: 'P' };
+    panel._markSaved();
+    panel._render();
+  };
+  const types = () => sent.map(m => m.type).filter(t => t.startsWith('libi/') && !t.startsWith('libi/ai') && t !== 'libi/project_list');
+  const answer = async (id) => {
+    await until(() => sr.querySelector(`.ask-answer[data-answer="${id}"]`));
+    sr.querySelector(`.ask-answer[data-answer="${id}"]`).click();
+  };
+  const edit = () => { core.nets[0].rungs[0].elements[1].label = 'light.y'; core.pushHistory(); panel._render(); };
+
+  // ---- Compile first: when it does not hold, nothing is saved, and why is said
+  reset(); canvas(); edit();
+  plan = { ok: false, errors: ['NET 1 "Lamp": Home Assistant does not accept it: bad trigger'], stamp: 's' };
+  let r = await panel._saveProject();
+  check('a compile that does not hold saves nothing', JSON.stringify(r.compileErrors) === JSON.stringify(plan.errors)
+        && api.length === 0 && JSON.stringify(types()) === '["libi/compile_project"]', JSON.stringify([r, types()]));
+  check('and says why, NET by NET', panel._saveResultText(r) === 'Not saved: the compile failed, so nothing was written.\n\n• NET 1 "Lamp": Home Assistant does not accept it: bad trigger',
+        panel._saveResultText(r));
+  check('the changes are still not saved', panel._hasUnsavedChanges(true) === true);
+  const sentNets = sent.find(m => m.type === 'libi/compile_project');
+  check('the compile is sent every NET of the project', sentNets.slug === 'p' && sentNets.name === 'P' && sentNets.nets.length === 1);
+  reset();
+  plan = { ok: false, errors: ['NET 1 "Lamp": Home Assistant does not accept it: bad trigger'], stamp: 's' };
+  panel._saveToBackend(); await until(() => told.length);
+  check('SAVE & COMPILE shows it', told[0].startsWith('Not saved: the compile failed, so nothing was written.'), told[0]);
+
+  // ---- Then each change through Home Assistant's config API, in order, and LIBI is told what reached it
+  reset(); canvas(); edit();
+  r = await panel._saveProject();
+  check('each change is a POST or a DELETE of Home Assistant\'s config API, in order', JSON.stringify(api) === JSON.stringify([
+        ['POST', 'config/automation/config/a1', { id: 'a1', alias: 'Lamp' }],
+        ['POST', 'config/script/config/night', { alias: 'Night', sequence: [] }],
+        ['DELETE', 'config/scene/config/old', null]]), JSON.stringify(api));
+  const done = sent.find(m => m.type === 'libi/save_done');
+  check('then LIBI is told what was done', JSON.stringify(types()) === '["libi/compile_project","libi/save_done"]' && JSON.stringify(done.done) === JSON.stringify([
+        { domain: 'automation', key: 'a1', op: 'upsert' }, { domain: 'script', key: 'night', op: 'upsert' }, { domain: 'scene', key: 'old', op: 'remove' }])
+        && done.failure === null && done.stamp === plan.stamp && done.slug === 'p' && done.nets.length === 1, JSON.stringify(done));
+  check('a save that went through is saved', r.complete === true && panel._hasUnsavedChanges(true) === false && !sr.querySelector('.project-chip .dirty'));
+
+  // ---- The first change Home Assistant refuses stops the rest
+  reset(); canvas(); edit();
+  refuse = 'night';
+  r = await panel._saveProject();
+  const stopped = sent.find(m => m.type === 'libi/save_done');
+  check('Home Assistant refusing a change stops the ones after it', api.length === 2 && api[1][1] === 'config/script/config/night', JSON.stringify(api));
+  check('and LIBI is told what was done, what was refused and why, and how many were not sent', JSON.stringify(stopped.done) === JSON.stringify([{ domain: 'automation', key: 'a1', op: 'upsert' }])
+        && JSON.stringify(stopped.failure) === JSON.stringify({ domain: 'script', key: 'night', op: 'upsert', label: 'NET 2 "Night"', message: 'Message malformed: bad trigger', not_sent: 1 }),
+        JSON.stringify(stopped));
+  check('a save Home Assistant refused part of is not complete, and its changes stay unsaved', r.complete === false && panel._hasUnsavedChanges(true) === true);
+
+  // ---- A panel newer than the LIBI Home Assistant runs says to restart it
+  reset(); canvas(); edit();
+  const realSend = hass.connection.sendMessagePromise;
+  hass.connection.sendMessagePromise = async (m) => {
+    if (m.type === 'libi/compile_project') { const e = new Error('Unknown command.'); e.code = 'unknown_command'; throw e; }
+    return realSend(m);
+  };
+  r = await panel._saveProject();
+  hass.connection.sendMessagePromise = realSend;
+  check('a Home Assistant not restarted after the update is told to restart, and nothing is sent', api.length === 0
+        && r.failed === 'LIBI was updated, but Home Assistant still runs the previous version. Restart Home Assistant (Settings ▸ System ▸ Restart), then try again.',
+        JSON.stringify(r));
+
+  // ---- Home Assistant's reason, as it answers
+  check('the reason of a refusal is the message Home Assistant answered with', panel._apiError({ body: { message: 'Resource not found' } }) === 'Resource not found'
+        && panel._apiError({ body: 'Bad gateway ' }) === 'Bad gateway' && panel._apiError(new Error('offline')) === 'offline');
+
+  // ---- What counts as a change
+  reset(); canvas();
+  core.nets[0].rungs[0].elements[0].structuralError = 'Missing Trigger';
+  core.nets[0].collapsed = true;
+  check('the editor\'s own marks, and a NET folded, are no change', panel._hasUnsavedChanges() === false);
+  core.nets[0].rungs[0].elements[0].structuralError = null; core.nets[0].collapsed = false;
+  edit();
+  check('a change of the logic is', panel._hasUnsavedChanges(true) === true && !!sr.querySelector('.project-chip .dirty'));
+
+  // ---- Closing the project with changes not saved: Yes or No
+  reset(); canvas(); edit();
+  let closing = panel._projectClose();
+  await until(() => sr.querySelector('.ask-modal'));
+  check('closing with changes not saved asks Yes or No', sr.querySelector('.ask-modal .modal-title').textContent === 'The changes were not saved'
+        && sr.querySelector('.ask-text').textContent === 'There are changes that are not saved in Home Assistant. Save them now?'
+        && [...sr.querySelectorAll('.ask-answer')].map(b => b.textContent).join() === 'Yes,No', sr.querySelector('.ask-modal').textContent);
+  await answer('no'); await closing;
+  check('No closes it without saving', panel._project === null && !types().includes('libi/compile_project') && !sr.querySelector('.ask-modal'), JSON.stringify(types()));
+
+  reset(); canvas(); edit();
+  closing = panel._projectClose();
+  await answer('yes'); await closing;
+  check('Yes saves it - SAVE & COMPILE - and then closes it', JSON.stringify(types()) === '["libi/compile_project","libi/save_done"]' && panel._project === null && told.length === 0,
+        JSON.stringify([types(), told]));
+
+  reset(); canvas(); edit();
+  plan = { ok: false, errors: ['NET 1 "Lamp": a rung that goes nowhere'], stamp: 's' };
+  closing = panel._projectClose();
+  await answer('yes'); await closing;
+  check('Yes when the compile does not hold says why, and stays', panel._project && panel._project.slug === 'p'
+        && told[0] === 'Not saved: the compile failed, so nothing was written.\n\n• NET 1 "Lamp": a rung that goes nowhere', JSON.stringify(told));
+
+  reset(); canvas();
+  await panel._projectClose();
+  check('nothing to save: it closes without asking', panel._project === null && !sr.querySelector('.ask-modal') && types().length === 0, JSON.stringify(types()));
+
+  // ---- Opening another project, or a new one, asks the same
+  reset(); canvas(); edit();
+  const opening = panel._projectOpen('q');
+  await until(() => sr.querySelector('.ask-modal'));
+  check('opening another project with changes not saved asks too', !!sr.querySelector('.ask-answer[data-answer="yes"]'));
+  await answer('no'); await opening;
+  check('No opens it, the changes left unsaved', types().includes('libi/project_open') && !types().includes('libi/compile_project')
+        && panel._project.slug === 'q' && panel._hasUnsavedChanges(true) === false, JSON.stringify(types()));
+  reset(); canvas(); edit();
+  const making = panel._projectCreate('New');
+  await until(() => sr.querySelector('.ask-modal'));
+  check('so does a new project', !!sr.querySelector('.ask-answer[data-answer="no"]'));
+  await answer('no'); await making;
+
+  // ---- Closing the browser tab with changes not saved: the browser warns
+  reset(); canvas(); edit();
+  let unload = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(unload);
+  check('closing the tab with changes not saved warns', unload.defaultPrevented === true);
+  canvas();
+  unload = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(unload);
+  check('with nothing to save it does not', unload.defaultPrevented === false);
+
+  // ---- Leaving for another page of Home Assistant with changes not saved
+  reset(); canvas(); edit();
+  confirmAnswer = true;
+  panel.remove();
+  await until(() => types().includes('libi/save_done'));
+  check('leaving the editor with changes not saved asks, OK being Yes', asked[0] === 'LIBI: the changes were not saved. Save them now?\n\nOK saves them (SAVE & COMPILE). Cancel leaves them unsaved.', JSON.stringify(asked));
+  check('and Yes saves them', JSON.stringify(types()) === '["libi/compile_project","libi/save_done"]' && api.length === 3, JSON.stringify(types()));
+  // A panel that is only moved in the page is back at once, and asks nothing.
+  reset();
+  document.body.appendChild(panel); await sleep(50);
+  canvas(); edit();
+  panel.remove(); document.body.appendChild(panel); await sleep(50);
+  check('a panel moved in the page asks nothing', asked.length === 0 && !types().includes('libi/compile_project'), JSON.stringify(asked));
+  // No: nothing is saved.
+  reset();
+  panel.remove(); await sleep(50);
+  check('Cancel leaves without saving', asked.length === 1 && !types().includes('libi/compile_project'), JSON.stringify([asked, types()]));
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

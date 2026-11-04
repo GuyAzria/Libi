@@ -22,8 +22,13 @@ Where the two differ, this file is the authority for LIBI.
   (IEC 61131-3 LD) editor for Home Assistant automations.
 - It READS the user's existing `automations.yaml`, `scripts.yaml` and
   `scenes.yaml`, converts them to ladder (`yaml_to_libi.py`), lets the user
-  edit, converts back (`libi_to_yaml.py`) and WRITES those same files, then
-  calls the matching `reload` service (`websocket.py`).
+  edit and converts back (`libi_to_yaml.py`). Since 3.85.0 (the HACS review of
+  2026-11-03) LIBI's Python never writes those files: `libi/compile_project`
+  compiles, checks and plans (writes nothing), the PANEL sends each change to
+  Home Assistant's own config API (`config/<domain>/config/<key>`, POST to
+  save, DELETE to remove - Home Assistant validates, writes and reloads), and
+  `libi/save_done` reads back what reached the files, records it in the
+  project and waits for each reload (`websocket.py`).
 - Projects (groups of nets) are stored as JSON under the Home Assistant config
   folder (`PROJECT_DIR_NAME`), and the parsed tree in `libi_ast.json`.
 - Frontend: `custom_components/libi/frontend/` - `libi-panel.js`,
@@ -208,9 +213,10 @@ skipping the test, and say plainly when a behavioural test was not run.
 
 # RULE 5 — THE USER'S AUTOMATIONS ARE SACRED
 
-LIBI writes into the same `automations.yaml`, `scripts.yaml` and
-`scenes.yaml` that the Home Assistant editor uses. A defect here does not lose
-a record - it silently changes what the user's house DOES.
+LIBI saves into the same `automations.yaml`, `scripts.yaml` and
+`scenes.yaml` that the Home Assistant editor uses - since 3.85.0 through that
+editor's own config API, never by writing the files itself. A defect here does
+not lose a record - it silently changes what the user's house DOES.
 
 Never:
 
@@ -327,7 +333,8 @@ FAIL CLOSED.
 Never perform blocking I/O directly inside async Home Assistant code: no
 `open()`, `os.path.exists()`, `os.remove()`, `shutil` calls, or blocking
 network calls on the event loop. Use `hass.async_add_executor_job` (already
-used in `websocket.py` for every read and write, under `_FILE_LOCK`). The
+used in `websocket.py` for every read and every write of LIBI's own files,
+under `_FILE_LOCK`). The
 gate reports any offender. Exception, by necessity: the importer
 (`yaml_to_ast`) reads Home Assistant's registries, which are not safe from an
 executor thread, so it runs on the event loop and the file it needs is read in
@@ -562,6 +569,13 @@ This is RULE 5 at the code level.
 - Feature detection in the Android companion webview is unreliable: when a
   check hides a feature that works on the common platform, render the control
   and make the call a safe no-op.
+- Home Assistant serves a LEGACY build to browsers its `isModern` test (in its
+  index.html) does not pass: Samsung Internet up to 27, Chrome, Edge or an
+  Android WebView older than 131, Safari older than 18.1. That build loads only
+  the scripts registered with `frontend.add_extra_js_url(..., es5=True)`, as
+  classic scripts. A dashboard element (`libi-days-row`) is registered for both
+  builds, and its file keeps its names in a block of its own (2026-11-04: the
+  user's card said "Configuration error" without it).
 - No external assets, ever (RULE 16).
 
 # RULE 33c — TRANSLATION FILE ROLES
@@ -609,9 +623,10 @@ Never report a clean result when validation was not actually performed.
 
 # RULE 35 — RELEASING
 
-LIBI is a HACS CUSTOM repository: users add
-`https://github.com/GuyAzria/Libi` under HACS ▸ Custom repositories. Write
-installation docs that way.
+LIBI is submitted to the HACS default store (2026-11): the installation docs
+lead with searching for LIBI in HACS, and keep adding
+`https://github.com/GuyAzria/Libi` under HACS ▸ Custom repositories as the
+way in until LIBI is listed (the review asked for that, 2026-11-03).
 
 Because `hacs.json` has `"zip_release": true`, **every GitHub Release must
 carry a `libi.zip` asset** containing the integration, or HACS cannot install

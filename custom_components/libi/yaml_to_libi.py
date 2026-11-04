@@ -11,8 +11,11 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.40.0 | 2026-10-27] Purpose: Copies of automation-level conditions are marked baseCond.
-# [ADDED v3.37.0 | 2026-10-26] Purpose: The registry imports moved to the top of the module.
+# [ADDED v3.72.0 | 2026-10-29] Purpose: A trigger that has to hold for a while ("for") starts its rung with the TON of
+#   that for right after it (_trigger_unit), the way a ladder says "on for 30 minutes"; the rung's sentence says
+#   "for" there instead of "then wait".
+# [ADDED v3.76.0 | 2026-10-31] Purpose: CMP DAY can read the days from an 8-bit helper (bit 1 Sunday ... bit 7
+#   Saturday): the template DAY_BITS_TEMPLATE is drawn as CMP DAY = that helper (day_bits_entity).
 # [ADDED v1.69.0] Backend parser updated to correctly map native device/state triggers into isTrigger=True Contacts and CMPs without using proprietary blocks.
 # [ADDED v3.6.0 | 2026-08-24] Purpose: Three rules that the import now keeps without exception.
 #   1. No pin is ever left empty and no registry id is ever shown. Every target is resolved through
@@ -29,6 +32,7 @@
 #   4. and / or / not become series / parallel branches / inverted contacts.
 #   5. Nothing is ever dumped as JSON into an element. Anything the ladder cannot express becomes a
 #      NATIVE block that shows a service name and a target only, and keeps its original node in raw.
+import copy
 import logging
 import re
 
@@ -40,13 +44,38 @@ from homeassistant.helpers import label_registry as lr
 
 from .tpl_part import parse_template, label_of, text_of, CMP_OPS, MATH_OPS as TPL_MATH_OPS
 
+# [ADDED v3.76.0] The days of the week an 8-bit helper holds - the user's design (2026-10-31): bit 1 (1) is Sunday, bit 2
+# (2) Monday ... bit 7 (64) Saturday. A CMP DAY that reads a helper is this one template, written exactly so; the card
+# shows the bits as checkboxes (frontend/libi-days-row.js). Home Assistant's time condition takes fixed days only.
+DAY_BITS_DOMAINS = ("input_number", "number")
+DAY_BITS_TEMPLATE = "{{{{ states('{entity}') | int(0) | bitwise_and(2 ** ((now().weekday() + 1) % 7)) > 0 }}}}"
+_DAY_BITS_RE = re.compile(r"\{\{ states\('((?:input_number|number)\.[a-z0-9_]+)'\) \| int\(0\) \| bitwise_and\(2 \*\* "
+                          r"\(\(now\(\)\.weekday\(\) \+ 1\) % 7\)\) > 0 \}\}")
+
+
+def day_bits_template(entity: str) -> str:
+    """[ADDED v3.76.0] The condition template of CMP DAY = an 8-bit helper."""
+    return DAY_BITS_TEMPLATE.format(entity=entity)
+
+
+def day_bits_entity(template) -> str:
+    """[ADDED v3.76.0] The helper a template reads the days of the week from, as DAY_BITS_TEMPLATE writes it; ''
+    for any other template, which stays a template block."""
+    m = _DAY_BITS_RE.fullmatch(str(template or "").strip())
+    return m.group(1) if m else ""
+
 _LOGGER = logging.getLogger(__name__)
 
 # Domains whose state is boolean, so they are drawn as a contact instead of a comparison block.
 BOOLEAN_DOMAINS = {
     "binary_sensor", "input_boolean", "switch", "light", "fan", "automation", "script",
-    "schedule", "remote", "siren", "lock", "cover", "person_home", "group", "media_player_bool",
+    "remote", "siren", "lock", "cover", "person_home", "group", "media_player_bool",
 }
+# [CHANGED v3.70.0] Domains that are on or off by the clock, drawn as a comparison block and never as a contact. A
+# schedule is a weekly calendar: the user's ladder compares times and days with CMP blocks (CMP TIME, CMP DAY), so a
+# schedule is CMP DATETIME - the date and time = schedule.x while it is on (_clock_element) - and never a block of
+# its own.
+COMPARED_DOMAINS = {"schedule"}
 BOOL_STATES = {"on", "off", "true", "false", "home", "not_home", "open", "closed", "locked", "unlocked"}
 ON_STATES = {"on", "true", "home", "open", "unlocked"}
 
@@ -439,9 +468,18 @@ def is_boolean_state(entity_id, state):
     if isinstance(state, (list, tuple)):
         return False
     st = str(state).lower()
-    if st not in BOOL_STATES:
+    if st not in BOOL_STATES or domain_of(entity_id) in COMPARED_DOMAINS:
         return False
     return domain_of(entity_id) in BOOLEAN_DOMAINS or st in ("on", "off")
+
+
+def _clock_element(ids, ent, state):
+    """[ADDED v3.70.0] A schedule on is CMP DATETIME = schedule, off is CMP DATETIME with cmp_ne: the clock is inside
+    the spans the user marked in it, or outside them. None for any other entity or state, so the caller draws it."""
+    st = state.lower() if isinstance(state, str) else ""
+    if domain_of(ent) not in COMPARED_DOMAINS or st not in ("on", "off"):
+        return None
+    return _el(ids, "cmp_eq" if st == "on" else "cmp_ne", sourceA="datetime", sourceB=ent)
 
 
 SIG_FIELDS = ("type", "label", "sourceA", "sourceB", "sourceC", "target", "source", "mode", "title",
@@ -463,7 +501,8 @@ def stamp_sigs(elements):
             stamp_sigs(el.get("sequence", []))
         # Every piece of a decomposed template or time window is fingerprinted too, so the group can
         # tell whether the user edited any part of it before deciding to reuse the original text.
-        if isinstance(el.get("raw"), dict) or el.get("tplId") or el.get("timeId"):
+        # [CHANGED v3.68.0] So is the TON of a wait's time limit, which has no node of its own.
+        if isinstance(el.get("raw"), dict) or el.get("tplId") or el.get("timeId") or el.get("waitTimeout"):
             el["sig"] = element_sig(el)
 
 
@@ -640,6 +679,9 @@ def _trigger_to_element(t, ids, src):
     elif kind == "state":
         to_state = t.get("to")
         from_state = t.get("from")
+        # [CHANGED v3.70.0] A list of one state is that state, as in a condition (v3.28.0): to [on] is a contact.
+        if isinstance(to_state, list) and len(to_state) == 1:
+            to_state = to_state[0]
         if to_state is None and from_state is None:
             el = _el(ids, "contact_p", label=ent)
         elif isinstance(to_state, list):
@@ -647,7 +689,7 @@ def _trigger_to_element(t, ids, src):
         elif is_boolean_state(ent, to_state):
             el = _el(ids, "contact_no" if str(to_state).lower() in ON_STATES else "contact_nc", label=ent)
         else:
-            el = _el(ids, "cmp_eq", sourceA=ent, sourceB=to_state)
+            el = _clock_element(ids, ent, to_state) or _el(ids, "cmp_eq", sourceA=ent, sourceB=to_state)
 
     elif kind == "numeric_state":
         el = _numeric_element(ids, ent, t.get("above"), t.get("below"), src)
@@ -857,7 +899,9 @@ def _recent_to_elements(tpl_text, ids, src, raw_node):
     kind = "contact_no" if str(state).lower() in ON_STATES else "contact_nc"
     contact = _el(ids, kind, label=entity, raw=raw_node, src=src)
     contact["recentState"] = state
-    tof = _el(ids, "timer_tof", label=seconds_to_hms(seconds), src=src)
+    # [CHANGED v3.68.0] timer_toff, the TOF of the palette. timer_tof was a type of its own that the palette did
+    # not know, so picking TOF on it turned the window into a state check and a delay.
+    tof = _el(ids, "timer_toff", label=seconds_to_hms(seconds), src=src)
     tof["isRecent"] = True
     return [contact, tof]
 
@@ -901,15 +945,28 @@ def _invert(el):
     return None
 
 
+def is_template_duration(value):
+    """[ADDED v3.58.0] A duration Home Assistant works out when the automation runs: a template, or a
+    mapping with a template in one of its parts ({"minutes": "{{ states('input_number.x') }}"})."""
+    if isinstance(value, dict):
+        return any(is_template_duration(v) for v in value.values())
+    return isinstance(value, str) and ("{{" in value or "{%" in value)
+
+
 def for_to_hms(value):
     """[ADDED v3.27.0] The for of a condition or a trigger, as hh:mm:ss. It arrives either as a
-    mapping of hours, minutes and seconds or already as a string."""
+    mapping of hours, minutes and seconds or already as a string.
+    [CHANGED v3.58.0] Also the duration of a delay. A part that is no number (a template) used to stop
+    the whole import; it is shown as written instead, since there is no fixed time to draw."""
     if isinstance(value, dict):
-        h = int(value.get("hours") or 0)
-        m = int(value.get("minutes") or 0)
-        s = int(value.get("seconds") or 0)
-        if value.get("milliseconds"):
-            s += int(int(value["milliseconds"]) / 1000)
+        try:
+            h = int(value.get("hours") or 0)
+            m = int(value.get("minutes") or 0)
+            s = int(value.get("seconds") or 0)
+            if value.get("milliseconds"):
+                s += int(int(value["milliseconds"]) / 1000)
+        except (TypeError, ValueError):
+            return short(", ".join(f"{k} {v}" for k, v in value.items()), 60)
         return f"{h:02d}:{m:02d}:{s:02d}"
     text = str(value or "").strip()
     if not text:
@@ -919,8 +976,14 @@ def for_to_hms(value):
         try:
             return f"{int(parts[0]):02d}:{int(parts[1]):02d}:{int(float(parts[2])):02d}"
         except (TypeError, ValueError):
-            return text
-    return text
+            return short(text, 60)
+    return short(text, 60)
+
+
+def duration_label(value):
+    """[ADDED v3.68.0] What a TON shows for a delay or for a wait's time limit: hh:mm:ss for a mapping,
+    otherwise the value as it was written (a time, a number of seconds or a template)."""
+    return for_to_hms(value) if isinstance(value, dict) else str(value)
 
 
 def _for_seconds(value):
@@ -939,13 +1002,18 @@ def _attach_for_timer(els, ids, node, src):
     to, so the way back knows it is that condition's for and not a delay of its own."""
     if not els:
         return els
-    seconds = _for_seconds((node or {}).get("for"))
-    if seconds <= 0:
+    value = (node or {}).get("for")
+    # [CHANGED v3.58.0] A template has no seconds to count, and was left undrawn - so the way back,
+    # which writes no for when there is no timer, dropped it.
+    if _for_seconds(value) <= 0 and not is_template_duration(value):
         return els
-    ton = _el(ids, "timer_ton", label=for_to_hms(node.get("for")), src=src)
+    ton = _el(ids, "timer_ton", label=for_to_hms(value), src=src)
     # The element ids are handed out again when the net is assembled, so the link is the position:
     # this timer belongs to whatever sits immediately before it. isFor is what says so.
     ton["isFor"] = True
+    # [ADDED v3.58.0] The for as it was written: the label is only hh:mm:ss (or a shortened template), so
+    # the way back takes this while the label is unchanged, and the user's YAML keeps its shape.
+    ton["forValue"] = copy.deepcopy(value)
     return els + [ton]
 
 
@@ -1034,7 +1102,7 @@ def _condition_to_elements_inner(c, ids, trig_map, src, parallel_ids=None):
         elif is_boolean_state(ent, st):
             el = _el(ids, "contact_no" if str(st).lower() in ON_STATES else "contact_nc", label=ent)
         else:
-            el = _el(ids, "cmp_eq", sourceA=ent, sourceB=st)
+            el = _clock_element(ids, ent, st) or _el(ids, "cmp_eq", sourceA=ent, sourceB=st)
         el["raw"] = c
         el["src"] = src
         return [el]
@@ -1051,6 +1119,10 @@ def _condition_to_elements_inner(c, ids, trig_map, src, parallel_ids=None):
         return [el]
 
     if ctype == "template":
+        # [ADDED v3.76.0] The days an 8-bit helper holds: CMP DAY = that helper.
+        bits = day_bits_entity(c.get("value_template"))
+        if bits:
+            return [_el(ids, "cmp_eq", sourceA="weekday", sourceB=bits, kind="date", raw=c, src=src)]
         recent = _recent_to_elements(c.get("value_template", ""), ids, src, c)
         if recent:
             return recent
@@ -1129,6 +1201,48 @@ def _notify_payload(node):
     return message, title, tts, stream, is_tts, data
 
 
+# [ADDED v3.68.0] A wait for trigger goes on at the moment the thing changes, so a contact drawn for it is the
+# edge contact of the same kind: |P| for a change to on, |N| for a change to off.
+WAIT_EDGE = {"contact_no": "contact_p", "contact_nc": "contact_n"}
+
+
+def wait_parts(el):
+    """[ADDED v3.68.0] The branches of a wait as they are drawn: what it waits for, one block each, and the TON
+    of its time limit. A wait for one thing is that one block."""
+    return [[el]] if el.get("waitOne") else list(el.get("branches") or [])
+
+
+def _wait_to_element(a, ids, src):
+    """[ADDED v3.68.0] A wait for trigger, drawn with the user's own blocks. Each trigger it waits for is the
+    contact or CMP it is at the head of a rung; several are a closed PARALLEL, one branch each, since any one of
+    them lets the run go on; a time limit is one more branch, a TON with the limit as its preset. The block that
+    stands for the wait carries the node (waitFor) and the shape it was drawn in (waitShape), so the way back
+    can tell an untouched wait from an edited one."""
+    wt = a.get("wait_for_trigger")
+    branches = []
+    for i, t in enumerate(wt if isinstance(wt, list) else [wt]):
+        if not isinstance(t, dict):
+            continue
+        el = _trigger_to_element(t, ids, f"{src}.wait_for_trigger[{i}]")
+        el["isTrigger"] = False  # it lets the run go on, it does not start the automation
+        el.pop("trigId", None)
+        el["type"] = WAIT_EDGE.get(el["type"], el["type"])
+        branches.append([el])
+    if a.get("timeout") not in (None, ""):
+        ton = _el(ids, "timer_ton", label=duration_label(a["timeout"]), src=src)
+        ton["waitTimeout"] = True
+        branches.append([ton])
+    if len(branches) == 1:
+        root = branches[0][0]
+        root["waitOne"] = True
+    else:
+        root = _el(ids, "parallel", branches=branches or [[], []], closed=True, src=src)
+        root.pop("isTrigger", None)
+    root["waitFor"] = a
+    root["waitShape"] = [len(b) for b in wait_parts(root)]
+    return root
+
+
 def _action_to_elements(a, ids, trig_map, src):
     """Returns a list of elements. Structural actions expand into ladder structure, never into JSON."""
     if not isinstance(a, dict):
@@ -1138,22 +1252,7 @@ def _action_to_elements(a, ids, trig_map, src):
     if "repeat" in a:
         rep = a["repeat"] or {}
         el = _el(ids, "repeat", sequence=[], raw=a, src=src)
-        if "count" in rep:
-            el["loopType"] = "count"
-            el["value"] = str(rep.get("count"))
-        elif "for_each" in rep:
-            el["loopType"] = "for_each"
-            fe = rep.get("for_each")
-            el["value"] = ", ".join(str(x) for x in fe) if isinstance(fe, list) else str(fe)
-        elif "while" in rep:
-            el["loopType"] = "while"
-            el["value"] = short(_first_template(rep.get("while")), 40)
-        elif "until" in rep:
-            el["loopType"] = "until"
-            el["value"] = short(_first_template(rep.get("until")), 40)
-        else:
-            el["loopType"] = "count"
-            el["value"] = "1"
+        el["loopType"], el["value"] = repeat_loop(rep)
         seq = []
         for i, child in enumerate(rep.get("sequence", []) or []):
             seq.extend(_action_to_elements(child, ids, trig_map, f"{src}.repeat[{i}]"))
@@ -1183,24 +1282,12 @@ def _action_to_elements(a, ids, trig_map, src):
 
     if "delay" in a:
         d = a["delay"]
-        if isinstance(d, dict):
-            label = "%02d:%02d:%02d" % (int(d.get("hours", 0)), int(d.get("minutes", 0)), int(d.get("seconds", 0)))
-        else:
-            label = str(d)
-        return [_el(ids, "timer_ton", label=label, raw=a, src=src)]
+        # [CHANGED v3.58.0] for_to_hms, which also takes a template: int() of one stopped the import.
+        return [_el(ids, "timer_ton", label=duration_label(d), raw=a, src=src)]
 
     if "wait_for_trigger" in a:
-        wt = a["wait_for_trigger"]
-        first = wt[0] if isinstance(wt, list) and wt else wt
-        if isinstance(first, dict) and norm_kind(first) == "state":
-            ent = norm_entity(first)
-            to_state = str(first.get("to", "")).lower()
-            if to_state in ON_STATES:
-                return [_el(ids, "contact_p", label=ent, raw=a, src=src)]
-            if to_state:
-                return [_el(ids, "contact_n", label=ent, raw=a, src=src)]
-            return [_el(ids, "wait", label=ent, raw=a, src=src)]
-        return [_el(ids, "wait", label=short(norm_entity(first) or "trigger", 30), raw=a, src=src)]
+        # [CHANGED v3.68.0] Drawn with what it waits for. There is no WAIT block in the ladder.
+        return [_wait_to_element(a, ids, src)]
 
     if "wait_template" in a:
         return template_to_elements(a.get("wait_template", ""), ids, src, a)
@@ -1351,6 +1438,23 @@ def _mark_from_action(elements):
     return elements
 
 
+def repeat_loop(rep):
+    """[ADDED v3.57.0] (loopType, value) a REPEAT block shows for a repeat node. The value is a summary for
+    the eye (a while template is shortened), so the compiler compares against it and keeps the node's own
+    loop when the user did not change it."""
+    rep = rep if isinstance(rep, dict) else {}
+    if "count" in rep:
+        return "count", str(rep.get("count"))
+    if "for_each" in rep:
+        fe = rep.get("for_each")
+        return "for_each", ", ".join(str(x) for x in fe) if isinstance(fe, list) else str(fe)
+    if "while" in rep:
+        return "while", short(_first_template(rep.get("while")), 40)
+    if "until" in rep:
+        return "until", short(_first_template(rep.get("until")), 40)
+    return "count", "1"
+
+
 def _first_template(cond_list):
     if isinstance(cond_list, list):
         for c in cond_list:
@@ -1377,9 +1481,29 @@ def friendly(value):
     return text.replace("_", " ").strip() or "it"
 
 
+def _describe_wait(el, calc):
+    """[ADDED v3.68.0] wait until the meter is above the litres or the valve switches off, for at most 00:30:00"""
+    parts, limit = [], ""
+    for branch in wait_parts(el):
+        for x in branch:
+            if x.get("waitTimeout"):
+                limit = str(x.get("label", ""))
+                continue
+            text = _describe_el({k: v for k, v in x.items() if k != "waitFor"}, False, calc)
+            if text:
+                parts.append(text)
+    text = "wait until " + " or ".join(parts) if parts else "wait"
+    if limit:
+        stops = el["waitFor"].get("continue_on_timeout") is False
+        text += f", stopping after {limit}" if stops else f", for at most {limit}"
+    return text
+
+
 def _describe_el(el, as_trigger=False, calc=None):
     calc = calc if calc is not None else {}
     t = el.get("type", "")
+    if isinstance(el.get("waitFor"), dict):
+        return _describe_wait(el, calc)
     if t == "parallel":
         parts = []
         for b in el.get("branches", []):
@@ -1420,11 +1544,19 @@ def _describe_el(el, as_trigger=False, calc=None):
         return f"{a} is above {b}" if str(el.get("sourceA")) != "time" else f"the time is after {b}"
     if t in ("cmp_lt", "cmp_le"):
         return f"{a} is below {b}" if str(el.get("sourceA")) != "time" else f"the time is before {b}"
+    if t in ("cmp_eq", "cmp_ne") and str(el.get("sourceA")) == "datetime" and domain_of(b) in COMPARED_DOMAINS:
+        # [ADDED v3.70.0] CMP DATETIME against a schedule: it starts and ends by the clock.
+        if as_trigger:
+            return f"the schedule {friendly(b)} {'starts' if t == 'cmp_eq' else 'ends'}"
+        return f"the time is {'inside' if t == 'cmp_eq' else 'outside'} the schedule {friendly(b)}"
     if t == "cmp_eq":
         src = str(el.get("sourceA"))
         if src == "time":
             return f"the time is {friendly(b)}"
         if src == "weekday":
+            # [ADDED v3.76.0] The days an 8-bit helper holds.
+            if domain_of(b) in DAY_BITS_DOMAINS:
+                return f"the day is ticked in {friendly(b)}"
             return f"the day is {b}"
         if src == "datetime":
             return f"the date and time is {friendly(b)}"
@@ -1461,10 +1593,8 @@ def _describe_el(el, as_trigger=False, calc=None):
         return f"send a notification to {friendly(el.get('target'))}"
     if t == "ctu":
         return f"count up {friendly(el.get('source'))}"
-    if t in ("timer_ton", "timer_toff"):
+    if t in ("timer_ton", "timer_toff") and not el.get("isRecent"):
         return f"wait {el.get('label', '')}"
-    if t == "wait":
-        return f"wait for {lbl}"
     if t == "repeat":
         inner = ", ".join(x for x in (_describe_el(e, False, calc) for e in el.get("sequence", [])) if x)
         return f"repeat {el.get('value', '')} times ({inner})" if inner else f"repeat {el.get('value', '')} times"
@@ -1492,16 +1622,22 @@ def describe_rung(elements):
                     collect_calc(b)
     collect_calc(elements)
 
+    said = None
     for el in elements:
         t = el.get("type", "")
-        is_cond = t.startswith("contact_") or t.startswith("cmp_") or (
+        # [CHANGED v3.68.0] A wait is drawn with contacts and CMP blocks too, but it is a step, not a condition.
+        is_cond = not el.get("waitFor") and (t.startswith("contact_") or t.startswith("cmp_") or (
             t == "parallel" and all(x.get("type", "").startswith(("contact_", "cmp_", "math_"))
-                                    for b in el.get("branches", []) for x in b))
+                                    for b in el.get("branches", []) for x in b)))
         if not in_actions and (el.get("isTrigger") or is_cond):
             text = _describe_el(el, bool(el.get("isTrigger")), calc)
             if not text:
                 continue
-            (triggers if el.get("isTrigger") or _has_trigger([el]) else conditions).append(text)
+            said = triggers if el.get("isTrigger") or _has_trigger([el]) else conditions
+            said.append(text)
+        elif not in_actions and el.get("isFor") and said:
+            # [ADDED v3.72.0] The TON of a for belongs to the trigger or the check right before it.
+            said[-1] += f" for {el.get('label', '')}"
         else:
             in_actions = True
             text = _describe_el(el, False, calc)
@@ -1535,14 +1671,25 @@ def _has_trigger(elements):
     return False
 
 
+def _trigger_unit(el, ids):
+    """[ADDED v3.72.0] A trigger as it starts a rung: the trigger, and the TON of its for right after it when it has to
+    hold for a while - how a ladder says "on for 30 minutes". forTimer on the trigger says the TON is its for, so
+    the compiler writes the for the TON says, and none when the TON was taken away."""
+    unit = _attach_for_timer([el], ids, el.get("raw") if isinstance(el.get("raw"), dict) else {}, el.get("src", ""))
+    if len(unit) > 1:
+        el["forTimer"] = True
+    return unit
+
+
 def _trigger_group(elements, ids):
-    """Triggers are an OR, so more than one becomes a closed parallel block, never a series."""
+    """Triggers are an OR, so more than one becomes a closed parallel block, never a series.
+    [CHANGED v3.72.0] Each trigger with the TON of its for."""
     if not elements:
         return []
-    if len(elements) == 1:
-        return [elements[0]]
-    branches = [[e] for e in elements]
-    par = _el(ids, "parallel", branches=branches, closed=True)
+    units = [_trigger_unit(e, ids) for e in elements]
+    if len(units) == 1:
+        return units[0]
+    par = _el(ids, "parallel", branches=units, closed=True)
     par.pop("isTrigger", None)
     return [par]
 
@@ -1659,13 +1806,24 @@ def yaml_to_ast(hass, automation_dict):
     segment_src = []
     group_no = 0
 
+    def auto_head():
+        """[ADDED v3.71.0] The automation's triggers at the head of a rung that names none of its own, and whether the
+        rung hangs from them instead: right below a rung that starts with them, or hangs from them, they are not
+        drawn again (sharesHead). The compiler gives a hanging rung the trigger back (expand_shared_heads)."""
+        above = rungs[-1] if rungs else None
+        if above and (above.get("sharesHead") or (above["elements"] and above["elements"][0].get("autoGate"))):
+            return [], True
+        return _clone_group(_trigger_group(trigger_elements, ids), ids, auto=True), False
+
     def flush_segment():
         if not segment:
             return
-        elements = _clone_group(_trigger_group(trigger_elements, ids), ids, auto=True)
+        elements, hang = auto_head()
         elements += _clone_group(base_conditions, ids, base=True)
         elements += segment
         rungs.append({"id": r_ids.next(), "comment": "", "elements": elements})
+        if hang:
+            rungs[-1]["sharesHead"] = True
 
     for i, a in enumerate(raw_actions):
         options = _split_options(a) if isinstance(a, dict) else []
@@ -1681,6 +1839,7 @@ def yaml_to_ast(hass, automation_dict):
                 for j, c in enumerate(conds):
                     cond_elements.extend(_condition_to_elements(c, ids, trig_map, f"actions[{i}].opt[{k}].cond[{j}]"))
                 rest = []
+                hang = False
 
                 # The first element of the rung is the trigger of this option. If the option did not
                 # name one, the whole trigger group gates it.
@@ -1690,13 +1849,13 @@ def yaml_to_ast(hass, automation_dict):
                     lead = [e for e in cond_elements if e.get("isTrigger")]
                     nested = [e for e in cond_elements if not e.get("isTrigger")]
                     if lead:
-                        head = (_trigger_group(lead, ids) if len(lead) > 1 else lead)
+                        head = _trigger_group(lead, ids)  # [CHANGED v3.72.0] one lead too, with the TON of its for
                         rest = nested
                     else:
                         head = cond_elements
                         rest = []
                 else:
-                    head = _clone_group(_trigger_group(trigger_elements, ids), ids, auto=True)
+                    head, hang = auto_head()
                     rest = cond_elements
 
                 act_elements = []
@@ -1715,6 +1874,8 @@ def yaml_to_ast(hass, automation_dict):
                     "isDefault": bool(is_default),
                     "src": f"actions[{i}]",
                 })
+                if hang:
+                    rungs[-1]["sharesHead"] = True
         else:
             segment.extend(_mark_from_action(_action_to_elements(a, ids, trig_map, f"actions[{i}]")))
             segment_src.append(i)

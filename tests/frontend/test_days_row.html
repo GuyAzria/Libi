@@ -1,0 +1,225 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-10-31] Purpose: The days row of the dashboard card (libi-days-row.js), the user's design: one
+  8-bit helper, bit 1 Sunday ... bit 7 Saturday, shown as seven checkboxes. Each box flips its own bit and keeps the
+  others; the names of the days are Home Assistant's language's; nothing can be ticked while the helper holds no
+  number; it fits a phone and runs right to left in a right-to-left language.
+  [ADDED v1.1.0 | 2026-11-01] Purpose: The row of v3.79.0 - an icon, the name, the days as seven round buttons: at the
+  end of the row on a wide card, on a line of their own under the name on a narrow one. Quick taps build on each other
+  before Home Assistant answers (a call that fails drops them, bits someone else set win); a helper that is gone says
+  so in Home Assistant's words.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi days row test</title></head>
+<body style="margin:0; font: 14px/20px sans-serif;">
+<pre id="out">RUNNING</pre>
+<div id="phone" style="width:288px; padding:16px; box-sizing:content-box;"></div>
+<div id="wide" style="width:640px; padding:16px; box-sizing:content-box;"></div>
+<div id="rtl" dir="rtl" style="width:288px; padding:16px;"></div>
+<div id="rtlwide" dir="rtl" style="width:640px; padding:16px;"></div>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-days-row.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const tick = () => new Promise(r => setTimeout(r, 0));
+const XSS = '<img src=x onerror="window.__xss=1">';
+
+try {
+  const calls = [];
+  let answer = () => Promise.resolve();
+  const hass = (state, language = 'en', entity = 'input_number.garden_days', attributes = {}) => ({
+    language, locale: { language },
+    states: state === null ? {} : { [entity]: { entity_id: entity, state, attributes: { friendly_name: 'Garden days', min: 0, max: 255, ...attributes } } },
+    callService: (domain, service, data) => { calls.push({ domain, service, data }); return answer(); },
+  });
+  const row = document.createElement('libi-days-row');
+  row.setConfig({ type: 'custom:libi-days-row', entity: 'input_number.garden_days', name: 'Watering days' });
+  row.hass = hass('21.0');  // 1 + 4 + 16: Sunday, Tuesday, Thursday
+  document.getElementById('phone').appendChild(row);
+  await tick();
+  const $ = (el, sel) => el.shadowRoot.querySelector(sel);
+  const days = (el = row) => [...el.shadowRoot.querySelectorAll('button.day')];
+  const labels = (el = row) => days(el).map(b => b.textContent);
+  const shown = (el = row) => days(el).map(b => b.getAttribute('aria-pressed') === 'true' && b.classList.contains('on') ? 1 : 0).join('');
+  check('seven buttons, Sunday first', days().length === 7 && labels().join(' ') === 'Sun Mon Tue Wed Thu Fri Sat', labels().join(' '));
+  check('bit 1, 3 and 5 are Sunday, Tuesday and Thursday', shown() === '1010100', shown());
+  check('the name given is shown, and is the tooltip when it is cut', $(row, '.name').textContent === 'Watering days' && $(row, '.info').title === 'Watering days');
+  check('the days are one group named as the row', $(row, '.days').getAttribute('role') === 'group' && $(row, '.days').getAttribute('aria-label') === 'Watering days');
+  check('each day says its long name', days()[0].getAttribute('aria-label') === 'Sunday' && days()[0].title === 'Sunday');
+  check('a day is a button, never a submit', days().every(b => b.type === 'button'));
+  check('without an icon of its own the row shows a calendar', $(row, 'ha-icon').getAttribute('icon') === 'mdi:calendar-week');
+  check('nothing is said under the name while the days can be tapped', $(row, '.note').textContent === '');
+
+  days()[1].click(); await tick();
+  check('tapping Monday sets bit 2 and keeps the others', calls.length === 1 && calls[0].domain === 'input_number' && calls[0].service === 'set_value'
+    && calls[0].data.entity_id === 'input_number.garden_days' && calls[0].data.value === 23, JSON.stringify(calls));
+  check('Monday shows as on before Home Assistant answers', shown() === '1110100', shown());
+  row.hass = hass('23.0'); await tick();
+  check('the new state shows', shown() === '1110100' && row._pending === null, shown());
+  days()[0].click(); await tick();
+  check('tapping Sunday again clears bit 1 only', calls[1].data.value === 22, JSON.stringify(calls[1]));
+  row.hass = hass('149.0'); await tick();  // an eighth bit set by hand, after LIBI's call was answered: 128 + 21
+  check('bits someone else set after the answer win', shown() === '1010100' && row._pending === null, shown());
+  days()[1].click(); await tick();
+  check('an eighth bit set by hand is kept', calls[2].data.value === 151, JSON.stringify(calls[2]));
+  row.hass = hass('151.0'); await tick();
+
+  // Quick taps: each one builds on the one before, though Home Assistant has not answered yet.
+  calls.length = 0;
+  const waiting = [];
+  answer = () => new Promise((resolve, reject) => waiting.push({ resolve, reject }));
+  row.hass = hass('0'); await tick();
+  days()[0].click(); days()[1].click(); days()[2].click(); await tick();
+  check('three quick taps turn on three days', calls.map(c => c.data.value).join() === '1,3,7', JSON.stringify(calls));
+  check('and all three show at once', shown() === '1110000', shown());
+  row.hass = hass('1.0'); await tick();
+  row.hass = hass('3.0'); await tick();
+  check('the states between do not take a day back while calls are out', shown() === '1110000', shown());
+  waiting.splice(0).forEach(w => w.resolve()); await tick();
+  check('answered before the last state came, the taps still show', shown() === '1110000' && row._pending !== null, shown());
+  row.hass = hass('7.0'); await tick();
+  check('then the helper holds them', shown() === '1110000' && row._pending === null, shown());
+
+  // A tap on and off again before the answer: the day never flickers back on.
+  days()[3].click(); days()[3].click(); await tick();
+  check('a day tapped twice is off again', calls.slice(-2).map(c => c.data.value).join() === '15,7' && shown() === '1110000', JSON.stringify(calls.slice(-2)));
+  row.hass = hass('15.0'); await tick();
+  check('and stays off while the first answer is in', shown() === '1110000', shown());
+  waiting.splice(0).forEach(w => w.resolve()); await tick();
+  row.hass = hass('7.0'); await tick();
+  check('until the helper holds its own bits again', shown() === '1110000' && row._pending === null, shown());
+
+  // A call that fails drops what it asked for: the row shows the helper's bits.
+  days()[6].click(); await tick();
+  check('a tapped Saturday shows at once', shown() === '1110001', shown());
+  waiting.splice(0).forEach(w => w.reject(new Error('Home Assistant refused'))); await tick();
+  check('a call that fails takes it back', shown() === '1110000' && row._pending === null, shown());
+
+  // Days that never arrive are shown for a while only.
+  days()[5].click(); await tick();
+  row._pending.until = Date.now() - 1;
+  row.hass = hass('7.0'); await tick();
+  check('a tap Home Assistant never holds is dropped after a while', shown() === '1110000' && row._pending === null, shown());
+  waiting.splice(0).forEach(w => w.resolve());
+  answer = () => Promise.resolve();
+
+  calls.length = 0;
+  for (const state of ['unavailable', 'unknown', '']) {
+    row.hass = { ...hass(state), formatEntityState: s => `[${s.state || 'empty'}]` }; await tick();
+    days()[2].click(); await tick();
+    check(`nothing can be tapped while the helper is ${state || 'empty'}`, days().every(b => b.disabled) && calls.length === 0, JSON.stringify(calls));
+    check(`and the row says the helper's state (${state || 'empty'})`, $(row, '.note').textContent === `[${state || 'empty'}]` && !$(row, '.note').classList.contains('warn'), $(row, '.note').textContent);
+  }
+  row.hass = hass('unavailable'); await tick();
+  check('without Home Assistant\'s formatter the state is said as it is', $(row, '.note').textContent === 'unavailable', $(row, '.note').textContent);
+
+  // A helper that is gone: Home Assistant's own words, as its other rows say it.
+  row.hass = { ...hass(null), localize: (key, args) => key === 'ui.panel.lovelace.warning.entity_not_found' ? `Not here: ${args.entity}` : '' }; await tick();
+  check('a helper that is gone says so in Home Assistant\'s words', $(row, '.note').textContent === 'Not here: input_number.garden_days'
+    && $(row, '.note').classList.contains('warn') && days().every(b => b.disabled), $(row, '.note').textContent);
+  row.hass = hass(null); await tick();
+  check('and in English when Home Assistant has no word for it', $(row, '.note').textContent === 'Entity not available: input_number.garden_days', $(row, '.note').textContent);
+  row.hass = hass('21.0'); await tick();
+  check('back, the note is gone', $(row, '.note').textContent === '' && !$(row, '.note').classList.contains('warn'));
+
+  // A number entity is set with its own service; the row's icon, else the helper's.
+  const num = document.createElement('libi-days-row');
+  num.setConfig({ entity: 'number.days' });
+  num.hass = hass('0', 'en', 'number.days', { icon: 'mdi:sprinkler' });
+  document.getElementById('phone').appendChild(num);
+  await tick();
+  days(num)[6].click(); await tick();
+  check('a number entity is set with number.set_value', calls.at(-1).domain === 'number' && calls.at(-1).data.value === 64, JSON.stringify(calls.at(-1)));
+  check('without a name the helper\'s own name is shown', $(num, '.name').textContent === 'Garden days');
+  check('the helper\'s icon is shown', $(num, 'ha-icon').getAttribute('icon') === 'mdi:sprinkler');
+  num.setConfig({ entity: 'number.days', icon: 'mdi:calendar-check' }); await tick();
+  check('the icon of the row wins', $(num, 'ha-icon').getAttribute('icon') === 'mdi:calendar-check');
+  let refused = '';
+  try { document.createElement('libi-days-row').setConfig({ entity: 'sensor.x' }); } catch (e) { refused = e.message; }
+  check('another kind of entity is refused', refused.includes('input_number'), refused);
+
+  // The names are the user's: a language whose short names are long uses the narrow ones.
+  row.hass = hass('21.0', 'he'); await tick();
+  const narrow = new Intl.DateTimeFormat('he', { weekday: 'narrow', timeZone: 'UTC' });
+  const sunday = new Date(Date.UTC(2023, 0, 1));
+  check('the days are named in Home Assistant\'s language', labels()[0] === narrow.format(sunday) && labels().every(l => l.length <= 3)
+    && $(row, '.days').classList.contains('narrow'), labels().join(' '));
+  check('and the tooltip is the long name of that language', days()[0].title
+    === new Intl.DateTimeFormat('he', { weekday: 'long', timeZone: 'UTC' }).format(sunday));
+  row.hass = hass('21.0', 'fr'); await tick();
+  const frNarrow = new Intl.DateTimeFormat('fr', { weekday: 'narrow', timeZone: 'UTC' }).format(sunday);
+  check('a short name of four characters does not fit a button: the narrow one', labels()[0] === frNarrow && labels()[0].length === 1, labels().join(' '));
+  row.hass = hass('21.0'); await tick();
+  check('three characters fit', labels()[0] === 'Sun' && !$(row, '.days').classList.contains('narrow'), labels().join(' '));
+
+  // A name is text, never HTML.
+  const bad = document.createElement('libi-days-row');
+  bad.setConfig({ entity: 'input_number.garden_days', name: XSS });
+  bad.hass = hass('1');
+  document.getElementById('phone').appendChild(bad);
+  await tick();
+  check('a name is shown as text', $(bad, '.name').textContent === XSS && !bad.shadowRoot.querySelector('img') && !window.__xss);
+
+  // A phone: the days on a line of their own under the name, across the row, round, nothing sticking out.
+  const box = (el) => el.getBoundingClientRect();
+  const rowBox = box($(row, '.row'));
+  const cells = days().map(box);
+  const nameBox = box($(row, '.name'));
+  check('on a phone the days take a line under the name', cells.every(c => c.top >= nameBox.bottom - 1) && cells.every(c => Math.abs(c.top - cells[0].top) < 1),
+    `${cells[0].top} / ${nameBox.bottom}`);
+  check('across the whole row', Math.abs(cells[0].left - rowBox.left) <= 1 && Math.abs(cells[6].right - rowBox.right) <= 1, `${cells[0].left}-${cells[6].right} in ${rowBox.left}-${rowBox.right}`);
+  check('the week fits a phone', $(row, '.days').scrollWidth <= $(row, '.days').clientWidth + 1 && rowBox.right <= box(document.getElementById('phone')).right, `${$(row, '.days').scrollWidth} > ${$(row, '.days').clientWidth}`);
+  check('each day is a round button of 30 px or more', cells.every(c => c.width >= 30 && Math.abs(c.width - c.height) < 1), cells.map(c => `${c.width}x${c.height}`).join(' '));
+  check('the icon is a 40 px column, as on the other rows', Math.round(box($(row, '.icon')).width) === 40 && Math.round(nameBox.left - box($(row, '.icon')).right) === 16,
+    `${box($(row, '.icon')).width} / ${nameBox.left - box($(row, '.icon')).right}`);
+
+  // A browser without container queries (the row is no container): the days still go under the name, at its end.
+  const old = document.createElement('libi-days-row');
+  old.style.containerType = 'normal';
+  old.setConfig({ entity: 'input_number.garden_days', name: 'Watering days' });
+  old.hass = hass('21.0');
+  document.getElementById('phone').appendChild(old);
+  await tick();
+  const oldCells = days(old).map(box);
+  const oldRow = box($(old, '.row'));
+  check('without container queries the days wrap under the name, at the end of the row', oldCells.every(c => c.top >= box($(old, '.name')).bottom - 1)
+    && Math.abs(oldCells[6].right - oldRow.right) <= 1 && oldCells[0].left > oldRow.left + 1, `${oldCells[0].left}-${oldCells[6].right} in ${oldRow.left}-${oldRow.right}`);
+
+  // A wide card: one line, the days at its end, as the other rows have their control.
+  const wide = document.createElement('libi-days-row');
+  wide.setConfig({ entity: 'input_number.garden_days', name: 'Days' });
+  wide.hass = hass('21.0');
+  document.getElementById('wide').appendChild(wide);
+  await tick();
+  const wideBox = box($(wide, '.row'));
+  const wideCells = days(wide).map(box);
+  const iconBox = box($(wide, '.icon'));
+  check('on a wide card the row is one line', wideBox.height <= 41 && wideCells.every(c => c.top >= iconBox.top - 1 && c.bottom <= iconBox.bottom + 1), `${wideBox.height}`);
+  check('with the days at its end', Math.abs(wideCells[6].right - wideBox.right) <= 1 && wideCells[0].left > box($(wide, '.name')).right, `${wideCells[6].right} / ${wideBox.right}`);
+  check('of 36 px each and 4 px apart', wideCells.every(c => Math.round(c.width) === 36 && Math.round(c.height) === 36)
+    && wideCells.slice(1).every((c, i) => Math.round(c.left - wideCells[i].right) === 4), wideCells.map(c => `${c.left}:${c.width}`).join(' '));
+
+  // Right to left: Sunday at the right; on a wide card the days at the left end.
+  for (const [where, width] of [['rtl', 'narrow'], ['rtlwide', 'wide']]) {
+    const rtl = document.createElement('libi-days-row');
+    rtl.setConfig({ entity: 'input_number.garden_days' });
+    rtl.hass = hass('21.0', 'he');
+    document.getElementById(where).appendChild(rtl);
+    await tick();
+    const d = days(rtl).map(box);
+    const r = box($(rtl, '.row'));
+    check(`right to left (${width}): Sunday stands at the right`, d[0].left > d[6].left, `${d[0].left} / ${d[6].left}`);
+    check(`right to left (${width}): the icon at the right, Saturday at the left edge`, box($(rtl, '.icon')).right >= r.right - 1 && Math.abs(d[6].left - r.left) <= 1,
+      `${box($(rtl, '.icon')).right} / ${r.right}; ${d[6].left} / ${r.left}`);
+  }
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

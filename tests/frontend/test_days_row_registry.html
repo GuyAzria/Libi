@@ -1,0 +1,109 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-01] Purpose: The days row is found where Home Assistant looks for it. Its frontend (2026.x)
+  puts a scoped registry (@webcomponents/scoped-custom-element-registry) in the place of window.customElements while
+  it starts, and libi-days-row.js, an extra module, may run before that: the row was then in the browser's registry
+  only, and the user's card said "Configuration error" ("Custom element doesn't exist: libi-days-row."). The stand-in
+  registry below behaves as the polyfill does for this: it knows only what is defined through it, and for a name the
+  browser's registry already has it takes that class.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi days row registry test</title>
+<!-- The copies imported later are fetched now: headless Chrome's virtual clock runs on while a file is fetched, and a
+     fetch in the middle of the test used up the page's time (RULE 3a - the harness, not the row). -->
+<link rel="modulepreload" href="../../custom_components/libi/frontend/libi-days-row.js">
+<link rel="modulepreload" href="../../custom_components/libi/frontend/libi-days-row.js?copy=2">
+<link rel="modulepreload" href="../../custom_components/libi/frontend/libi-days-row.js?copy=3">
+</head>
+<body style="margin:0; font: 14px/20px sans-serif;">
+<pre id="out">RUNNING</pre>
+<div id="card" style="width:600px"></div>
+<script type="module">
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+const TAG = 'libi-days-row';
+const native = window.customElements;
+
+class ScopedRegistry {
+  constructor() { this.defs = new Map(); }
+  define(name, ctor) {
+    if (this.defs.has(name)) throw new DOMException(`the name "${name}" has already been used with this registry`, 'NotSupportedError');
+    this.defs.set(name, ctor);
+    if (!native.get(name)) native.define(name, ctor);
+  }
+  get(name) { return this.defs.get(name); }
+  whenDefined(name) { return this.defs.has(name) ? Promise.resolve(this.defs.get(name)) : new Promise(() => {}); }
+}
+const swap = () => {
+  const registry = new ScopedRegistry();
+  Object.defineProperty(window, 'customElements', { value: registry, configurable: true, writable: true });
+  return registry;
+};
+const errors = [];
+const nativeError = console.error;
+console.error = (...args) => { errors.push(args.map(String).join(' ')); nativeError.apply(console, args); };
+
+// As Home Assistant makes a row of a card (createLovelaceElement): the registry there is now must know the tag.
+const makeRow = () => {
+  if (!window.customElements.get(TAG)) return `Custom element doesn't exist: ${TAG}.`;
+  const row = document.createElement(TAG);
+  row.setConfig({ type: 'custom:libi-days-row', entity: 'input_number.days', name: 'Days' });
+  const calls = [];
+  row.hass = { language: 'en', locale: { language: 'en' }, callService: (d, s, data) => { calls.push(data.value); return Promise.resolve(); },
+    states: { 'input_number.days': { entity_id: 'input_number.days', state: '5.0', attributes: {} } } };
+  document.getElementById('card').appendChild(row);
+  const days = [...row.shadowRoot.querySelectorAll('button.day')];
+  const pressed = days.map(b => b.getAttribute('aria-pressed') === 'true' ? 1 : 0).join('');
+  days[1].click();
+  return { days: days.length, pressed, calls };
+};
+
+try {
+  // The row's file runs first, as it may on a page that has it cached; then Home Assistant swaps the registry and
+  // defines its own root element through the new one.
+  await import('../../custom_components/libi/frontend/libi-days-row.js');
+  check('first the row is in the browser\'s registry', !!native.get(TAG));
+  // Home Assistant's own code may take a while to load: the swap comes some time after the row.
+  await wait(450);
+  const scoped = swap();
+  check('the new registry does not know it yet - what the card met', makeRow() === `Custom element doesn't exist: ${TAG}.`, JSON.stringify(makeRow()));
+  scoped.define('home-assistant', class extends HTMLElement {});
+  await wait(250);
+  check('soon after the swap the new registry knows the row', scoped.get(TAG) === native.get(TAG));
+
+  // A second copy of the file (another ?v=) defines nothing twice and throws nothing.
+  await import('../../custom_components/libi/frontend/libi-days-row.js?copy=2');
+  await wait(250);
+  check('a second copy of the file throws nothing', errors.length === 0, errors.join(' | '));
+  check('and keeps the one definition', scoped.get(TAG) === native.get(TAG));
+
+  // The file run after the swap - as a later Home Assistant loads its extra modules - defines the row there at once.
+  const late = swap();
+  await import('../../custom_components/libi/frontend/libi-days-row.js?copy=3');
+  check('run after the swap, the row is defined in that registry at once', !!late.get(TAG) && errors.length === 0, errors.join(' | '));
+
+  // The watch ends: with the root element of Home Assistant defined, a later registry is not followed.
+  late.define('home-assistant', class extends HTMLElement {});
+  await wait(250);
+  const later = swap();
+  await wait(400);
+  check('the watch has ended once Home Assistant is up', !later.get(TAG));
+
+  // Last - no file is loaded after a tap, whose timer would run the harness's virtual clock on - a card makes the row
+  // in the registry Home Assistant swapped in, as createLovelaceElement does.
+  Object.defineProperty(window, 'customElements', { value: scoped, configurable: true, writable: true });
+  const made = makeRow();
+  check('a card makes the row: seven days, Sunday and Tuesday on', made.days === 7 && made.pressed === '1010000', JSON.stringify(made));
+  check('a tap sets the helper', made.calls && made.calls.join() === '7', JSON.stringify(made));
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+console.error = nativeError;
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

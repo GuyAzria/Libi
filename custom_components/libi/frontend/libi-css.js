@@ -14,10 +14,11 @@
  */
 /**
  * LIBI Panel - Styles
- * v3.47.0
+ * v3.85.0
  */
-// [ADDED v3.45.0 | 2026-10-27] Purpose: Phone layout without sideways scrolling; header actions in the menu.
-// [ADDED v3.47.0 | 2026-10-27] Purpose: The version badge on a net and the Versions dialog.
+// [ADDED v3.82.0 | 2026-11-02] Purpose: The AI chat's local variables window: one row each, Use a helper or make a New one.
+// [ADDED v3.85.0 | 2026-11-04] Purpose: The panel's question with answers of its own (leaving with changes not saved,
+//   deleting a NET) and the Original tag of the versions list.
 export const getStyles = () => `
 :host { display: block; height: 100vh; overflow-y: hidden; background: var(--primary-background-color, #f5f5f5); color: var(--primary-text-color, #212121); font-family: var(--primary-font-family, sans-serif); box-sizing: border-box; direction: ltr !important; text-align: left; }
 /* [ADDED v3.35.0] Colour tokens. The light values are the colours the panel always used; the
@@ -168,10 +169,16 @@ export const getStyles = () => `
 .plc-header { height: 20px; line-height: 14px; font-weight: 900; font-size: 11px; text-align: center; border-bottom: 1px solid var(--divider-color, #ccc); background: var(--libi-hover); padding: 3px; box-sizing: border-box; cursor: pointer; }
 .power-row { display: flex; justify-content: space-between; padding: 0 6px; height: 24px; align-items: center; box-sizing: border-box; font-size: 10px; font-weight: bold; }
 .plc-row { display: flex; justify-content: space-between; padding: 4px 6px; box-sizing: border-box; }
+/* [ADDED v3.71.0] What a block compares with, read only: the days and hours of a schedule. */
+.plc-note { padding: 0 6px 2px; font-size: 10px; line-height: 1.3; font-weight: 700; color: var(--libi-pin-lbl); text-align: left; overflow-wrap: anywhere; }
+.insp-note { font-size: 12px; line-height: 1.45; color: var(--secondary-text-color, #757575); overflow-wrap: anywhere; }
 
 .plc-col-l { display: flex; flex-direction: column; align-items: flex-start; max-width: 49%; gap: 3px; }
 .plc-col-r { display: flex; flex-direction: column; align-items: flex-end; max-width: 48%; gap: 3px; }
 .plc-col-l.empty, .plc-col-r.empty { width: 48%; }
+/* [ADDED v3.77.0] IN1 of a CMP TIME / CMP DAY - datetime.time.now, datetime.day.now - on one line: no pin to its right. */
+.plc-col-l.clock { max-width: 100%; }
+.plc-col-l.clock + .plc-col-r.empty { width: 0; }
 
 .pin-lbl { font-size: 10px; font-weight: 800; color: var(--libi-pin-lbl); line-height: 1; pointer-events: none; }
 .pin-val { background: var(--libi-pin-bg); color: var(--libi-pin-fg); border: 1px solid var(--libi-pin-border); border-radius: 4px; padding: 4px; font-size: 10px; font-family: monospace; white-space: normal; word-wrap: break-word; overflow-wrap: anywhere; word-break: normal; max-width: 100%; box-sizing: border-box; cursor: pointer; transition: all 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.05); direction: ltr; unicode-bidi: plaintext; text-align: left; }
@@ -470,6 +477,14 @@ export const getStyles = () => `
 .auto-item-name { font-weight: bold; font-size: 14px; color: var(--primary-text-color, #212121); }
 .auto-item-id { font-size: 11px; color: var(--secondary-text-color, #888); font-family: monospace; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+/* [ADDED v3.85.0] A question with answers of its own: Yes and No when leaving with changes not saved, the ways a NET can
+   be deleted. The text keeps its lines; the answers wrap on a phone and are large enough for a finger. */
+.ask-modal { width: 480px; max-width: calc(100vw - 32px); }
+.ask-text { margin: 0 0 8px 0; font-size: 14px; white-space: pre-line; }
+.ask-note { margin: 0 0 6px 0; font-size: 13px; color: var(--secondary-text-color, #757575); }
+.ask-actions { flex-wrap: wrap; }
+.ask-actions .btn { min-height: 40px; }
+.ver-original { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 8px; background: var(--primary-color, #03a9f4); color: #fff; }
 .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
 .btn-primary { background: var(--primary-color,#03a9f4); color: #fff; }
 .btn-danger { background: var(--error-color,#f44336); color: #fff; }
@@ -508,12 +523,24 @@ export const getStyles = () => `
 .ai-share input { width: 18px; height: 18px; margin: 0; flex: 0 0 auto; }
 .ai-current { margin-inline-start: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 1px 5px; border-radius: 4px; background: var(--libi-ok-bg); color: var(--libi-ok); }
 .ai-replace { width: 100%; min-height: 40px; }
-/* [ADDED v3.43.0] Helpers the AI proposes, created on the user's click. */
-.ai-helpers { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed var(--primary-color, #03a9f4); border-radius: 8px; }
-.ai-helper .ai-helper-name { min-height: 32px; margin-bottom: 2px; }
-.ai-create-helpers { width: 100%; min-height: 40px; }
+/* [ADDED v3.59.0] The net's name is in these buttons, and a name without spaces must not push them wider. */
+.ai-replace, .ai-add { overflow-wrap: anywhere; }
+/* [CHANGED v3.82.0] The local variables of the NET in one window, first in the plan: each Use a helper that exists or
+   New, made with one button. It took the place of the list of helpers to create (v3.43.0). */
+.ai-vars { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px dashed var(--primary-color, #03a9f4); border-radius: 8px; min-width: 0; }
+.ai-var { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding-block-end: 8px; border-block-end: 1px solid var(--divider-color, #e0e0e0); }
+.ai-var-opt { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+.ai-var-opt input[type="radio"] { flex: 0 0 auto; margin: 0; width: 18px; height: 18px; }
+.ai-var-kind { flex: 0 0 auto; min-width: 34px; }
+.ai-var-pick, .ai-var-name { flex: 1 1 auto; min-width: 0; max-width: 100%; min-height: 32px; box-sizing: border-box; }
+.ai-var-pick { border: 1.5px solid var(--divider-color, #e0e0e0); border-radius: 8px; background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121); font: inherit; font-size: 12px; padding: 4px 6px; }
+.ai-var-what { padding-inline-start: 24px; }
+.ai-var-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ai-create-helpers { flex: 1 1 auto; min-height: 40px; }
+@media (pointer: coarse) { .ai-var-pick, .ai-var-name { min-height: 40px; } .ai-var-opt input[type="radio"] { width: 22px; height: 22px; } }
 .ai-compose { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--divider-color, #e0e0e0); align-items: flex-end; }
-.ai-input { flex: 1; resize: none; min-height: 40px; max-height: 120px; padding: 8px 10px; border: 1.5px solid var(--divider-color, #e0e0e0); border-radius: 8px; font: inherit; font-size: 13px; background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121); box-sizing: border-box; }
+/* [CHANGED v3.61.0] No max-height: the chat makes the box as tall as its text, up to half the chat (_fitInput). */
+.ai-input { flex: 1; resize: none; min-height: 40px; padding: 8px 10px; border: 1.5px solid var(--divider-color, #e0e0e0); border-radius: 8px; font: inherit; font-size: 13px; background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121); box-sizing: border-box; }
 .ai-input:focus, .ai-filter:focus { outline: none; border-color: var(--primary-color, #03a9f4); }
 .ai-send, .ai-build, .ai-add { min-height: 40px; }
 .ai-build, .ai-add { width: 100%; }
@@ -527,7 +554,9 @@ export const getStyles = () => `
 .ai-list { max-height: 180px; overflow-y: auto; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 8px; background: var(--card-background-color, #fff); }
 .ai-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; min-height: 40px; box-sizing: border-box; cursor: pointer; border-bottom: 1px solid var(--divider-color, #e0e0e0); }
 .ai-item:last-child { border-bottom: none; }
-.ai-item input { width: 18px; height: 18px; flex: 0 0 auto; margin: 0; }
+/* [CHANGED v3.49.0] Only the checkbox is 18px; the helper name field fills the row. */
+.ai-item input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 auto; margin: 0; }
+.ai-on-canvas { background: var(--libi-pin-bg); color: var(--libi-pin-fg); text-transform: none; }
 .ai-item-text { display: flex; flex-direction: column; min-width: 0; }
 .ai-item-name { font-size: 13px; color: var(--primary-text-color, #212121); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-item-id { font-size: 11px; font-family: monospace; color: var(--secondary-text-color, #757575); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -536,7 +565,15 @@ export const getStyles = () => `
 .ai-note { font-size: 12px; color: var(--secondary-text-color, #757575); line-height: 1.4; }
 .ai-note.warn { color: var(--libi-notice-head); }
 .ai-note.danger { color: var(--libi-coe-fg); background: var(--libi-coe-bg); padding: 6px 8px; border-radius: 6px; font-weight: 600; }
+/* [ADDED v3.67.0] What saving a NET from the chat did, one line each. */
+.ai-save { display: flex; flex-direction: column; gap: 2px; }
+.ai-note.ok { color: var(--libi-ok); }
 .ai-question { display: flex; flex-direction: column; gap: 6px; }
+/* [ADDED v3.80.0] LIBI's own questions, set apart from the AI's; Build waits for their answers, so a finger reaches every
+   choice (RULE 36). */
+.ai-libi-asks { display: flex; flex-direction: column; gap: 10px; padding: 8px; border: 1px dashed var(--primary-color, #03a9f4); border-radius: 8px; min-width: 0; overflow-wrap: anywhere; }
+.ai-q-note { font-size: 12px; }
+@media (pointer: coarse) { .ai-chip { min-height: 40px; } }
 .ai-q-text { font-size: 13px; font-weight: 600; }
 .ai-choices { display: flex; flex-wrap: wrap; gap: 6px; }
 .ai-chip { border: 1px solid var(--divider-color, #e0e0e0); background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121); border-radius: 16px; padding: 6px 12px; font-size: 12px; cursor: pointer; min-height: 32px; }
@@ -546,6 +583,19 @@ export const getStyles = () => `
 .ai-yaml pre, .ai-card pre { margin: 6px 0 0; padding: 8px; background: #1e1e1e; color: #d4d4d4; border-radius: 6px; font-size: 11px; overflow: auto; max-height: 220px; white-space: pre; direction: ltr; text-align: start; }
 .ai-card { border: 1px dashed var(--divider-color, #e0e0e0); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
 .ai-card-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+/* [ADDED v3.73.0] The request line by line: before the build, and after it with a mark for each line. */
+.ai-reqs ul { margin: 4px 0 0; padding-inline-start: 18px; font-size: 12px; }
+.ai-checklist { border: 1px solid var(--libi-ok-border); background: var(--libi-ok-bg); border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+.ai-checklist.missing { border-color: var(--libi-coe-fg); background: var(--libi-coe-bg); }
+.ai-checklist-head { font-size: 12px; font-weight: 600; }
+.ai-check-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ai-check { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; text-align: start; }
+.ai-check-mark { flex: 0 0 14px; text-align: center; font-weight: 700; }
+.ai-check.ok .ai-check-mark { color: var(--libi-ok); }
+.ai-check.missing .ai-check-mark, .ai-check.missing .ai-check-where { color: var(--libi-coe-fg); }
+.ai-check.unchecked .ai-check-mark { color: var(--secondary-text-color, #757575); }
+.ai-check-text { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.ai-check-where, .ai-check-how { font-size: 11px; color: var(--secondary-text-color, #757575); }
 .ai-setup { padding: 12px; }
 .ai-setup p { margin: 0 0 8px; font-size: 13px; }
 .ai-path { font-family: monospace; font-size: 12px; }

@@ -4,6 +4,7 @@
   [ADDED v1.0.0 | 2026-10-26] Purpose: PHONE width (400px), the sidebar as a sheet at the bottom (RULE 36). The AI chat in the sidebar. Open, it fills the whole sidebar and
   the inspector is hidden; closed, the inspector is back. On the collapsed rail a CHAT AI button,
   written top to bottom with upright letters, opens the sidebar straight into the chat.
+  [ADDED v1.1.0 | 2026-10-29] Purpose: The chat's message box grows with a long text, up to half the chat.
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="400,800"><title>libi panel layout test (phone)</title></head>
 <body style="margin:0;">
@@ -102,6 +103,30 @@ try {
   check('chat is shown after CHAT AI', !!sr.querySelector('.ai-body') && shown(sr.getElementById('aiChatMount')));
   let stored = null; try { stored = localStorage.getItem('libi_sidebar_rail'); } catch (e) { /* */ }
   check('opened sidebar is remembered', stored === '0', stored);
+
+  // [ADDED v1.1.0] The message box grows with a long text, up to half the chat and inside the sidebar; the
+  // conversation keeps its room, and an emptied box is small again.
+  {
+    const box = () => sr.querySelector('.ai-input');
+    const type = (text) => { box().value = text; box().dispatchEvent(new Event('input')); };
+    const lines = (n) => Array.from({ length: n }, (_, i) => `line ${i + 1}: water the garden on the days I pick`).join('\n');
+    const empty = box().getBoundingClientRect().height;
+    const wide = box().getBoundingClientRect().width, barWide = bar().getBoundingClientRect().width;
+    type(lines(6));
+    check('the message box grows with the text', box().getBoundingClientRect().height > empty * 1.8 && box().scrollHeight <= box().clientHeight + 1,
+      `${empty} -> ${box().getBoundingClientRect().height}`);
+    type(lines(80));
+    const body = sr.querySelector('.ai-body').clientHeight, high = box().getBoundingClientRect().height;
+    check('a very long text stops at half the chat and scrolls', Math.abs(high - Math.max(120, Math.floor(body / 2))) <= 1 && box().scrollHeight > box().clientHeight,
+      `${high} of ${body}`);
+    check('the conversation still shows above the box', sr.querySelector('.ai-log').clientHeight >= 40, sr.querySelector('.ai-log').clientHeight);
+    const bottom = bar().getBoundingClientRect().bottom + 1;
+    check('the box and Send stay inside the sidebar', box().getBoundingClientRect().bottom <= bottom && sr.querySelector('.ai-send').getBoundingClientRect().bottom <= bottom);
+    check('a long text widens neither the box nor the sidebar', box().getBoundingClientRect().width === wide && bar().getBoundingClientRect().width === barWide,
+      `${box().getBoundingClientRect().width}/${wide} ${bar().getBoundingClientRect().width}/${barWide}`);
+    type('');
+    check('emptied, the box is small again', Math.abs(box().getBoundingClientRect().height - empty) <= 1, box().getBoundingClientRect().height);
+  }
 } catch (err) {
   results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
 }

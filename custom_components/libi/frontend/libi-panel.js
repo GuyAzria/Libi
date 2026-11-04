@@ -14,20 +14,21 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.47.0
+ * v3.85.0
  */
-// [ADDED v3.46.0 | 2026-10-27] Purpose: Clicking an element while the AI chat is open shows its Inspector.
-// [ADDED v3.47.0 | 2026-10-27] Purpose: Net versions - a V badge on every net and a Versions dialog that
-//   puts an earlier version back on the canvas; SAVE & COMPILE then makes it the one that runs.
-import { LibiCore } from './libi-core.js?v=3.47.0';
-import { getStyles } from './libi-css.js?v=3.47.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.47.0';
-import { LibiOnline } from './libi-online.js?v=3.47.0';
-import { LibiAiChat } from './libi-ai.js?v=3.47.0';
+// [ADDED v3.84.0 | 2026-11-02] Purpose: Imports at 3.84.0, for the AI chat's zone chosen on the card.
+// [ADDED v3.85.0 | 2026-11-04] Purpose: SAVE & COMPILE compiles first and saves through Home Assistant's own config API
+//   (the HACS review); deleting a NET asks what becomes of its entry; leaving with changes not saved asks Yes or No; the
+//   versions list says which version is the original.
+import { LibiCore } from './libi-core.js?v=3.85.0';
+import { getStyles } from './libi-css.js?v=3.85.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.85.0';
+import { LibiOnline } from './libi-online.js?v=3.85.0';
+import { LibiAiChat } from './libi-ai.js?v=3.85.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.47.0';
+export const LIBI_BUILD = '3.85.0';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -61,6 +62,11 @@ export const VAR_TYPES = {
 };
 const VAR_TYPE_KEYS = Object.keys(VAR_TYPES);
 
+// [ADDED v3.77.0] What IN1 of a CMP TIME and of a CMP DAY is, written the way the user reads it (as C#'s DateTime.Now):
+// the clock now and the day now. The text only - the element keeps sourceA 'time' / 'weekday', which the compiler reads.
+const CLOCK_IN1 = Object.freeze({ time: 'datetime.time.now', weekday: 'datetime.day.now' });
+const clockIn1 = (side) => (side === 'time' || side === 'weekday') ? CLOCK_IN1[side] : '';
+
 // Which of the five a given entity is. A counter and an input_number both hold a number, and the
 // step is what says whether it counts in whole numbers or in fractions.
 export function varTypeOf(entityId, hass) {
@@ -83,6 +89,7 @@ class LibiPanel extends HTMLElement {
         this.attachShadow({ mode: 'open' }); 
         this.core = new LibiCore();
         this.online = new LibiOnline();
+        this.online.core = this.core;  // [ADDED v3.71.0] which rungs hang from a trigger, and from which
         // [ADDED v3.36.0] The AI chat keeps its own DOM, so a render of the panel never loses what
         // the user typed or ticked; it is only moved into the new sidebar.
         this.aiChat = new LibiAiChat(this);
@@ -97,7 +104,8 @@ class LibiPanel extends HTMLElement {
         this._sidebarW = this._readNum('libi_sidebar_w', 320, this.SIDEBAR_MIN, this.SIDEBAR_MAX);
         this._sidebarH = this._readNum('libi_sidebar_h', 320, 160, 900);
         this._sidebarRail = this._readFlag('libi_sidebar_rail');
-        this._inspectedNetYaml = null; 
+        this._inspectedNetYaml = null;
+        this._netYamlKind = 'yaml';  // [ADDED v3.63.0] 'yaml' or 'card': what the YAML panel shows
         this._hdrMenu = false;
         // [ADDED v3.14.0] The workspace that is open. A project holds a set of nets, each one
         // remembering which automation it was loaded from, and it is stored as its own .libi file.
@@ -160,6 +168,7 @@ class LibiPanel extends HTMLElement {
         if (!this._astLoaded && this._hass && this._hass.connection) { 
             this._astLoaded = true; 
             this._loadFromBackend(); 
+            this._loadSchedules();  // [ADDED v3.71.0] the days and hours the CMP DATETIME blocks show
         } 
         
         if (this._inspectedEl && this.shadowRoot) { 
@@ -185,6 +194,10 @@ class LibiPanel extends HTMLElement {
             }
         };
         window.addEventListener('keydown', this._keyHandler);
+        // [ADDED v3.85.0] Closing or reloading the browser tab with changes not saved: the browser's own warning. A page
+        // that closes cannot save, so it cannot ask Yes or No.
+        this._unloadHandler = (e) => { if (this._hasUnsavedChanges(true)) { e.preventDefault(); e.returnValue = ''; } };
+        window.addEventListener('beforeunload', this._unloadHandler);
         
         if (typeof this._render !== 'function') {
             console.error("❌ CRITICAL ERROR: _render method is missing!");
@@ -197,6 +210,15 @@ class LibiPanel extends HTMLElement {
     disconnectedCallback() {
         clearInterval(this._onlineTimer);
         if (this._keyHandler) window.removeEventListener('keydown', this._keyHandler);
+        if (this._unloadHandler) window.removeEventListener('beforeunload', this._unloadHandler);
+        // [ADDED v3.85.0] Leaving the editor for another page of Home Assistant with changes not saved - the user's rule
+        // (2026-11-04): asked Yes or No. Home Assistant has already moved on, so the browser's dialog asks (OK is Yes), and
+        // the save runs from here. A panel only moved in the page is back at once and asks nothing.
+        setTimeout(() => {
+            if (this.isConnected || !this._initialized || !this._hasUnsavedChanges(true)) return;
+            if (!window.confirm('LIBI: the changes were not saved. Save them now?\n\nOK saves them (SAVE & COMPILE). Cancel leaves them unsaved.')) return;
+            this._saveProject().then(r => { if (!(r.complete && r.status === 'ok')) alert(this._saveResultText(r)); });
+        }, 0);
     }
 
     async _loadFromBackend() { 
@@ -216,6 +238,7 @@ class LibiPanel extends HTMLElement {
                 this._initialized = true;
                 this.core.history = [JSON.stringify(this.core.nets)];
                 this.core.historyIdx = 0;
+                this._markSaved();
                 this._render();
                 return;
             } catch (err) {
@@ -249,49 +272,264 @@ class LibiPanel extends HTMLElement {
         this._initialized = true; 
         this.core.history = [JSON.stringify(this.core.nets)]; 
         this.core.historyIdx = 0; 
+        this._markSaved();
         this._render(); 
     }
     
+    // [CHANGED v3.67.0] SAVE & COMPILE is _saveProject, which returns what happened. The button shows it in an
+    // alert as it always did; the AI chat shows it in the chat after adding a NET.
     _saveToBackend() {
-        this.core.validateAST(); 
-        this._render(); 
-        
-        if (!this._hass || !this._hass.connection) return;
-        
-        const hasErrors = this.shadowRoot.querySelectorAll('.has-error').length > 0;
-        if (hasErrors) { 
-            alert('Cannot compile: Syntax/Structural errors found (Missing Triggers, Missing Actions, or Missing Variables). Please fix red blocks.'); 
-            return; 
+        if (!this._hass || !this._hass.connection) {
+            this.core.validateAST();
+            this._render();
+            return;
         }
-        
+        this._saveProject().then(r => {
+            alert(this._saveResultText(r));
+            if ((r.errors || []).length) console.warn('LIBI save reported problems', r.errors);
+        });
+    }
+
+    /** [ADDED v3.85.0] What a save did, in words: the drawing's errors, why the compile did not hold, or the backend's
+     *  own message. */
+    _saveResultText(r) {
+        if (r.refused) return 'Cannot compile: Syntax/Structural errors found (Missing Triggers, Missing Actions, or Missing Variables). Please fix red blocks.';
+        if (r.compileErrors) return 'Not saved: the compile failed, so nothing was written.\n\n' + r.compileErrors.map(e => '• ' + e).join('\n');
+        if (r.failed) return 'Save failed: ' + r.failed;
+        return r.message || 'Saved.';
+    }
+
+    /** [ADDED v3.67.0] Validates the drawing and saves the project into Home Assistant. Returns the backend's
+     *  answer (saved, written, reloaded, versions, errors, message), { refused } when the drawing has errors, or
+     *  { failed } when the request did not get through. Only a save the backend confirms clears the unsaved mark.
+     *  [CHANGED v3.85.0] Home Assistant's own config API writes - the HACS review: LIBI does not patch the user's YAML
+     *  files. The user's rule (2026-11-04): compile first, save only when that holds. So: libi/compile_project compiles
+     *  and checks every NET and writes nothing ({ compileErrors } when it does not hold); then each change goes to the
+     *  config API, POST to save and DELETE to remove, as Home Assistant's editors make them, stopping at the first one it
+     *  refuses; then libi/save_done records what reached Home Assistant and waits for each reload. */
+    async _saveProject() {
+        this.core.validateAST();
+        this._render();
+        if (!this._hass || !this._hass.connection) return { saved: false, failed: 'Not connected to Home Assistant.' };
+        if (this.shadowRoot.querySelectorAll('.has-error').length > 0) return { saved: false, refused: true };
         // [CHANGED v3.14.0] The save belongs to the open project, so its ownership record is the
         // one that gets updated and no other workspace is touched.
-        this._hass.connection.sendMessagePromise({ 
-            type: 'libi/save_automation', 
-            slug: this._project ? this._project.slug : 'default',
-            name: this._project ? this._project.name : '',
-            nets: this.core.nets 
-        })
-        // [CHANGED v3.5.0] The backend now merges into Home Assistant's own automations.yaml,
-        // scripts.yaml and scenes.yaml and reloads the domains it touched, so it reports what it
-        // wrote and which files it had to leave alone. Show that instead of a fixed sentence.
-        .then(res => {
-            const r = res || {};
-            const errs = r.errors || [];
-            // [CHANGED v3.34.0] Only a save the backend confirms makes the project match the disk. A
-            // refused save (one of Home Assistant's files could not be read) keeps the unsaved marker.
-            if (r.saved !== false) this._projectDirty = false;
-            // [ADDED v3.47.0] The backend says which version of each net is the one now in Home Assistant.
-            if (r.versions) this._versions = r.versions;
-            if (!this._project && r.slug) {
-                this._project = { slug: r.slug, name: 'Default' };
-                this._rememberProject();
+        const slug = this._project ? this._project.slug : 'default';
+        const name = this._project ? this._project.name : '';
+        const nets = this.core.nets;
+        const ws = (msg) => this._hass.connection.sendMessagePromise(msg);
+        const said = (err) => this._staleBackend(err) || (err && err.message ? err.message : String(err));
+        let plan;
+        try {
+            plan = (await ws({ type: 'libi/compile_project', slug, name, nets })) || {};
+        } catch (err) {
+            console.error('LIBI could not compile', err);
+            return { saved: false, failed: said(err) };
+        }
+        if (!plan.ok) return { saved: false, compileErrors: (plan.errors || []).length ? plan.errors : ['the compile did not finish'] };
+        const ops = [...(plan.upserts || []).map(op => ({ ...op, op: 'upsert' })),
+            ...(plan.removals || []).map(op => ({ ...op, op: 'remove' }))];
+        const done = [];
+        let failure = null;
+        for (const [index, op] of ops.entries()) {
+            const path = `config/${op.domain}/config/${encodeURIComponent(op.key)}`;
+            try {
+                if (op.op === 'upsert') await this._hass.callApi('POST', path, op.config);
+                else await this._hass.callApi('DELETE', path);
+                done.push({ domain: op.domain, key: op.key, op: op.op });
+            } catch (err) {
+                failure = { domain: op.domain, key: op.key, op: op.op, label: op.label || '', message: this._apiError(err),
+                    not_sent: ops.length - index - 1 };
+                break;
             }
+        }
+        let r;
+        try {
+            r = (await ws({ type: 'libi/save_done', slug, name, nets, done, failure, stamp: plan.stamp || '' })) || {};
+        } catch (err) {
+            console.error('LIBI could not record the save', err);
+            return { saved: false, failed: said(err) };
+        }
+        // [CHANGED v3.34.0] Only a save the backend confirms makes the project match what is saved; [CHANGED v3.85.0] and
+        // one in which Home Assistant refused nothing.
+        r.complete = r.saved !== false && !failure;
+        if (r.complete) this._markSaved();
+        // [ADDED v3.47.0] The backend says which version of each net is the one now in Home Assistant.
+        if (r.versions) this._versions = r.versions;
+        if (!this._project && r.slug) {
+            this._project = { slug: r.slug, name: 'Default' };
+            this._rememberProject();
+        }
+        this._render();
+        return r;
+    }
+
+    /** [ADDED v3.85.0] A panel newer than the LIBI Home Assistant runs - copied in, Home Assistant not restarted (the
+     *  JavaScript is new after a refresh, the Python only after a restart) - says so, instead of "Unknown command". */
+    _staleBackend(err) {
+        return err && err.code === 'unknown_command'
+            ? 'LIBI was updated, but Home Assistant still runs the previous version. Restart Home Assistant (Settings ▸ System ▸ Restart), then try again.'
+            : '';
+    }
+
+    /** [ADDED v3.85.0] Home Assistant's reason for refusing a call to its config API: the message it answered with. */
+    _apiError(err) {
+        const body = err && err.body;
+        if (body && typeof body === 'object' && body.message) return String(body.message);
+        if (typeof body === 'string' && body.trim()) return body.trim();
+        if (err && (err.message || err.error)) return String(err.message || err.error);
+        return String(err);
+    }
+
+    /** [ADDED v3.85.0] The NETs as they were last loaded or saved, to know whether anything is not saved - the user's rule
+     *  (2026-11-04) asks before leaving with changes not saved. Only the logic counts: not the editor's own marks, nor a
+     *  NET folded or unfolded. */
+    _netsSnapshot() {
+        const skip = new Set(['structuralError', 'collapsed', 'source', 'source_note']);
+        return JSON.stringify(this.core.nets || [], (key, value) => (skip.has(key) ? undefined : value));
+    }
+
+    _markSaved() {
+        try { this.core.validateAST(); } catch (err) { /* the snapshot is taken as it is */ }
+        this._savedSnapshot = this._netsSnapshot();
+        this._projectDirty = false;
+    }
+
+    /** [ADDED v3.85.0] Whether anything changed since the last load or save. checked: the drawing is checked first, as a
+     *  save would check it, so its own marks are alike on both sides. */
+    _hasUnsavedChanges(checked = false) {
+        if (this._savedSnapshot === undefined) return !!this._projectDirty;
+        if (checked) { try { this.core.validateAST(); } catch (err) { /* compared as it is */ } }
+        return this._netsSnapshot() !== this._savedSnapshot;
+    }
+
+    /** [ADDED v3.85.0] A NET deleted and its project already letting go of it: the saved NETs no longer have it either. */
+    _forgetSaved(nid) {
+        if (this._savedSnapshot === undefined) return;
+        try { this._savedSnapshot = JSON.stringify(JSON.parse(this._savedSnapshot).filter(n => !n || n.id !== nid)); }
+        catch (err) { /* the next check compares with what it has */ }
+    }
+
+    /** [ADDED v3.85.0] A question with answers of its own - Yes and No, or the ways a NET can be deleted. Resolves to the
+     *  id of the answer chosen. */
+    _ask(title, text, answers) {
+        return new Promise(resolve => {
+            if (this._askState) this._askState.resolve(null);
+            this._askState = { title, text, answers, resolve };
+            this._modal = 'ask';
             this._render();
-            alert(r.message || 'AST Saved & Compiled successfully!');
-            if (errs.length) console.warn('LIBI save reported problems', errs);
-        })
-        .catch(err => { console.error("Failed to save AST", err); alert('Save failed: ' + (err && err.message ? err.message : err)); });
+        });
+    }
+
+    _askDialogHtml() {
+        const a = this._askState || { title: '', text: '', answers: [] };
+        const notes = a.answers.filter(x => x.note)
+            .map(x => `<p class="ask-note" dir="auto"><b>${this._esc(x.label)}</b>: ${this._esc(x.note)}</p>`).join('');
+        const buttons = a.answers.map(x => `<button class="btn ${x.kind || 'btn-ghost'} ask-answer" data-answer="${this._esc(x.id)}">${this._esc(x.label)}</button>`).join('');
+        return `<div class="modal-overlay" id="modalOverlay"><div class="modal ask-modal">
+            <h2 class="modal-title" dir="auto">${this._esc(a.title)}</h2>
+            <p class="ask-text" dir="auto">${this._esc(a.text)}</p>${notes}
+            <div class="modal-actions ask-actions">${buttons}</div>
+        </div></div>`;
+    }
+
+    _answerAsk(id) {
+        const a = this._askState;
+        this._askState = null;
+        this._modal = null;
+        this._render();
+        if (a) a.resolve(id);
+    }
+
+    /** [ADDED v3.85.0] Leaving the editor - closing the project, opening another one, making a new one - with changes not
+     *  saved asks whether to save them, the user's rule (2026-11-04). Yes runs SAVE & COMPILE and leaves only once that
+     *  saved, saying why when it did not; No leaves them unsaved. Returns whether to go on. */
+    async _leaveCheck() {
+        if (!this._hasUnsavedChanges(true)) return true;
+        const answer = await this._ask('The changes were not saved',
+            'There are changes that are not saved in Home Assistant. Save them now?',
+            [{ id: 'yes', label: 'Yes', kind: 'btn-primary' }, { id: 'no', label: 'No', kind: 'btn-ghost' }]);
+        if (answer !== 'yes') return answer === 'no';
+        const r = await this._saveProject();
+        if (r.complete && r.status === 'ok') return true;
+        alert(this._saveResultText(r));
+        return !!r.complete;
+    }
+
+    /** [ADDED v3.85.0] Deleting a NET asks what becomes of it in Home Assistant - the user's rule (2026-11-04): deleted
+     *  completely, or deleted and its automation put back as V1, the original it was before LIBI changed it; or removed
+     *  from LIBI only, its automation left as it is now (what Remove from Net did). Home Assistant's config API makes the
+     *  change; libi/net_removed lets the project go of the NET and waits for Home Assistant. Deleting completely still
+     *  asks about the NET's local variables (v3.77.0). */
+    async _deleteNet(nid) {
+        const net = this.core.nets.find(n => n.id === nid);
+        if (!net || !this._hass || !this._hass.connection) return;
+        const ws = (msg) => this._hass.connection.sendMessagePromise(msg);
+        const slug = this._project ? this._project.slug : 'default';
+        let info;
+        try {
+            info = (await ws({ type: 'libi/net_delete_plan', slug, net_id: nid, nets: this.core.nets })) || {};
+        } catch (err) {
+            alert('Nothing was deleted: ' + (this._staleBackend(err) || 'LIBI could not check this NET - ' + (err && err.message ? err.message : err)));
+            return;
+        }
+        if ((info.errors || []).length) {
+            alert('Nothing was deleted: ' + info.errors.join('; '));
+            return;
+        }
+        const kind = info.domain || 'automation';
+        const answers = [{ id: 'delete', label: 'Delete completely', kind: 'btn-danger',
+            note: info.in_ha ? `the NET goes, and its ${kind} is deleted from Home Assistant.` : 'the NET goes. It is not in Home Assistant.' }];
+        if (info.in_ha && info.original) {
+            answers.push({ id: 'restore', label: `Delete and go back to V${info.original.v}`, kind: 'btn-primary',
+                note: `the NET goes, and its ${kind} goes back to V${info.original.v}, the original it was before LIBI changed it.` });
+        }
+        if (info.in_ha) answers.push({ id: 'keep', label: 'Remove from LIBI only', kind: 'btn-ghost', note: `the NET goes, and its ${kind} stays in Home Assistant as it is now.` });
+        answers.push({ id: 'cancel', label: 'Cancel', kind: 'btn-ghost' });
+        const number = this.core.nets.indexOf(net) + 1;
+        const choice = await this._ask(`Delete NET ${number} "${net.name || ''}"?`,
+            info.in_ha ? `What becomes of its ${kind} in Home Assistant?` : 'This NET is not in Home Assistant.', answers);
+        if (!choice || choice === 'cancel') return;
+        // [CHANGED v3.77.0] Its local variables go too when the user agrees - asked before anything is deleted, deleted
+        // only once the NET and its automation are gone. A NET that stays in Home Assistant keeps them.
+        let picked = [];
+        if (choice === 'delete') {
+            const runs = !info.in_ha && !!(net.ha_id && this.online.findAutomationEntity(this._hass, net));
+            const local = runs ? null : await this._netHelpers(net, info.in_ha && kind === 'automation' ? info.key : '');
+            const question = this._netHelpersQuestion(net, local);
+            picked = question && confirm(question) ? local.helpers.map(h => h.entity_id) : [];
+        }
+        const path = `config/${info.domain}/config/${encodeURIComponent(info.key)}`;
+        try {
+            if (choice === 'delete' && info.in_ha) await this._hass.callApi('DELETE', path);
+            if (choice === 'restore') await this._hass.callApi('POST', path, info.original.config);
+        } catch (err) {
+            alert('Nothing was deleted: Home Assistant refused it - ' + this._apiError(err));
+            return;
+        }
+        let res;
+        try {
+            res = (await ws({ type: 'libi/net_removed', slug, net_id: nid, stamp: info.stamp || '',
+                mode: { delete: 'deleted', restore: 'restored', keep: 'kept' }[choice],
+                domain: info.in_ha ? info.domain : '', key: info.in_ha ? info.key : '' })) || {};
+        } catch (err) {
+            res = { ok: false, errors: [err && err.message ? err.message : String(err)] };
+        }
+        this.core.nets = this.core.nets.filter(n => n.id !== nid);
+        this.core.pushHistory();
+        this._forgetSaved(nid);
+        this._inspectedEl = null;
+        this._render();
+        const errs = res.errors || [];
+        let text = choice === 'restore' ? `NET ${number} was deleted, and its ${kind} is back to V${info.original.v}, the original.`
+            : choice === 'keep' ? `NET ${number} was removed from LIBI. Its ${kind} stays in Home Assistant as it is now.`
+            : info.in_ha ? `NET ${number} and its ${kind} were deleted.` : `NET ${number} was deleted.`;
+        if (errs.length) text += '\n\nBut: ' + errs.join('; ');
+        if (picked.length) {
+            text += '\n\n' + (errs.length ? 'Its variables were kept: Home Assistant has not confirmed the automation is gone, so it may still run with them.'
+                : await this._deleteNetHelpers(net, picked));
+        }
+        alert(text);
     }
 
     async _fetchAutomationsList() {
@@ -309,7 +547,11 @@ class LibiPanel extends HTMLElement {
     async _importAutomation(haId) {
         if (!this._hass || !this._hass.connection) return;
         try {
-            const response = await this._hass.connection.sendMessagePromise({ type: 'libi/get_automation', automation_id: haId });
+            // [CHANGED v3.85.0] The NET it goes into: the automation is recorded as it is, V1 the original and V2 its
+            // copy - the user's rule (2026-11-04).
+            const response = await this._hass.connection.sendMessagePromise({ type: 'libi/get_automation', automation_id: haId,
+                slug: this._project ? this._project.slug : 'default', net_id: String(this._activeNetForLoad || '') });
+            if (response && response.versions && Object.keys(response.versions).length) this._versions = response.versions;
             if (response && response.net) {
                 const idx = this.core.nets.findIndex(n => n.id === this._activeNetForLoad);
                 if (idx !== -1) {
@@ -502,6 +744,8 @@ class LibiPanel extends HTMLElement {
             </div></div>`;
         } else if (this._modal === 'net_versions') {
             modalHtml = this._versionsDialogHtml();
+        } else if (this._modal === 'ask') {
+            modalHtml = this._askDialogHtml();
         } else if (this._modal === 'entity_picker') {
             modalHtml = this._epDialogHtml();
         } else if (this._modal === 'rename_entity') {
@@ -625,7 +869,11 @@ class LibiPanel extends HTMLElement {
         if (this._inspectedNetYaml) {
             const net = this.core.nets.find(n => n.id === this._inspectedNetYaml);
             if (!net) return '';
-            return `<div class="sidebar-hdr">Net YAML: ${this._esc(net.name)}</div><div class="sidebar-body" style="padding:0; display:flex; flex-direction:column; background:#1e1e1e;"><textarea class="yaml-preview-box" readonly>${this._esc(this._previewYamlContent)}</textarea><div style="padding: 16px;"><button class="btn btn-ghost" id="closeYamlSidebar" style="width:100%; color:white; border-color:var(--secondary-text-color, #555);">Close YAML Preview</button></div></div>`;
+            // [CHANGED v3.63.0] The same panel shows the NET's dashboard card, with where it goes and a Copy button.
+            const card = this._netYamlKind === 'card';
+            const hint = card ? `<div class="net-card-hint" style="padding:10px 16px 0; font-size:12px; line-height:1.4; color:#bdbdbd;">Open a dashboard, Edit ▸ Add card ▸ Manual, and paste this.</div>` : '';
+            const copy = card ? `<button class="btn" id="copyNetCard" style="width:100%; margin-bottom:8px;">Copy</button>` : '';
+            return `<div class="sidebar-hdr">${card ? 'Dashboard card' : 'Net YAML'}: ${this._esc(net.name)}</div><div class="sidebar-body" style="padding:0; display:flex; flex-direction:column; background:#1e1e1e;">${hint}<textarea class="yaml-preview-box" readonly>${this._esc(this._previewYamlContent)}</textarea><div style="padding: 16px;">${copy}<button class="btn btn-ghost" id="closeYamlSidebar" style="width:100%; color:white; border-color:var(--secondary-text-color, #555);">${card ? 'Close' : 'Close YAML Preview'}</button></div></div>`;
         }
 
         if (!this._inspectedEl) {
@@ -669,8 +917,8 @@ class LibiPanel extends HTMLElement {
                         <option value="cmp_eq" ${el.type === 'cmp_eq' ? 'selected' : ''}>Compare (EQ =)</option>
                         <option value="cmp_ne" ${el.type === 'cmp_ne' ? 'selected' : ''}>Compare (NE ≠)</option>
                         <option value="cmp_rng" ${el.type === 'cmp_rng' ? 'selected' : ''}>Compare (RANGE)</option>
-                        <option value="wait" ${el.type === 'wait' ? 'selected' : ''}>Wait for Trigger</option>
-                        <option value="notify" ${el.type === 'notify' ? 'selected' : ''}>Send Notification</option>
+                        ${el.type === 'wait' ? '<option value="wait" selected>Wait for Trigger (old drawing)</option>' : ''}
+                        ${el.type === 'notify' ? '<option value="notify" selected>Send Notification (old drawing)</option>' : ''}
                     </select>
                 </div>
                 ${elLevel === 'automation' && !el.type.startsWith('coil') && !el.type.startsWith('math') && el.type !== 'move' && el.type !== 'notify' && el.type !== 'ctu' && el.type !== 'repeat' ? `
@@ -1265,7 +1513,7 @@ class LibiPanel extends HTMLElement {
             <h2 class="modal-title">Rename</h2>
             <p style="font-size:12px; color:var(--secondary-text-color, #757575); margin:0 0 10px 0; font-family:monospace; word-break:break-all;">${this._esc(eid)}</p>
             <div class="fgrp"><label>Name</label>
-                <input type="text" id="renameInput" value="${this._esc(this._renameTo)}" dir="auto" placeholder="חלונות" /></div>
+                <input type="text" id="renameInput" value="${this._esc(this._renameTo)}" dir="auto" placeholder="New name" /></div>
             <p style="font-size:12px; color:var(--secondary-text-color, #757575); margin:0;">This is the name Home Assistant shows for this entity everywhere, not only in LIBI. The entity id itself does not change, so nothing that points at it breaks.</p>
             <div class="modal-actions">
                 <button class="btn btn-ghost" id="closeModalBtn">Cancel</button>
@@ -1615,7 +1863,7 @@ class LibiPanel extends HTMLElement {
                 slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">Value (IN2)</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`);
             } else if (kind === 'time') {
                 el.sourceA = 'time';
-                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Left side</label><input type="text" value="the clock" disabled /></div>`);
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Left side (IN1)</label><input type="text" value="${CLOCK_IN1.time}" disabled /></div>`);
                 slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">Fixed time (HH:MM:SS)</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB || '')}" placeholder="08:00:00" /></div>`);
                 slot.appendChild(this._picker('entity', el.sourceB, v => { el.sourceB = v; this.core.pushHistory(); this._render(); },
                     { label: 'or a time helper', id: 'sourceBhelper', domains: ['input_datetime', 'sensor'] }));
@@ -1626,23 +1874,37 @@ class LibiPanel extends HTMLElement {
                 }
             } else if (kind === 'date') {
                 el.sourceA = 'weekday';
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Left side (IN1)</label><input type="text" value="${CLOCK_IN1.weekday}" disabled /></div>`);
+                // [ADDED v3.76.0] Or the days an 8-bit helper holds - bit 1 Sunday ... bit 7 Saturday, ticked on the
+                // dashboard with LIBI's days row (the user's design); while a helper is chosen, the fixed days are off.
+                const helper = /^(input_number|number)\./.test(String(el.sourceB || '')) ? String(el.sourceB) : '';
                 const days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-                const picked = String(el.sourceB || '').split(',').map(d => d.trim()).filter(Boolean);
+                const picked = helper ? [] : String(el.sourceB || '').split(',').map(d => d.trim()).filter(Boolean);
                 const wrap = document.createElement('div');
                 wrap.className = 'fgrp';
                 wrap.innerHTML = `<label>Days of the week</label><div style="display:flex;flex-wrap:wrap;gap:6px;">${
                     days.map(d => `<label style="display:flex;align-items:center;gap:3px;font-size:12px;">
-                        <input type="checkbox" data-day="${d}" ${picked.includes(d) ? 'checked' : ''}/>${d}</label>`).join('')}</div>`;
+                        <input type="checkbox" data-day="${d}" ${picked.includes(d) ? 'checked' : ''} ${helper ? 'disabled' : ''}/>${d}</label>`).join('')}</div>`;
                 slot.appendChild(wrap);
                 wrap.querySelectorAll('input[type=checkbox]').forEach(cb => cb.addEventListener('change', () => {
                     const sel = [...wrap.querySelectorAll('input[type=checkbox]')].filter(x => x.checked).map(x => x.dataset.day);
                     el.sourceB = sel.join(', ');
                     this.core.pushHistory(); this._render();
                 }));
+                slot.appendChild(this._picker('entity', helper, v => { el.sourceB = v || ''; this.core.pushHistory(); this._render(); },
+                    { label: 'or the days of a helper (8 bits: bit 1 Sunday ... bit 7 Saturday)', id: 'sourceBdays', domains: ['input_number', 'number'] }));
             } else if (kind === 'datetime') {
                 el.sourceA = 'datetime';
+                // [CHANGED v3.70.0] A schedule as well: the importer draws schedule.x on as the date and time = schedule.x.
                 slot.appendChild(this._picker('entity', el.sourceB, v => { el.sourceB = v; this.core.pushHistory(); this._render(); },
-                    { label: 'Date and time helper', id: 'sourceB', domains: ['input_datetime', 'sensor'] }));
+                    { label: 'Date and time helper or schedule', id: 'sourceB', domains: ['input_datetime', 'sensor', 'schedule'] }));
+                // [ADDED v3.71.0] What the schedule holds, and where its days and hours are set.
+                const week = String(el.sourceB || '').startsWith('schedule.') ? this._scheduleText(el.sourceB) : '';
+                if (week) {
+                    slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Days and hours</label>
+                        <div class="insp-note" dir="ltr">${this._esc(week)}</div>
+                        <div class="insp-note">Set in the schedule itself: Settings ▸ Devices &amp; services ▸ Helpers.</div></div>`);
+                }
             } else if (kind === 'sun') {
                 el.sourceA = 'sun';
                 slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">Event</label><select id="inp_sourceB">
@@ -1801,10 +2063,10 @@ class LibiPanel extends HTMLElement {
                         </button>
                         <div class="net-menu-dropdown" id="dropdown-${net.id}">
                             <button class="net-menu-item show-yaml-btn" data-nid="${net.id}">📄 Show as YAML</button>
+                            <button class="net-menu-item card-net-btn" data-nid="${this._esc(net.id)}">📊 Dashboard card</button>
                             <button class="net-menu-item versions-net-btn" data-nid="${this._esc(net.id)}">🕘 Versions</button>
                             <button class="net-menu-item duplicate-net-btn" data-nid="${net.id}">⧉ Duplicate Net</button>
-                            <button class="net-menu-item danger remove-net-btn" data-nid="${net.id}">✖ Remove from Net</button>
-                            ${net.ha_id ? `<button class="net-menu-item danger delete-auto-btn" data-nid="${this._esc(net.id)}" data-haid="${this._esc(net.ha_id)}">🗑️ Delete File</button>` : ''}
+                            <button class="net-menu-item danger delete-net-btn" data-nid="${this._esc(net.id)}">🗑️ Delete NET…</button>
                         </div>
                     </div>
                 </div>
@@ -1837,7 +2099,9 @@ class LibiPanel extends HTMLElement {
     _versionsDialogHtml() {
         const vm = this._verModal || {};
         const net = this.core.nets.find(n => n.id === vm.nid);
-        const reasons = { opened: 'Recorded when the project was opened', saved: 'Saved from LIBI', external: 'Changed outside LIBI' };
+        // [CHANGED v3.85.0] V1 of an automation opened in LIBI is the original as Home Assistant had it, V2 its copy.
+        const reasons = { opened: 'Recorded when the project was opened', saved: 'Saved from LIBI', external: 'Changed outside LIBI',
+            original: 'The original, as it was in Home Assistant when it was first opened in LIBI', copy: 'A copy of the original, to work on' };
         const muted = 'font-size:13px; color:var(--secondary-text-color, #757575); margin:0;';
         let body;
         if (vm.loading) body = `<p style="${muted}">Loading the versions…</p>`;
@@ -1850,6 +2114,7 @@ class LibiPanel extends HTMLElement {
             return `<div class="ver-item${running ? ' running' : ''}">
                 <div class="ver-row">
                     <span class="ver-num">V${this._esc(v.v)}</span>
+                    ${v.original ? '<span class="ver-original">Original</span>' : ''}
                     <span class="ver-when">${this._esc(when)}</span>
                     ${running ? '<span class="ver-run">● Runs in Home Assistant</span>' : ''}
                     <span style="flex:1"></span>
@@ -2428,6 +2693,33 @@ class LibiPanel extends HTMLElement {
                 ['friday', 'Fri'], ['saturday', 'Sat'], ['sunday', 'Sun']];
     }
 
+    // [ADDED v3.71.0] Every schedule helper with its days and hours, by object id, for the CMP DATETIME block that
+    // compares the clock with one. Read when the panel opens and whenever the variables are read again.
+    async _loadSchedules(render = true) {
+        if (!this._hass || !this._hass.connection) return;
+        const next = {};
+        try {
+            const res = await this._hass.connection.sendMessagePromise({ type: 'schedule/list' });
+            (Array.isArray(res) ? res : (res && res.items) || []).forEach(it => { if (it && it.id) next[String(it.id)] = it; });
+        } catch (err) { /* no schedule integration in this installation */ }
+        this._schedules = next;
+        if (render && this._initialized) this._render();
+    }
+
+    // [ADDED v3.71.0] The days and hours a schedule holds, short: "Tue Thu Sun 06:00–06:30", or day by day when the
+    // hours differ. '' when they are not known.
+    _scheduleText(entityId) {
+        const item = (this._schedules || {})[String(entityId || '').split('.').slice(1).join('.')];
+        if (!item) return '';
+        const hm = (t) => String(t || '').replace(/^(\d{1,2}:\d{2}):00$/, '$1');
+        const spans = (day) => (Array.isArray(item[day]) ? item[day] : []).map(s => `${hm(s.from)}–${hm(s.to)}`).join(', ');
+        const marked = this.WEEK_DAYS().filter(([day]) => spans(day));
+        if (!marked.length) return 'no days marked yet';
+        const first = spans(marked[0][0]);
+        if (marked.every(([day]) => spans(day) === first)) return `${marked.map(([, name]) => name).join(' ')} ${first}`;
+        return marked.map(([day, name]) => `${name} ${spans(day)}`).join(' · ');
+    }
+
     _hkPickKind(domain) {
         const kind = this.HELPER_KINDS().find(k => k.domain === domain);
         if (!kind) return;
@@ -2683,6 +2975,7 @@ class LibiPanel extends HTMLElement {
             } catch (err) { /* the domain is not loaded in this installation */ }
         }));
         this._helperIds = next;
+        await this._loadSchedules(false);  // [ADDED v3.71.0] a schedule changed here shows its new days and hours
     }
 
     async _varsCreate() {
@@ -2736,10 +3029,7 @@ class LibiPanel extends HTMLElement {
             `rung or automation still pointing at the old id would break.\n\nDo it anyway?`);
         if (!ok) { this._render(); return; }
         try {
-            for (const key of [`${domain}_id`, 'item_id', 'id']) {
-                try { await this._hass.connection.sendMessagePromise({ type: `${domain}/delete`, [key]: objectId }); break; }
-                catch (err) { if (key === 'id') throw err; }
-            }
+            await this._deleteHelperItem(domain, objectId);  // [CHANGED v3.77.0] the one copy of the delete
             await this._hass.connection.sendMessagePromise({ type: `${spec.domain}/create`, name, ...(spec.defaults || {}) });
             await this._varsRefreshIds();
             this._render();
@@ -2755,18 +3045,79 @@ class LibiPanel extends HTMLElement {
         const objectId = entityId.split('.').slice(1).join('.');
         const nm = this.core.friendlyName(entityId, this._hass) || entityId;
         if (!confirm(`Delete ${nm}?\n\nThis removes the variable from Home Assistant. Anything still pointing at it will break.`)) return;
-        const keys = [`${domain}_id`, 'item_id', 'id'];
-        let lastErr = null;
-        for (const key of keys) {
-            try {
-                await this._hass.connection.sendMessagePromise({ type: `${domain}/delete`, [key]: objectId });
-                (this.core.nets || []).forEach(n => { if (n.vars) n.vars = n.vars.filter(v => v !== entityId); });
-                await this._varsRefreshIds();
-                this._render();
-                return;
-            } catch (err) { lastErr = err; }
+        try {
+            await this._deleteHelperItem(domain, objectId);
+        } catch (err) {
+            alert('Could not delete the variable: ' + (err && err.message ? err.message : err));
+            return;
         }
-        alert('Could not delete the variable: ' + (lastErr && lastErr.message ? lastErr.message : lastErr));
+        (this.core.nets || []).forEach(n => { if (n.vars) n.vars = n.vars.filter(v => v !== entityId); });
+        await this._varsRefreshIds();
+        this._render();
+    }
+
+    // [CHANGED v3.77.0] One helper deleted with Home Assistant's own command (admin only), for the variables bar (a delete,
+    // a change of type) and for the variables of a NET. Every helper LIBI lists takes ${domain}_id; the other two keys are what earlier versions
+    // tried as well. The first error is the one that says why.
+    async _deleteHelperItem(domain, itemId) {
+        let firstErr = null;
+        for (const key of [`${domain}_id`, 'item_id', 'id']) {
+            try { await this._hass.connection.sendMessagePromise({ type: `${domain}/delete`, [key]: itemId }); return; }
+            catch (err) { if (!firstErr) firstErr = err; }
+        }
+        throw firstErr;
+    }
+
+    // [ADDED v3.77.0] The local variables of a NET - the helpers it uses that nothing else uses (libi/net_helpers) -
+    // which deleting the NET offers to delete too, the user's request. deleting: the id of its automation being
+    // deleted, the one user that does not count. null when the check could not be made: then nothing is offered.
+    async _netHelpers(net, deleting = '') {
+        if (!net || !this._hass || !this._hass.connection) return null;
+        try {
+            const res = await this._hass.connection.sendMessagePromise({
+                type: 'libi/net_helpers', net, nets: (this.core.nets || []).filter(n => n !== net),
+                slug: this._project ? this._project.slug : 'default', automation_id: deleting || '' });
+            return res && !res.error ? res : null;
+        } catch (err) {
+            return null;
+        }
+    }
+
+    // [ADDED v3.77.0] The question about them, or '' when there is none to delete. Plain text (a confirm), so the names
+    // from Home Assistant need no escaping.
+    _netHelpersQuestion(net, local) {
+        const helpers = (local && local.helpers) || [];
+        if (!net || !helpers.length) return '';
+        const line = h => `  • ${h.name || h.entity_id} (${h.entity_id})`;
+        let text = `Also delete the local variables of NET ${(this.core.nets || []).indexOf(net) + 1} "${net.name || ''}"?\n\n`
+            + `No other automation, script, scene, group or NET uses them, so they are removed from Home Assistant's helpers:\n`
+            + helpers.map(line).join('\n');
+        if ((local.kept || []).length) text += `\n\nKept:\n${local.kept.map(h => `${line(h)} - ${h.reason}`).join('\n')}`;
+        return text + '\n\nNot checked: dashboard cards and template entities that show them - they will show them as unavailable.'
+            + '\nOK deletes them. Cancel keeps them.';
+    }
+
+    // [ADDED v3.77.0] Deletes the variables the user agreed to, once the NET is gone: asked again now, the NET's own
+    // automation no longer left out, so each one goes only if nothing - that automation included - uses it any more.
+    async _deleteNetHelpers(net, picked) {
+        const now = await this._netHelpers(net);
+        if (!now) return 'Its variables were kept: LIBI could not check that nothing else uses them.';
+        const done = [], kept = [], failed = [];
+        for (const id of picked) {
+            const helper = (now.helpers || []).find(h => h.entity_id === id);
+            if (!helper) {
+                const used = (now.kept || []).find(h => h.entity_id === id);
+                kept.push(`${id} (${used ? used.reason : 'no longer in Home Assistant'})`);
+                continue;
+            }
+            try { await this._deleteHelperItem(helper.domain, helper.item_id); done.push(helper.name || id); }
+            catch (err) { failed.push(`${id} (${err && err.message ? err.message : err})`); }
+        }
+        await this._varsRefreshIds();
+        this._render();
+        return [done.length ? `Deleted ${done.length} variable${done.length === 1 ? '' : 's'}: ${done.join(', ')}.` : '',
+            kept.length ? `Kept: ${kept.join(', ')}.` : '',
+            failed.length ? `Could not delete: ${failed.join(', ')}.` : ''].filter(Boolean).join('\n');
     }
 
     // Dropping a variable onto a block. A pin takes it in that pin's own field, and the block itself
@@ -2799,7 +3150,7 @@ class LibiPanel extends HTMLElement {
         if (!this._project) {
             return `<span class="project-chip none" title="No project is open. Open one, or make a new one, from the menu on the right."><span class="dot"></span><span class="nm">No project</span></span>`;
         }
-        const dirty = this._projectDirty ? '<span class="dirty" title="There are unsaved changes">●</span>' : '';
+        const dirty = this._hasUnsavedChanges() ? '<span class="dirty" title="There are unsaved changes">●</span>' : '';
         return `<span class="project-chip" title="Project ${this._esc(this._project.name)} — stored as ${this._esc(this._project.slug)}.libi"><span class="dot"></span><span class="nm">${this._esc(this._project.name)}</span>${dirty}</span>`;
     }
 
@@ -2808,30 +3159,6 @@ class LibiPanel extends HTMLElement {
             if (this._project) localStorage.setItem('libi_project', JSON.stringify(this._project));
             else localStorage.removeItem('libi_project');
         } catch (err) { /* storage is unavailable, the session still works */ }
-    }
-
-    // [ADDED v3.15.0] Saves the workspace without the lint gate and without a dialog. Closing must
-    // never lose work, and a net that is still half drawn has to survive even though it compiles to
-    // nothing. The backend already skips such a net when it writes to Home Assistant, while still
-    // keeping it in the .libi file, so this is safe to call at any moment.
-    async _projectSaveQuiet() {
-        if (!this._hass || !this._hass.connection || !this._project) return false;
-        try {
-            const res = await this._hass.connection.sendMessagePromise({
-                type: 'libi/save_automation',
-                slug: this._project.slug,
-                name: this._project.name,
-                nets: this.core.nets,
-            });
-            // [CHANGED v3.34.0] A save the backend refused is not a save.
-            if (res && res.saved === false) return false;
-            this._projectDirty = false;
-            if (res && res.versions) this._versions = res.versions;
-            return true;
-        } catch (err) {
-            console.error('LIBI could not save the project on close', err);
-            return false;
-        }
     }
 
     async _projectRefreshList() {
@@ -2849,8 +3176,8 @@ class LibiPanel extends HTMLElement {
     // Opening a project replaces the canvas wholesale. Every net comes back exactly as it was left,
     // unfinished logic included, together with the automation each one was loaded from.
     async _projectOpen(slug) {
-        // Leaving a workspace writes it out, the same as closing it does.
-        if (this._project && this._project.slug !== slug) await this._projectSaveQuiet();
+        // [CHANGED v3.85.0] Leaving a workspace with changes not saved asks Yes or No (the user's rule, 2026-11-04).
+        if (!(await this._leaveCheck())) return;
         try {
             const res = await this._hass.connection.sendMessagePromise({ type: 'libi/project_open', slug });
             this.core.nets = res.nets || [];
@@ -2858,7 +3185,7 @@ class LibiPanel extends HTMLElement {
             this.core.resetHistory ? this.core.resetHistory() : this.core.pushHistory();
             this._project = { slug: res.slug, name: res.name };
             this._versions = res.versions || {};
-            this._projectDirty = false;
+            this._markSaved();
             this._inspectedEl = null;
             this._modal = null;
             this._rememberProject();
@@ -2873,13 +3200,15 @@ class LibiPanel extends HTMLElement {
     }
 
     async _projectCreate(name) {
+        // [ADDED v3.85.0] A new project leaves the one open: changes not saved are asked about first.
+        if (!(await this._leaveCheck())) return;
         try {
             const res = await this._hass.connection.sendMessagePromise({ type: 'libi/project_create', name });
             this.core.nets = [];
             this.core.pushHistory();
             this._project = { slug: res.slug, name: res.name };
             this._versions = {};
-            this._projectDirty = false;
+            this._markSaved();
             this._modal = null;
             this._rememberProject();
             this._render();
@@ -2896,6 +3225,7 @@ class LibiPanel extends HTMLElement {
                 this.core.nets = [];
                 this.core.pushHistory();
                 this._rememberProject();
+                this._markSaved();
             }
             this._modal = null;
             this._render();
@@ -2905,17 +3235,14 @@ class LibiPanel extends HTMLElement {
         }
     }
 
-    // [CHANGED v3.15.0] Closing writes the workspace out first, so reopening it brings back exactly
-    // the state it was closed in, including the nets that were never finished.
+    // [CHANGED v3.85.0] Closing with changes not saved asks Yes or No - the user's rule (2026-11-04). Until 3.84.0 closing
+    // wrote the workspace out, and Home Assistant's files with it, without a word.
     async _projectClose() {
-        if (this._project) {
-            const ok = await this._projectSaveQuiet();
-            if (!ok && !confirm('The project could not be saved. Close it anyway and lose the unsaved changes?')) return;
-        }
+        if (!(await this._leaveCheck())) return;
         this._project = null;
         this.core.nets = [];
         this.core.pushHistory();
-        this._projectDirty = false;
+        this._markSaved();
         this._inspectedEl = null;
         this._rememberProject();
         this._render();
@@ -3098,10 +3425,10 @@ class LibiPanel extends HTMLElement {
     }
 
     _elBody(el, errs) {
-        const varPin = (side, name, val, errClass, propName) => {
+        const varPin = (side, name, val, errClass, propName, extra = '') => {
             if (!name && val === null) return `<div class="plc-col-${side} empty"></div>`;
             return `
-                <div class="plc-col-${side} ${errClass ? 'has-error' : ''}">
+                <div class="plc-col-${side} ${extra} ${errClass ? 'has-error' : ''}">
                     ${name ? `<span class="pin-lbl">${this._esc(name)}</span>` : ''}
                     ${val !== null ? `<div class="pin-val ${errClass ? 'has-error' : ''}" data-prop="${propName}" title="${this._esc(val)}" dir="auto">${this._formatDisplayVal(val)}</div>` : ''}
                 </div>
@@ -3115,7 +3442,7 @@ class LibiPanel extends HTMLElement {
                 <div class="plc-header">${String(el.sourceA || '') === 'time' ? 'CMP TIME RANGE' : 'CMP RANGE'}</div>
                 <div class="power-row"><div class="pin-lbl">EN</div><div class="pin-lbl">ENO</div></div>
                 <div class="plc-row">
-                    ${varPin('l', 'IN', el.sourceA || '?', errs.srcA, 'sourceA')}
+                    ${varPin('l', 'IN', clockIn1(String(el.sourceA || '')) || el.sourceA || '?', errs.srcA, 'sourceA', clockIn1(String(el.sourceA || '')) ? 'clock' : '')}
                     ${varPin('r', '', null, false, '')}
                 </div>
                 <div class="plc-row">
@@ -3166,18 +3493,22 @@ class LibiPanel extends HTMLElement {
             const aSide = String(el.sourceA || '');
             const heading = aSide === 'time' ? 'CMP TIME' : aSide === 'weekday' ? 'CMP DAY'
                           : aSide === 'datetime' ? 'CMP DATETIME' : aSide === 'sun' ? 'CMP SUN' : `CMP ${op}`;
+            // [ADDED v3.71.0] A schedule on IN2: the days and hours it holds, which the clock is compared with.
+            const week = aSide === 'datetime' && String(el.sourceB || '').startsWith('schedule.') ? this._scheduleText(el.sourceB) : '';
+            const clock = clockIn1(aSide);  // [ADDED v3.77.0] datetime.time.now / datetime.day.now
             innerBody = `
             <div class="plc-block">
                 <div class="plc-header">${heading === `CMP ${op}` ? heading : heading + ' ' + op}</div>
                 <div class="power-row"><div class="pin-lbl">EN</div><div class="pin-lbl">ENO</div></div>
                 <div class="plc-row">
-                    ${varPin('l', 'IN1', el.sourceA || '?', errs.srcA, 'sourceA')}
+                    ${varPin('l', 'IN1', clock || el.sourceA || '?', errs.srcA, 'sourceA', clock ? 'clock' : '')}
                     ${varPin('r', '', null, false, '')}
                 </div>
                 <div class="plc-row">
                     ${varPin('l', 'IN2', el.sourceB || '?', errs.srcB, 'sourceB')}
                     ${varPin('r', '', null, false, '')}
                 </div>
+                ${week ? `<div class="plc-note" dir="ltr" title="${this._esc(week)}">${this._esc(week)}</div>` : ''}
             </div>`;
         } else if (el.type.startsWith('math')) {
             let op = this.core.opSymbol(el.type);
@@ -3218,8 +3549,10 @@ class LibiPanel extends HTMLElement {
         } else if (el.type === 'wait') {
             innerBody = `<div class="el-lbl ${errs.lbl?'has-error':''}" style="${this._lblStyle(el)}" title="${this._esc(el.label || '')}" dir="auto">${this._formatDisplayVal(el.label, true) || '...'}</div><div class="el-ico"><span style="font-weight:900;font-size:12px;">WAIT</span></div>`;
         } else {
+            // [CHANGED v3.68.0] el.type: there is no `type` here, so a block with no icon of its own (an old Send
+            // Notification) threw and stopped the whole canvas from drawing.
             let svgKey = LIBI_ICONS[el.type] ? el.type
-                       : (type.startsWith('contact') ? 'contact_no' : (type.startsWith('coil') ? 'coil' : 'custom'));
+                       : (el.type.startsWith('contact') ? 'contact_no' : (el.type.startsWith('coil') ? 'coil' : 'custom'));
             
             // [CHANGED v3.9.0] The name the house uses goes above the element, and the hover carries
             // the entity id plus every target by name.
@@ -3784,7 +4117,8 @@ class LibiPanel extends HTMLElement {
             e.stopPropagation(); 
             const nid = e.currentTarget.getAttribute('data-nid'); 
             this._inspectedEl = null; 
-            this._inspectedNetYaml = nid; 
+            this._inspectedNetYaml = nid;
+            this._netYamlKind = 'yaml';
             this._wakeSidebar();
             this._previewYamlContent = 'Generating YAML...';
             
@@ -3803,41 +4137,59 @@ class LibiPanel extends HTMLElement {
             }
         });
         
-        on('closeYamlSidebar', 'click', () => { 
-            this._inspectedNetYaml = null; 
-            this._render(); 
+        on('closeYamlSidebar', 'click', () => {
+            this._inspectedNetYaml = null;
+            this._render();
         });
 
-        all('.remove-net-btn', 'click', e => { 
-            e.stopPropagation(); 
-            if(confirm('Remove this Net from the editor? (File will not be deleted)')) { 
-                this.core.nets = this.core.nets.filter(n => n.id !== e.target.getAttribute('data-nid')); 
-                this.core.pushHistory(); 
-                this._render(); 
-            } 
+        // [ADDED v3.63.0] The dashboard card of a NET, built by LIBI from what the NET compiles to: the settings it
+        // reads and the devices it switches. The card the AI chat showed was gone once the chat was.
+        all('.card-net-btn', 'click', async e => {
+            e.stopPropagation();
+            const nid = e.currentTarget.getAttribute('data-nid');
+            this._inspectedEl = null;
+            this._inspectedNetYaml = nid;
+            this._netYamlKind = 'card';
+            this._wakeSidebar();
+            this._previewYamlContent = 'Building the card...';
+            sr.querySelectorAll('.net-menu-dropdown.show').forEach(d => d.classList.remove('show'));
+            this._render();
+            const net = this.core.nets.find(n => n.id === nid);
+            if (net && this._hass && this._hass.connection) {
+                try {
+                    const res = await this._hass.connection.sendMessagePromise({ type: 'libi/net_card', net: net });
+                    this._previewYamlContent = (res && res.yaml) || 'This NET reads no setting and switches no device, so there is nothing to put on a card.';
+                } catch (err) {
+                    this._previewYamlContent = 'Error: ' + err.message;
+                }
+                if (this._inspectedNetYaml === nid && this._netYamlKind === 'card') this._render();
+            }
         });
-        
-        all('.delete-auto-btn', 'click', async e => { 
-            e.stopPropagation(); 
-            if(confirm('WARNING: This will permanently delete the automation file from HA! Are you sure?')) { 
-                const haId = e.target.getAttribute('data-haid'); 
-                const nid = e.target.getAttribute('data-nid'); 
-                try { 
-                    const res = await this._hass.connection.sendMessagePromise({ type: 'libi/delete_automation', automation_id: haId }) || {}; 
-                    this.core.nets = this.core.nets.filter(n => n.id !== nid); 
-                    this.core.pushHistory(); 
-                    this._render(); 
-                    // [CHANGED v3.34.0] Report what the backend did, a failed reload included.
-                    const errs = res.errors || [];
-                    if (errs.length) alert('The automation was deleted, but: ' + errs.join('; '));
-                    else if (res.deleted === false) alert('That automation was no longer in automations.yaml. The net was removed from the editor.');
-                    else alert('Automation deleted successfully.'); 
-                } catch (err) { 
-                    alert('Error deleting automation: ' + err.message); 
-                } 
-            } 
+        on('copyNetCard', 'click', e => {
+            const btn = e.currentTarget;
+            const done = () => { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); };
+            const byHand = () => {
+                const box = sr.querySelector('.yaml-preview-box');
+                if (!box) return;
+                box.select();
+                try { if (document.execCommand('copy')) done(); } catch (err) { /* selected: the user copies it */ }
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(this._previewYamlContent || '').then(done, byHand);
+            else byHand();
         });
-        
+
+        // [CHANGED v3.77.0] Removing or deleting a NET asks whether its local variables go too, the user's request: the
+        // helpers it uses that nothing else uses. Asked before anything is removed, deleted only once the NET is gone
+        // and nothing runs with them - a NET whose automation stays in Home Assistant keeps them.
+        // [CHANGED v3.85.0] One way to delete a NET, which asks what becomes of its entry in Home Assistant (_deleteNet) - it
+        // took the place of Remove from Net and Delete File. The answers of a question of the panel's own (_ask).
+        all('.delete-net-btn', 'click', e => {
+            e.stopPropagation();
+            this.shadowRoot.querySelectorAll('.net-menu-dropdown.show').forEach(d => d.classList.remove('show'));
+            this._deleteNet(e.currentTarget.getAttribute('data-nid'));
+        });
+        all('.ask-answer', 'click', e => this._answerAsk(e.currentTarget.getAttribute('data-answer')));
+
         all('.load-net-btn', 'click', e => { 
             e.stopPropagation(); 
             this._activeNetForLoad = e.currentTarget.getAttribute('data-nid'); 

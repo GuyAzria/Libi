@@ -4,6 +4,10 @@
   [ADDED v1.0.0 | 2026-10-26] Purpose: The AI chat in the sidebar. Open, it fills the whole sidebar and
   the inspector is hidden; closed, the inspector is back. On the collapsed rail a CHAT AI button,
   written top to bottom with upright letters, opens the sidebar straight into the chat.
+  [ADDED v1.2.0 | 2026-10-29] Purpose: A schedule is the CMP = block, no block of its own; the NET menu shows a
+  NET's dashboard card with a Copy button.
+  [ADDED v1.3.0 | 2026-10-29] Purpose: A schedule is the CMP DATETIME block (IN1 the date and time, IN2 the
+  schedule), and the online view gives it power while the schedule is on.
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi panel layout test</title></head>
 <body style="margin:0; width:1280px; height:800px;">
@@ -17,11 +21,16 @@ const check = (name, cond, detail = '') => results.push({ name, ok: !!cond, deta
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
 
+const sent = [];
+const CARD = 'type: entities\ntitle: Garden\nentities:\n- entity: schedule.garden\n';
 const hass = {
   states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
   user: { is_admin: true }, localize: (k) => k, callService: async () => {},
   connection: {
     sendMessagePromise: async (m) => {
+      sent.push(m);
+      if (m.type === 'libi/net_card') return { yaml: CARD };
+      if (m.type === 'libi/preview_yaml') return { yaml: 'alias: Garden\n' };
       if (m.type === 'libi/ai_status') return { configured: true, mode: 'cloud', provider: 'gemini', model: 'gemini-x' };
       if (m.type === 'libi/load_automation') return { nets: [] };
       if (m.type === 'libi/project_list') return { projects: [] };
@@ -101,6 +110,75 @@ try {
   check('chat is shown after CHAT AI', !!sr.querySelector('.ai-body') && shown(sr.getElementById('aiChatMount')));
   let stored = null; try { stored = localStorage.getItem('libi_sidebar_rail'); } catch (e) { /* */ }
   check('opened sidebar is remembered', stored === '0', stored);
+
+  // [ADDED v1.1.0] The message box grows with a long text, up to half the chat and inside the sidebar; the
+  // conversation keeps its room, and an emptied box is small again.
+  {
+    const box = () => sr.querySelector('.ai-input');
+    const type = (text) => { box().value = text; box().dispatchEvent(new Event('input')); };
+    const lines = (n) => Array.from({ length: n }, (_, i) => `line ${i + 1}: water the garden on the days I pick`).join('\n');
+    const empty = box().getBoundingClientRect().height;
+    const wide = box().getBoundingClientRect().width, barWide = bar().getBoundingClientRect().width;
+    type(lines(6));
+    check('the message box grows with the text', box().getBoundingClientRect().height > empty * 1.8 && box().scrollHeight <= box().clientHeight + 1,
+      `${empty} -> ${box().getBoundingClientRect().height}`);
+    type(lines(80));
+    const body = sr.querySelector('.ai-body').clientHeight, high = box().getBoundingClientRect().height;
+    check('a very long text stops at half the chat and scrolls', Math.abs(high - Math.max(120, Math.floor(body / 2))) <= 1 && box().scrollHeight > box().clientHeight,
+      `${high} of ${body}`);
+    check('the conversation still shows above the box', sr.querySelector('.ai-log').clientHeight >= 40, sr.querySelector('.ai-log').clientHeight);
+    const bottom = bar().getBoundingClientRect().bottom + 1;
+    check('the box and Send stay inside the sidebar', box().getBoundingClientRect().bottom <= bottom && sr.querySelector('.ai-send').getBoundingClientRect().bottom <= bottom);
+    check('a long text widens neither the box nor the sidebar', box().getBoundingClientRect().width === wide && bar().getBoundingClientRect().width === barWide,
+      `${box().getBoundingClientRect().width}/${wide} ${bar().getBoundingClientRect().width}/${barWide}`);
+    type('');
+    check('emptied, the box is small again', Math.abs(box().getBoundingClientRect().height - empty) <= 1, box().getBoundingClientRect().height);
+  }
+
+  // [CHANGED v1.3.0] A schedule is the CMP DATETIME block the importer draws for it (the date and time =
+  // schedule.x while it is on), never a block of its own, and the online view gives it power while the schedule is
+  // on. A contact on any other entity is still a contact. The NET menu builds the NET's dashboard card and shows it
+  // with where to paste it and a Copy button.
+  {
+    panel.aiChat.setOpen(false);
+    hass.states['schedule.garden'] = { entity_id: 'schedule.garden', state: 'off', attributes: { friendly_name: 'Garden schedule' } };
+    hass.states['binary_sensor.door'] = { entity_id: 'binary_sensor.door', state: 'off', attributes: { friendly_name: 'Door' } };
+    const net = panel.core.nets[0];
+    const sched = panel.core.mkEl('cmp_eq', 'datetime');
+    sched.sourceB = 'schedule.garden';
+    sched.isTrigger = true;
+    const door = panel.core.mkEl('contact_no', 'binary_sensor.door');
+    net.rungs[0].elements = [sched, door];
+    panel.core.syncCounters();
+    panel._render(); await sleep(30);
+    const node = sr.querySelector(`.libi-el[data-eid="${sched.id}"]`);
+    const pins = node ? [...node.querySelectorAll('.pin-val')].map(p => p.textContent) : [];
+    check('a schedule is the CMP DATETIME block: IN1 the date and time, IN2 the schedule', !!node
+      && node.querySelector('.plc-header')?.textContent === 'CMP DATETIME =' && pins[0] === 'datetime' && pins[1] === 'schedule.garden',
+      node && JSON.stringify([node.querySelector('.plc-header')?.textContent, pins]));
+    const power = (state, type) => {
+      hass.states['schedule.garden'].state = state;
+      return panel.online.evaluate({ ...sched, type }, hass, Date.now()).power;
+    };
+    check('online it has power while the schedule is on, and the other way round for ≠', power('on', 'cmp_eq') === true
+      && power('off', 'cmp_eq') === false && power('off', 'cmp_ne') === true && power('on', 'cmp_ne') === false);
+    hass.states['schedule.garden'].state = 'off';
+    check('there is no SCHEDULE block anywhere', ![...sr.querySelectorAll('.plc-header')].some(h => h.textContent.includes('SCHEDULE')));
+    check('the trigger badge stays under it', !!node && !!node.querySelector('.trigger-bottom-lbl'));
+    const doorNode = sr.querySelector(`.libi-el[data-eid="${door.id}"]`);
+    check('a plain contact is still a contact', !!doorNode && !!doorNode.querySelector('.el-ico') && !!doorNode.querySelector('.el-lbl')
+      && !doorNode.querySelector('.plc-header'));
+    const cardBtn = sr.querySelector(`.card-net-btn[data-nid="${net.id}"]`);
+    check('the NET menu offers the dashboard card', !!cardBtn && cardBtn.textContent.includes('Dashboard card'));
+    cardBtn.click(); await sleep(30);
+    check('the card is asked for this NET', sent.some(m => m.type === 'libi/net_card' && m.net && m.net.id === net.id));
+    check('the panel shows the card, where to paste it and a Copy button', (sr.querySelector('.sidebar-hdr')?.textContent || '').startsWith('Dashboard card')
+      && sr.querySelector('.yaml-preview-box')?.value === CARD && !!sr.getElementById('copyNetCard')
+      && (sr.querySelector('.net-card-hint')?.textContent || '').includes('Add card'));
+    sr.querySelector(`.show-yaml-btn[data-nid="${net.id}"]`).click(); await sleep(30);
+    check('Show as YAML shows the YAML again, without the card', (sr.querySelector('.sidebar-hdr')?.textContent || '').startsWith('Net YAML')
+      && !sr.getElementById('copyNetCard') && sr.querySelector('.yaml-preview-box')?.value === 'alias: Garden\n');
+  }
 } catch (err) {
   results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
 }

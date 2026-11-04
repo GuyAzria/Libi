@@ -5,6 +5,10 @@
   the Versions dialog lists every version with its YAML (escaped); putting an earlier one on the canvas
   keeps the net's id and automation, gives its elements fresh ids, and the save that follows sends it.
   The dialog fits a phone screen.
+  [ADDED v1.1.0 | 2026-10-29] Purpose: A NET added from the AI chat is saved with the panel's own save and read
+  back; a red block anywhere on the canvas refuses the save and the chat says so.
+  [ADDED v1.2.0 | 2026-11-04] Purpose: The save goes through libi/compile_project, Home Assistant's own config API and
+  libi/save_done; the list says which version is the original and which its copy.
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi net versions test</title></head>
 <body style="margin:0; width:1280px; height:800px;">
@@ -38,12 +42,18 @@ const VERSIONS = [
   { v: 1, saved: '2026-10-20T10:00:00+00:00', reason: 'opened', name: 'Lamp', yaml: 'id: a1\nactions: light.x\n', net: drawn('light.x') },
 ];
 const sent = [];
+let verifyResult = { results: [], ok: true };
 let saveResult = { status: 'ok', saved: true, message: 'Saved.', versions: { n1: { active: 1, latest: 2, count: 2 } } };
+// [ADDED v1.2.0] What libi/compile_project answers - one entry to send to Home Assistant's config API - and what it got.
+const PLAN = { ok: true, errors: [], unchanged: 1, stamp: 's', removals: [],
+  upserts: [{ domain: 'automation', key: 'a1', config: { id: 'a1', alias: 'Lamp' }, label: 'NET 1 "Lamp"' }] };
+const api = [];
 
 function makeHass() {
   return {
     states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
     user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+    callApi: async (method, path, body) => { api.push([method, path, body]); return { result: 'ok' }; },
     connection: {
       sendMessagePromise: async (m) => {
         sent.push(JSON.parse(JSON.stringify(m)));
@@ -52,7 +62,9 @@ function makeHass() {
         if (m.type === 'libi/project_open') return { slug: 'p', name: 'P', nets: [drawn('light.y'), JSON.parse(JSON.stringify(other))],
                                                      stats: {}, versions: { n1: { active: 2, latest: 2, count: 2 } } };
         if (m.type === 'libi/net_versions') return { active: 2, versions: JSON.parse(JSON.stringify(VERSIONS)) };
-        if (m.type === 'libi/save_automation') return saveResult;
+        if (m.type === 'libi/compile_project') return JSON.parse(JSON.stringify(PLAN));
+        if (m.type === 'libi/save_done') return JSON.parse(JSON.stringify(saveResult));
+        if (m.type === 'libi/verify_automation') return verifyResult;
         if (m.type === 'libi/preview_yaml') return { yaml: '' };
         return [];
       },
@@ -110,17 +122,81 @@ try {
   // SAVE & COMPILE sends V1, and the badge follows what the backend says runs now.
   const before = sent.length;
   panel._saveToBackend(); await sleep(80);
-  const save = sent.slice(before).find(m => m.type === 'libi/save_automation');
+  const save = sent.slice(before).find(m => m.type === 'libi/compile_project');
   check('the save sends V1', !!save && JSON.stringify(save.nets[0].rungs).includes('light.x') && save.nets[0].ha_id === 'a1',
         save ? '' : 'no save was sent (validation blocked it?)');
+  // [ADDED v1.2.0] Home Assistant's config API writes what changed, and LIBI is told what it did.
+  const done = sent.slice(before).find(m => m.type === 'libi/save_done');
+  check('Home Assistant\'s config API is sent what changed, then LIBI records it', JSON.stringify(api.slice(-1))
+        === JSON.stringify([['POST', 'config/automation/config/a1', { id: 'a1', alias: 'Lamp' }]])
+        && !!done && JSON.stringify(done.done) === JSON.stringify([{ domain: 'automation', key: 'a1', op: 'upsert' }])
+        && done.failure === null && done.stamp === 's' && done.nets.length === 2, JSON.stringify([api, done && done.done]));
   check('after the save the badge says V1 runs and V2 is newer', badge() && badge().textContent.trim() === 'V1 · newest V2' && badge().classList.contains('older'),
         badge() && badge().textContent);
-  check('the project is saved', panel._projectDirty === false);
+  check('the project is saved', panel._projectDirty === false && panel._hasUnsavedChanges(true) === false);
 
   // A refused save leaves the badge alone.
   saveResult = { status: 'error', saved: false, message: 'Not saved.', errors: ['automations.yaml could not be read'] };
   panel._saveToBackend(); await sleep(80);
   check('a refused save does not move the badge', badge().textContent.trim() === 'V1 · newest V2');
+
+  // [ADDED v1.1.0] A NET added from the AI chat is saved and compiled at once with the panel's own save - every NET
+  // of the project with it - and the saved automation is read back by its id.
+  saveResult = { status: 'ok', saved: true, message: 'Saved.', written: ['automation'], reloaded: ['automation'], errors: [],
+                 versions: { n1: { active: 1, latest: 2, count: 2 } } };
+  verifyResult = { results: [{ id: 'a3', ok: true, issues: [] }], ok: true };
+  panel._hass.states['automation.porch'] = { entity_id: 'automation.porch', state: 'on', attributes: { id: 'a3' } };
+  const porch = (coil) => ({ kind: 'result', res: { ok: true, intent: 'create', target_net: '', level: 'automation',
+    round_trip: { ok: true, issues: [] }, sensitive: [],
+    net: { id: 'n_ai', ha_id: 'a3', name: 'Porch', level: 'automation', rungs: [{ id: 'r9', comment: '', elements: [
+      { id: 'e90', type: 'contact_no', label: 'binary_sensor.porch', isTrigger: true },
+      { id: 'e91', type: 'coil_s', label: coil }] }] } } });
+  panel._projectDirty = false;
+  let start = sent.length;
+  const added = porch('light.porch');
+  await panel.aiChat._place(added, 'add');
+  const savedNow = sent.slice(start).find(m => m.type === 'libi/compile_project');
+  check('a NET added from the chat is saved with the panel\'s own save', !!savedNow && savedNow.slug === 'p'
+        && savedNow.nets.length === 3 && savedNow.nets[2].ha_id === 'a3', savedNow ? savedNow.nets.length : 'no save sent');
+  check('then read back by its id', sent.slice(start).some(m => m.type === 'libi/verify_automation' && m.automation_id === 'a3'));
+  check('the chat says it is saved and running', !!added.save && added.save.state === 'saved'
+        && added.save.lines.some(l => l.text === 'automation.porch is on in Home Assistant.'), JSON.stringify(added.save));
+  check('and the project is saved', panel._projectDirty === false);
+  // A red block anywhere on the canvas - here a coil with no entity - refuses the save, and the chat says so.
+  start = sent.length;
+  const broken = porch('');
+  await panel.aiChat._place(broken, 'add');
+  check('a drawing with a red block is not saved', !sent.slice(start).some(m => m.type === 'libi/compile_project'));
+  check('and the chat says why and what to do', !!broken.save && broken.save.state === 'failed'
+        && broken.save.lines[0].text.startsWith('Not saved: the drawing has errors (red blocks)'), JSON.stringify(broken.save));
+  panel.core.nets.splice(2); panel._render(); await sleep(20);
+  // [ADDED v1.2.0] Any change of the logic is a change not saved, for the chat too: it asks before it saves it along.
+  panel._markSaved();
+  panel.core.nets[1].rungs[0].elements[1].label = 'light.attic'; panel.core.pushHistory();
+  const chatAsked = [], realConfirm = window.confirm;
+  window.confirm = (q) => { chatAsked.push(String(q)); return false; };
+  start = sent.length;
+  const along = porch('light.porch');
+  await panel.aiChat._place(along, 'add');
+  window.confirm = realConfirm;
+  check('a change on the canvas not saved yet is asked about before the chat saves', chatAsked.length === 1
+        && chatAsked[0].startsWith('Other changes on the canvas are not saved yet') && !sent.slice(start).some(m => m.type === 'libi/compile_project')
+        && along.save.state === 'held', JSON.stringify([chatAsked, along.save]));
+  panel.core.nets.splice(2); panel.core.nets[1].rungs[0].elements[1].label = 'light.hall'; panel._render(); await sleep(20);
+
+  // [ADDED v1.2.0] The original - V1 of an automation opened in LIBI, as Home Assistant had it - and V2, its copy.
+  const keep = panel._hass.connection.sendMessagePromise;
+  panel._hass.connection.sendMessagePromise = async (m) => (m.type === 'libi/net_versions' ? { active: 2, versions: [
+    { v: 2, saved: '2026-11-04T10:00:00+00:00', reason: 'copy', name: 'Lamp', yaml: 'id: a1\n', net: drawn('light.x') },
+    { v: 1, saved: '2026-11-04T10:00:00+00:00', reason: 'original', original: true, name: 'Lamp', yaml: 'id: a1\n', net: drawn('light.x') }] } : keep(m));
+  badge().click(); await sleep(60);
+  const told = [...sr.querySelectorAll('.ver-item')];
+  check('the original is marked, and the copy says what it is', told.length === 2 && !told[0].querySelector('.ver-original')
+        && told[1].querySelector('.ver-original')?.textContent === 'Original'
+        && told[1].querySelector('.ver-why').textContent.startsWith('The original, as it was in Home Assistant when it was first opened in LIBI')
+        && told[0].querySelector('.ver-why').textContent.startsWith('A copy of the original, to work on'), told.map(i => i.textContent.trim()).join('|'));
+  sr.getElementById('closeModalBtn').click(); await sleep(20);
+  panel._hass.connection.sendMessagePromise = keep;
 
   // An error from the backend is shown in the dialog, escaped.
   panel._hass.connection.sendMessagePromise = async (m) => { if (m.type === 'libi/net_versions') throw new Error('<b>boom</b>'); return []; };

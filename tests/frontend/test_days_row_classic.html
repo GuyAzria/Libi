@@ -1,0 +1,48 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-04] Purpose: The days row on a browser Home Assistant serves its legacy build to (Samsung
+  Internet up to 27, a Chrome or a WebView older than 131, Safari older than 18.1). That build loads the files registered
+  for it as classic scripts, beside other scripts in the same global scope: the row must define itself there too, keep
+  every name of its own out of that scope, and take a second load without an error.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi days row classic test</title>
+<script>
+  // What another classic script of the page may have declared already, with the names a row might use.
+  window.__errors = [];
+  window.addEventListener('error', (e) => window.__errors.push(String(e.message)));
+</script>
+<script>const ICON = 'theirs'; const TAG = 'theirs'; const DOMAINS = ['theirs']; let watch = 'theirs';</script>
+<script src="../../custom_components/libi/frontend/libi-days-row.js?load=1"></script>
+<script src="../../custom_components/libi/frontend/libi-days-row.js?load=2"></script>
+</head>
+<body style="margin:0; font: 14px/20px sans-serif;">
+<pre id="out">RUNNING</pre>
+<div id="card" style="width:600px"></div>
+<script type="module">
+const results = [];
+const check = (name, cond, detail = '') => results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+try {
+  check('loaded as a classic script beside the names of another one, twice, without an error', window.__errors.length === 0,
+        window.__errors.join(' | '));
+  const Row = customElements.get('libi-days-row');
+  check('the row is defined', typeof Row === 'function');
+  check('the other script\'s names are untouched', ICON === 'theirs' && TAG === 'theirs' && DOMAINS[0] === 'theirs' && watch === 'theirs');
+  check('and the row adds no name of its own to the page', typeof window.defineIn === 'undefined' && typeof window.LibiDaysRow === 'undefined'
+        && typeof window.firstRegistry === 'undefined' && typeof window.SUNDAY === 'undefined', Object.keys(window).filter(k => /libi|define|registry|sunday/i.test(k)).join());
+  // It works as a row: 5 is Sunday (1) and Tuesday (4).
+  const row = document.createElement('libi-days-row');
+  row.setConfig({ entity: 'input_number.train_days', name: 'Days' });
+  row.hass = { states: { 'input_number.train_days': { entity_id: 'input_number.train_days', state: '5', attributes: {} } },
+               language: 'en', callService: async () => {} };
+  document.getElementById('card').appendChild(row);
+  const on = [...row.shadowRoot.querySelectorAll('button.day')].map(b => b.classList.contains('on'));
+  check('and shows the days the helper holds', on.length === 7 && JSON.stringify(on) === JSON.stringify([true, false, true, false, false, false, false]),
+        JSON.stringify(on));
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

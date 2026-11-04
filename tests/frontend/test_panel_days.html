@@ -1,0 +1,126 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-10-31] Purpose: CMP DAY = an 8-bit helper (bit 1 Sunday ... bit 7 Saturday), the user's design.
+  The block is drawn as CMP DAY with the helper on IN2 and no red; the inspector offers the fixed days or the helper,
+  the fixed days off while a helper is chosen; picking, clearing and ticking a day switch between the two. DRAWN is
+  what yaml_to_ast draws for the day-bits alarm clock of tests/test_round_trip.py.
+  [ADDED v1.1.0 | 2026-11-01] Purpose: IN1 of CMP DAY reads datetime.day.now and IN1 of CMP TIME datetime.time.now (the
+  user's naming), each on one line, the element unchanged; the inspector says the same; online, IN1 is today's day.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi days test</title></head>
+<body style="margin:0; width:1280px; height:800px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const DRAWN = {"id":"n_days","ha_id":"a_days","name":"x","description":"","collapsed":false,"level":"automation","mode":null,"max":null,"variables":null,"extra":{},"rungs":[{"id":"r1","comment":"When the time is garden start, if the day is ticked in garden days, then turn on garden valve","elements":[{"id":"e3","type":"cmp_eq","isTrigger":true,"sourceA":"time","sourceB":"input_datetime.garden_start","raw":{"trigger":"time","at":"input_datetime.garden_start","id":"start"},"src":"actions[0].opt[0].cond[0]","trigId":"start","sig":"type=cmp_eq|label=|sourceA=time|sourceB=input_datetime.garden_start|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e4","type":"cmp_eq","isTrigger":false,"sourceA":"weekday","sourceB":"input_number.garden_days","kind":"date","raw":{"condition":"template","value_template":"{{ states('input_number.garden_days') | int(0) | bitwise_and(2 ** ((now().weekday() + 1) % 7)) > 0 }}"},"src":"actions[0].opt[0].cond[1]","sig":"type=cmp_eq|label=|sourceA=weekday|sourceB=input_number.garden_days|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind=date"},{"id":"e5","type":"coil_s","isTrigger":false,"label":"switch.garden_valve","service":"switch.turn_on","raw":{"action":"switch.turn_on","target":{"entity_id":"switch.garden_valve"}},"src":"actions[0].opt[0].seq[0]","targetSpec":{"entity_id":["switch.garden_valve"]},"fromAction":true,"sig":"type=coil_s|label=switch.garden_valve|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"group":"g1","groupIdx":0,"groupTotal":2,"groupKind":"choose","isDefault":false,"src":"actions[0]"},{"id":"r2","comment":"When garden valve turns on for 00:45:00, then turn off garden valve","elements":[{"id":"e6","type":"contact_no","isTrigger":true,"label":"switch.garden_valve","raw":{"trigger":"state","entity_id":"switch.garden_valve","to":"on","for":{"minutes":45},"id":"time_limit"},"src":"actions[0].opt[1].cond[0]","trigId":"time_limit","forTimer":true,"sig":"type=contact_no|label=switch.garden_valve|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e7","type":"timer_ton","isTrigger":false,"label":"00:45:00","src":"actions[0].opt[1].cond[0]","isFor":true,"forValue":{"minutes":45}},{"id":"e8","type":"coil_r","isTrigger":false,"label":"switch.garden_valve","service":"switch.turn_off","raw":{"action":"switch.turn_off","target":{"entity_id":"switch.garden_valve"}},"src":"actions[0].opt[1].seq[0]","targetSpec":{"entity_id":["switch.garden_valve"]},"fromAction":true,"sig":"type=coil_r|label=switch.garden_valve|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"group":"g1","groupIdx":1,"groupTotal":2,"groupKind":"choose","isDefault":false,"src":"actions[0]"}],"links":[]};
+const hass = {
+  states: {
+    'input_number.garden_days': { entity_id: 'input_number.garden_days', state: '21.0', attributes: { friendly_name: 'Garden days', min: 0, max: 255 } },
+    'input_datetime.garden_start': { entity_id: 'input_datetime.garden_start', state: '06:00:00', attributes: { friendly_name: 'Garden start', has_time: true } },
+  },
+  entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+  connection: {
+    sendMessagePromise: async (m) => {
+      if (m.type === 'libi/ai_status') return { configured: false };
+      if (m.type === 'libi/project_list') return { projects: [] };
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+
+try {
+  localStorage.clear();
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '800px';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await sleep(300);
+  const sr = panel.shadowRoot;
+  const core = panel.core;
+  core.nets = [JSON.parse(JSON.stringify(DRAWN))];
+  core.syncCounters(); core.repairAST(); core.validateAST();
+  panel._project = { slug: 'p', name: 'P' };
+  panel._render(); await sleep(50);
+
+  const net = core.nets[0];
+  const rung = net.rungs[0];
+  const day = rung.elements.find(el => el.sourceA === 'weekday');
+  const block = sr.querySelector(`.libi-el[data-nid="${net.id}"][data-eid="${day.id}"]`);
+  check('the days of the helper are one CMP DAY block: IN1 the day now, IN2 the helper', !!block && block.querySelector('.plc-header').textContent.trim() === 'CMP DAY ='
+        && [...block.querySelectorAll('.pin-val')].map(p => p.textContent).join('|') === 'datetime.day.now|input_number.garden_days',
+        block && block.textContent.trim());
+  const time = rung.elements.find(el => el.sourceA === 'time');
+  const timeBlock = sr.querySelector(`.libi-el[data-nid="${net.id}"][data-eid="${time.id}"]`);
+  check('the time that starts it is CMP TIME: IN1 the clock now, IN2 the time helper', !!timeBlock
+        && [...timeBlock.querySelectorAll('.pin-val')].map(p => p.textContent).join('|') === 'datetime.time.now|input_datetime.garden_start',
+        timeBlock && timeBlock.textContent.trim());
+  check('only the text: the elements still compare "weekday" and "time"', day.sourceA === 'weekday' && time.sourceA === 'time' && day.kind === 'date');
+  for (const [what, node] of [['the day now', block], ['the clock now', timeBlock]]) {
+    const pin = node.querySelector('.pin-val[data-prop="sourceA"]');
+    const box = pin.getBoundingClientRect(), frame = node.querySelector('.plc-block').getBoundingClientRect();
+    check(`${what} is on one line, inside its block, none of it cut`, box.height < 28 && box.right <= frame.right + 0.5 && box.left >= frame.left - 0.5
+          && pin.scrollWidth <= pin.clientWidth + 1, JSON.stringify([box.height, box.left, box.right, frame.left, frame.right, pin.scrollWidth, pin.clientWidth]));
+  }
+  const span = { id: 'n_span', name: 'span', level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r9', comment: '', elements: [
+    { id: 'e91', type: 'cmp_rng', sourceA: 'time', sourceB: '06:00:00', sourceC: '06:10:00', kind: 'time' },
+    { id: 'e92', type: 'coil_s', label: 'switch.garden_valve' }] }] };
+  core.nets.push(span); panel._render(); await sleep(50);
+  const range = sr.querySelector('.libi-el[data-nid="n_span"][data-eid="e91"]');
+  check('a CMP TIME RANGE says the clock now on its IN', !!range && range.querySelector('.plc-header').textContent.trim() === 'CMP TIME RANGE'
+        && range.querySelector('.pin-val[data-prop="sourceA"]').textContent === 'datetime.time.now', range && range.textContent.trim());
+  core.nets.pop(); panel._render(); await sleep(50);
+  const DAY_IDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  check('online, IN1 of the CMP DAY is today', panel.online.evaluate(day, hass, Date.now()).value === DAY_IDS[new Date().getDay()],
+        JSON.stringify(panel.online.evaluate(day, hass, Date.now())));
+  check('it is not red', !day.structuralError && sr.querySelectorAll(`.libi-el.has-error[data-nid="${net.id}"]`).length === 0,
+        day.structuralError || [...sr.querySelectorAll('.has-error')].map(e => e.textContent.trim()).join(' | '));
+  check('its rung says the day is ticked in the helper', rung.comment.includes('if the day is ticked in garden days'), rung.comment);
+
+  const inspect = () => {
+    panel._inspectedEl = { netId: net.id, rungId: rung.id, elId: day.id };
+    panel._render();
+    return { kind: sr.querySelector('#propCmpKind'), boxes: [...sr.querySelectorAll('input[data-day]')], pick: sr.querySelector('#inp_sourceBdays') };
+  };
+  let ui = inspect();
+  const left = [...sr.querySelectorAll('.fgrp')].find(g => (g.querySelector('label') || {}).textContent === 'Left side (IN1)');
+  check('the inspector names IN1 the same', !!left && left.querySelector('input').value === 'datetime.day.now' && left.querySelector('input').disabled,
+        left && left.outerHTML);
+  check('the inspector says Date, with the helper picked', !!ui.kind && ui.kind.value === 'date' && !!ui.pick && ui.pick.value === 'input_number.garden_days'
+        && JSON.stringify(ui.pick.includeDomains) === '["input_number","number"]', JSON.stringify([ui.kind && ui.kind.value, ui.pick && ui.pick.value, ui.pick && ui.pick.includeDomains]));
+  check('and the fixed days are off while it is', ui.boxes.length === 7 && ui.boxes.every(b => b.disabled && !b.checked));
+  const label = sr.querySelector('#lbl_sourceBdays');
+  check('the picker says what the bits are', !!label && label.textContent.includes('bit 1 Sunday') && label.textContent.includes('bit 7 Saturday'), label && label.textContent);
+
+  ui.pick.dispatchEvent(new CustomEvent('value-changed', { detail: { value: 'input_number.lawn_days' } }));
+  check('picking another helper puts it on IN2', day.sourceB === 'input_number.lawn_days', day.sourceB);
+  ui = inspect();
+  ui.pick.dispatchEvent(new CustomEvent('value-changed', { detail: { value: '' } }));
+  ui = inspect();
+  check('clearing it gives the fixed days back', day.sourceB === '' && ui.boxes.every(b => !b.disabled) && ui.pick.value === '', JSON.stringify(day.sourceB));
+  const monday = ui.boxes.find(b => b.dataset.day === 'mon');
+  monday.checked = true; monday.dispatchEvent(new Event('change'));
+  ui = inspect();
+  check('a fixed day ticked is the day, and no helper', day.sourceB === 'mon' && ui.pick.value === ''
+        && ui.boxes.find(b => b.dataset.day === 'mon').checked, JSON.stringify(day.sourceB));
+  panel._inspectedEl = null;
+  panel._render();
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

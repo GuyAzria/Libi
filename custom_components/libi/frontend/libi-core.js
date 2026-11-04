@@ -14,12 +14,12 @@
  */
 /**
  * LIBI Panel - Core Engine
- * v3.33.0
+ * v3.79.1
  */
-// [ADDED v3.5.0 | 2026-08-24] Purpose: A net carries a level of automation, script or scene, and
-//   validateAST runs the rule set that belongs to that level. A net with no level is an automation.
-// [ADDED v3.4.0 | 2026-08-20] Purpose: Renamed LadderCore to LibiCore.
-// [ADDED v1.74.0 | 2026-08-17] Purpose: Label metrics feed the layout, so the rung reserves the room...
+// [ADDED v3.72.0 | 2026-10-29] Purpose: The head a rung hangs from is the trigger and the TON of its for when one
+//   follows it (headLength), so the drop comes down after that TON.
+// [ADDED v3.79.1 | 2026-11-01] Purpose: English only in the comments (CLAUDE.md RULE 17, the user's request): the
+//   examples of names an entity has in the user's language are written in English.
 export class LibiCore {
     constructor() {
         this.nets = [];
@@ -260,6 +260,36 @@ export class LibiCore {
         return copy;
     }
     mkRung() { return { id: `r${this.rid++}`, comment: '', elements: [] }; }
+
+    // [ADDED v3.71.0] The trigger block a rung starts with - a trigger, or an OR of triggers - or null.
+    triggerHead(rung) {
+        const first = rung && rung.elements && rung.elements[0];
+        if (!first) return null;
+        if (first.isTrigger) return first;
+        const branches = first.type === 'parallel' ? (first.branches || []) : [];
+        return branches.length && branches.every(b => b && b[0] && b[0].isTrigger) ? first : null;
+    }
+
+    // [ADDED v3.71.0] A rung drawn below the trigger of the rung above it (sharesHead): it has no trigger of its own.
+    // The compiler gives it that trigger again (expand_shared_heads), so the YAML is what it was with the trigger
+    // drawn on every rung.
+    hangs(rung) { return !!(rung && rung.sharesHead) && !this.triggerHead(rung); }
+
+    // [ADDED v3.71.0] The index of the rung a hanging rung comes down from: the nearest one above that does not hang,
+    // when it starts with a trigger. -1 otherwise.
+    headIndex(net, i) {
+        const rungs = (net && net.rungs) || [];
+        let j = i - 1;
+        while (j >= 0 && this.hangs(rungs[j])) j--;
+        return j >= 0 && this.triggerHead(rungs[j]) ? j : -1;
+    }
+
+    // [ADDED v3.72.0] How many blocks a rung's trigger head takes: the trigger, and the TON of its for after it.
+    headLength(rung) {
+        if (!this.triggerHead(rung)) return 0;
+        const next = rung.elements[1];
+        return next && next.type === 'timer_ton' && (next.isFor || next.forOf) ? 2 : 1;
+    }
     
     mkEl(type, label = '') {
         if (type === 'parallel') return { id: `e${this.eid++}`, type, branches: [[], []], closed: false };
@@ -308,7 +338,9 @@ export class LibiCore {
         extraH += checkLen(el.sourceB);
         extraH += checkLen(el.value);
         
-        return baseH + Math.min(extraH, 60); 
+        // [ADDED v3.71.0] CMP DATETIME against a schedule has one line more: the days and hours of that schedule.
+        const week = String(el.sourceA) === 'datetime' && String(el.sourceB || '').startsWith('schedule.') ? 20 : 0;
+        return baseH + Math.min(extraH, 60) + week;
     }
 
     calcHeightPx(elements) {
@@ -346,7 +378,7 @@ export class LibiCore {
     }
 
     // [ADDED v3.9.0] The name a person gave a thing in Home Assistant. An entity id is a slug and a
-    // transliteration, climate.pynt_vkl for what the house calls פינת אוכל, so the ladder shows the
+    // transliteration, climate.pynt_vkl for what the house calls its dining corner, so the ladder shows the
     // name and keeps the id one hover away.
     friendlyName(entityId, hass) {
         const h = hass || this.hass;
@@ -415,7 +447,7 @@ export class LibiCore {
         const kind = el.targetKind || 'entity';
 
         // [ADDED v3.10.0] An event trigger already says its kind on the second line, so the name
-        // line drops the prefix: לילה טוב over conversation, not conversation.לילה טוב twice.
+        // line drops the prefix: Good night over conversation, not conversation.Good night twice.
         const evKinds = ['conversation', 'event', 'webhook', 'mqtt', 'tag', 'homeassistant', 'persistent_notification'];
         const ev = el.eventKind || (evKinds.includes(bare.split('.')[0]) ? bare.split('.')[0] : '');
         if (ev && bare.startsWith(ev + '.')) return bare.slice(ev.length + 1) + suffix;
@@ -455,7 +487,7 @@ export class LibiCore {
     }
 
     // [ADDED v3.10.0] The kind of thing an element points at, written on a second line under the
-    // name. A name alone does not say what it is: פינת אוכל could be a thermostat, a light or a
+    // name. A name alone does not say what it is: Dining corner could be a thermostat, a light or a
     // sensor, and Sony XR-85X95L could be a media player or a switch. The domain settles it.
     // [CHANGED v3.24.0] On a coil the line underneath the name is the service, written the way Home
     // Assistant writes it. cover on its own never said whether the rung closes the blind or opens it.
@@ -471,7 +503,7 @@ export class LibiCore {
             if (bits.length) return bits.join(' · ');
         }
         if (el.eventKind) return String(el.eventKind);
-        // [ADDED v3.27.0] A friendly name on its own does not say which thing it is. חלונות could be
+        // [ADDED v3.27.0] A friendly name on its own does not say which thing it is. Windows could be
         // any of several lights, so the line underneath names the device the entity belongs to as
         // well as the domain, exactly the two things the Home Assistant entity picker shows.
         {
@@ -503,7 +535,7 @@ export class LibiCore {
     }
 
     labelText(el, hass) {
-        // [CHANGED v3.9.0] The name wins over the id, so the box above a coil reads תריס סלון rather
+        // [CHANGED v3.9.0] The name wins over the id, so the box above a coil reads Living room shutter rather
         // than unknown_cover. Falls back to the old behaviour when nothing has a name.
         const named = this.displayLabel(el, hass);
         if (named) return named;
@@ -550,7 +582,8 @@ export class LibiCore {
             ctx.maxBottom = Math.max(ctx.maxBottom, y + 40);
         };
 
-        const opensWithBlock = prefix === '' && list.length && list[0] && list[0].type === 'parallel';
+        // [CHANGED v3.71.0] A rung that hangs from a trigger starts at the drop under it, not at the rail.
+        const opensWithBlock = !ctx.hang && prefix === '' && list.length && list[0] && list[0].type === 'parallel';
         if (!opts.noLeadDot && !opensWithBlock) {
             cur += (ctx.gaps && ctx.gaps[`${prefix}0`]) || 0;
             addDot(`${prefix}0`, cur);
@@ -562,7 +595,7 @@ export class LibiCore {
             const path = `${prefix}${i}`;
 
             if (el.type === 'parallel') {
-                cur = this._layoutParallel(el, cur, y, path, ctx, (prefix === '' && i === 0));
+                cur = this._layoutParallel(el, cur, y, path, ctx, (!ctx.hang && prefix === '' && i === 0));
                 if (el.closed) { addDot(`${prefix}${i + 1}`, cur); cur += L.DOT; }
             } else if (el.type === 'repeat') {
                 cur = this._layoutRepeat(el, cur, y, path, ctx);
@@ -668,14 +701,17 @@ export class LibiCore {
         return cur;
     }
 
-    layoutRung(elements, x0 = null, y0 = null, gaps = null) {
+    layoutRung(elements, x0 = null, y0 = null, gaps = null, opts = {}) {
         const L = this.LAY;
         const startX = (x0 === null) ? L.LEAD : x0;
         const startY = (y0 === null) ? Math.max(L.ANCHOR, this.topLineLabelH(elements) + 22) : y0;
         const ctx = this._newLayoutCtx();
         ctx.railX = startX;
         ctx.gaps = gaps || null;
-        const endX = this._layoutLevel(elements || [], startX, startY, '', ctx, { lineStart: 0 });
+        // [ADDED v3.71.0] opts.hang: the rung comes down from a trigger above it, so its line starts at that drop.
+        ctx.hang = !!opts.hang;
+        const lineStart = ctx.hang ? startX + Math.round(L.DOT / 2) : 0;
+        const endX = this._layoutLevel(elements || [], startX, startY, '', ctx, { lineStart });
 
         const capX = endX + L.CAP;
         ctx.lines.push({ x1: endX, y1: startY, x2: capX, y2: startY, w: 2.5 });
@@ -736,9 +772,13 @@ export class LibiCore {
         const L = this.LAY;
         const res = { rungs: [], nodes: [], dots: [], lines: [], linkHandles: [], dotIndex: {}, maxX: 0, height: 0 };
         let offsetY = 0;
+        // [ADDED v3.71.0] Where the rungs that hang from a trigger come down from: the dot after the trigger of the last
+        // rung that does not hang, and how far down the drop goes so far.
+        let drop = null;
 
         for (const rung of rungs) {
-            const one = this.layoutRung(rung.elements, null, null, gapsByRung[rung.id] || null);
+            const hanging = this.hangs(rung) && drop;
+            const one = this.layoutRung(rung.elements, hanging ? drop.x : null, null, gapsByRung[rung.id] || null, { hang: !!hanging });
             const top = offsetY;
 
             for (const n of one.nodes) res.nodes.push(Object.assign({}, n, { y: n.y + top, rungId: rung.id }));
@@ -748,6 +788,15 @@ export class LibiCore {
                 res.dotIndex[`${rung.id}|${d.path}`] = moved;
             }
             for (const l of one.lines) res.lines.push({ x1: l.x1, y1: l.y1 + top, x2: l.x2, y2: l.y2 + top, w: l.w });
+            if (hanging) {
+                const x = drop.x + Math.round(L.DOT / 2);
+                res.lines.push({ x1: x, y1: drop.y, x2: x, y2: one.baseY + top, w: 2.5 });
+                drop.y = one.baseY + top;
+            } else if (!this.hangs(rung)) {
+                const n = this.headLength(rung);
+                const after = n ? res.dotIndex[`${rung.id}|${n}`] : null;
+                drop = after ? { x: after.x, y: after.y } : null;
+            }
 
             res.rungs.push({ id: rung.id, top, height: one.height, baseY: one.baseY + top });
             res.maxX = Math.max(res.maxX, one.width - 40);
@@ -832,7 +881,13 @@ export class LibiCore {
             const net = this.nets.find(n => n.id === netId);
             if (!net) return false;
             const at = net.rungs.findIndex(r => r.id === rungId);
-            net.rungs.splice(at < 0 ? net.rungs.length : at + 1, 0, this.mkRung());
+            // [CHANGED v3.71.0] Opened from a rung that hangs from a trigger, or right above one, the new rung hangs from
+            // that trigger too, so the rungs below it keep theirs.
+            const rung = this.mkRung();
+            if (at >= 0 && this.netLevel(net) === 'automation' && (this.hangs(net.rungs[at]) || this.hangs(net.rungs[at + 1]))) {
+                rung.sharesHead = true;
+            }
+            net.rungs.splice(at < 0 ? net.rungs.length : at + 1, 0, rung);
             return true;
         }
 
@@ -1014,6 +1069,8 @@ export class LibiCore {
                     el.sourceA = String(el.sourceA || '').replace(/[{}]/g, '').trim().slice(0, 46);
                     el.sourceB = 'true';
                 }
+                // [ADDED v3.68.0] The TOF of "was on lately" was drawn as timer_tof, a type the palette does not have.
+                if (el.type === 'timer_tof') el.type = 'timer_toff';
                 if (el.type === 'schedule') {
                     const days = (el.weekdays || []).join(', ');
                     if (el.sourceA && el.sourceB) { el.type = 'cmp_rng'; el.sourceC = el.sourceB; el.sourceB = el.sourceA; el.sourceA = 'time'; el.kind = 'time'; }
@@ -1190,6 +1247,8 @@ export class LibiCore {
         const checkPathEnd = (elements) => {
             if (elements.length === 0) return;
             let lastEl = elements[elements.length - 1];
+            // [ADDED v3.71.0] A wait is a step: the automation goes on with the next rung once it is over.
+            if (lastEl.waitFor) return;
 
             if (lastEl.type === 'parallel') {
                 if (!lastEl.closed) {
@@ -1204,6 +1263,21 @@ export class LibiCore {
             }
         };
 
+        // [ADDED v3.68.0] A wait is drawn with what it waits for, one block per branch, and the TON of its time
+        // limit. Anything else inside one has no Home Assistant form, so it is marked and the save is refused.
+        const checkWaits = (elements) => {
+            for (const el of elements || []) {
+                if (el.waitFor && el.type === 'parallel' && !el.waitOne) {
+                    el.branches.forEach(b => b.forEach((x, i) => {
+                        const fits = /^(contact_|cmp_|timer_)/.test(x.type) || x.type === 'parallel';
+                        if (i > 0) x.structuralError = 'A wait goes on when ONE of these happens: give each its own branch, and put the next steps after the wait.';
+                        else if (!fits) x.structuralError = 'Only what the wait waits for goes inside it: a contact, a CMP or the TON of its time limit.';
+                    }));
+                } else if (el.type === 'parallel') el.branches.forEach(checkWaits);
+                else if (el.type === 'repeat') checkWaits(el.sequence);
+            }
+        };
+
         this.nets.forEach(net => {
             const level = this.netLevel(net);
             const linked = {};
@@ -1215,12 +1289,12 @@ export class LibiCore {
                     const r = net.rungs.find(x => x.id === rid);
                     if (!r || !r.elements.length) return false;
                     const last = r.elements[r.elements.length - 1];
-                    return isAction(last) || (last.type === 'parallel' && !last.closed);
+                    return isAction(last) || !!last.waitFor || (last.type === 'parallel' && !last.closed);
                 });
                 g.forEach(rid => { groupEndsWell[rid] = ok; });
             });
 
-            net.rungs.forEach(rung => {
+            net.rungs.forEach((rung, idx) => {
                 const clearErrs = (arr) => {
                     arr.forEach(e => {
                         e.structuralError = null;
@@ -1233,11 +1307,16 @@ export class LibiCore {
                 // rules it always had, a script drops the trigger requirement and forbids triggers,
                 // and a scene forbids everything that is not a value assignment.
                 if (level === 'automation') {
-                    checkPathStart(rung.elements);
+                    // [CHANGED v3.71.0] A rung that hangs from the trigger above starts with no trigger of its own.
+                    if (!this.hangs(rung)) checkPathStart(rung.elements);
+                    else if (this.headIndex(net, idx) < 0 && rung.elements.length) {
+                        rung.elements[0].structuralError = 'This rung hangs from the trigger above it, and no rung above starts with one: make its first block the trigger.';
+                    }
                 } else {
                     checkNoTriggers(rung.elements, level);
                     if (level === 'scene') checkSceneOnly(rung.elements);
                 }
+                checkWaits(rung.elements);
                 if (!linked[rung.id]) {
                     checkPathEnd(rung.elements);
                 } else if (!groupEndsWell[rung.id] && rung.elements.length) {

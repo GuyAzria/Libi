@@ -12,12 +12,16 @@
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
 """The LIBI integration: a ladder editor panel for Home Assistant automations."""
-# v3.47.0
+# v3.85.0
 # [ADDED v3.34.0 | 2026-10-26] Purpose: The static path and the websocket commands are registered once
 #   in async_setup, so reloading the config entry no longer fails on a route that already exists. The
 #   panel is admin only and is removed through the frontend API on unload, the entry data lives on
 #   entry.runtime_data, and CONFIG_SCHEMA declares that LIBI is set up from the UI only.
-# [ADDED v3.47.0 | 2026-10-27] Purpose: LIBI_VERSION 3.47.0 (every net keeps its earlier versions).
+# [ADDED v3.84.0 | 2026-11-02] Purpose: LIBI_VERSION 3.84.0 (the AI chat's zone chosen on the dashboard card is a dropdown
+#   of the user's zones; one list of people and zones is split into who and where).
+# [ADDED v3.85.0 | 2026-11-04] Purpose: LIBI_VERSION 3.85.0 (Home Assistant's config API saves; the old
+#   libi_automations.yaml is only read, and the log says when it still holds automations; the days row is loaded by
+#   Home Assistant's legacy build too).
 import logging
 import os
 
@@ -37,9 +41,12 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 _PANEL_JS = "libi-panel.js"
 _PANEL_ELEMENT = "libi-panel"
+# [ADDED v3.76.0] The row of LIBI's dashboard card that shows the days of an 8-bit helper as seven checkboxes
+# ([CHANGED v3.79.0] round buttons).
+_DAYS_ROW_JS = "libi-days-row.js"
 # One version number for the whole integration. The panel and every module it imports are served
 # with this string, so the browser can never mix an old file with a new one.
-LIBI_VERSION = "3.47.0"
+LIBI_VERSION = "3.85.0"
 
 # [CHANGED v3.15.2] The frontend used to be served from /local/libi. /local is Home Assistant's own
 # alias for the config/www folder and it is registered before any custom integration, so if a folder
@@ -62,7 +69,17 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             cache_headers=False,
         )
     ])
+    # [ADDED v3.76.0] On every dashboard, so the card LIBI writes (custom:libi-days-row) shows wherever it is pasted;
+    # from LIBI's own folder, like the panel - nothing comes from the internet.
+    # [CHANGED v3.85.0] And by the legacy build Home Assistant serves to browsers it does not count as modern (Samsung
+    # Internet up to 27, a Chrome or a WebView older than 131, Safari older than 18.1), which loads only the scripts
+    # registered for it: there the row was unknown, and the user's card said "Configuration error".
+    days_row = f"{_STATIC_URL}/{_DAYS_ROW_JS}?v={LIBI_VERSION}"
+    frontend.add_extra_js_url(hass, days_row)
+    frontend.add_extra_js_url(hass, days_row, es5=True)
     ws_module.async_register_websockets(hass)
+    # [ADDED v3.85.0] The file LIBI wrote before 3.5.0 is left alone; the log says when it still holds automations.
+    await hass.async_add_executor_job(ws_module.legacy_file_note_sync, hass)
     return True
 
 
@@ -77,7 +94,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LibiConfigEntry) -> bool
         sidebar_icon=PANEL_ICON,
         module_url=f"{_STATIC_URL}/{_PANEL_JS}?v={LIBI_VERSION}",
         # [CHANGED v3.34.0] Admin only, like Home Assistant's own automation editor: the panel
-        # writes automations.yaml, scripts.yaml and scenes.yaml.
+        # saves automations, scripts and scenes ([CHANGED v3.85.0] through that editor's config API).
         require_admin=True,
     )
     return True

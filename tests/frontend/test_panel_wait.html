@@ -1,0 +1,178 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-10-29] Purpose: Only the user's own blocks. A wait is drawn with the contacts and CMP
+  blocks of what it waits for and a TON for its time limit, exactly as the importer draws it (DRAWN is its
+  output); a block that does not belong inside a wait is marked red and the save is refused; the Block Type
+  list offers Wait for Trigger and Send Notification only on an old drawing that has one; the TOF of an old
+  "was on lately" (timer_tof) becomes the palette's TOF.
+  [ADDED v1.1.0 | 2026-10-29] Purpose: The schedule that starts the garden watering is the CMP DATETIME block (IN1
+  the date and time, IN2 the schedule), and the inspector's Date and time picker offers the schedules.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi wait test</title></head>
+<body style="margin:0; width:1280px; height:800px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+// Each check also writes the results so far, so a page that stalls shows where it stopped.
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+// Home Assistant's entity picker as far as the inspector uses it: an element that holds its properties.
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+// What yaml_to_ast draws for a garden watering that waits for the meter, the valve closed by hand or the time
+// limit, and for a light that needs motion within the last five minutes.
+const DRAWN = {
+  garden: {"id":"n_a3","ha_id":"a3","name":"Garden watering","description":"","collapsed":false,"level":"automation","mode":"single","max":null,"variables":null,"extra":{},"rungs":[{"id":"r1","comment":"When the schedule garden starts, then turn on garden valve and wait until valve garden summation delivered is above input_number.garden_litres or garden valv...","elements":[{"id":"e8","type":"cmp_eq","isTrigger":true,"sourceA":"datetime","sourceB":"schedule.garden","raw":{"trigger":"state","entity_id":"schedule.garden","to":"on"},"src":"triggers[0]","autoGate":true,"sig":"type=cmp_eq|label=|sourceA=datetime|sourceB=schedule.garden|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e2","type":"coil_s","isTrigger":false,"label":"switch.garden_valve","service":"switch.turn_on","raw":{"action":"switch.turn_on","target":{"entity_id":"switch.garden_valve"}},"src":"actions[0]","targetSpec":{"entity_id":["switch.garden_valve"]},"fromAction":true,"sig":"type=coil_s|label=switch.garden_valve|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e6","type":"parallel","branches":[[{"id":"e3","type":"cmp_gt","isTrigger":false,"sourceA":"sensor.valve_garden_summation_delivered","sourceB":"input_number.garden_litres","src":"actions[1].wait_for_trigger[0]","raw":{"trigger":"numeric_state","entity_id":"sensor.valve_garden_summation_delivered","above":"input_number.garden_litres"},"sig":"type=cmp_gt|label=|sourceA=sensor.valve_garden_summation_delivered|sourceB=input_number.garden_litres|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],[{"id":"e4","type":"contact_n","isTrigger":false,"label":"switch.garden_valve","raw":{"trigger":"state","entity_id":"switch.garden_valve","to":"off"},"src":"actions[1].wait_for_trigger[1]","sig":"type=contact_n|label=switch.garden_valve|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],[{"id":"e5","type":"timer_ton","isTrigger":false,"label":"minutes {{ states('input_number.max_minutes') | int(0) }}","src":"actions[1]","waitTimeout":true,"sig":"type=timer_ton|label=minutes {{ states('input_number.max_minutes') | int(0) }}|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}]],"closed":true,"src":"actions[1]","waitFor":{"wait_for_trigger":[{"trigger":"numeric_state","entity_id":"sensor.valve_garden_summation_delivered","above":"input_number.garden_litres"},{"trigger":"state","entity_id":"switch.garden_valve","to":"off"}],"timeout":{"minutes":"{{ states('input_number.max_minutes') | int(0) }}"},"continue_on_timeout":true},"waitShape":[1,1,1],"fromAction":true},{"id":"e7","type":"coil_r","isTrigger":false,"label":"switch.garden_valve","service":"switch.turn_off","raw":{"action":"switch.turn_off","target":{"entity_id":"switch.garden_valve"}},"src":"actions[2]","targetSpec":{"entity_id":["switch.garden_valve"]},"fromAction":true,"sig":"type=coil_r|label=switch.garden_valve|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}]}],"links":[]},
+  lately: {"id":"n_a4","ha_id":"a4","name":"Hall light","description":"","collapsed":false,"level":"automation","mode":null,"max":null,"variables":null,"extra":{},"rungs":[{"id":"r1","comment":"When door turns on, if motion is on, then turn on hall","elements":[{"id":"e5","type":"contact_no","isTrigger":true,"label":"binary_sensor.door","raw":{"trigger":"state","entity_id":"binary_sensor.door","to":"on"},"src":"triggers[0]","autoGate":true,"sig":"type=contact_no|label=binary_sensor.door|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e6","type":"contact_no","isTrigger":false,"label":"binary_sensor.motion","raw":{"condition":"template","value_template":"{{ is_state('binary_sensor.motion','on') and (now() - states.binary_sensor.motion.last_changed).total_seconds() < 300 }}"},"src":"conditions[0]","recentState":"on","baseCond":true,"sig":"type=contact_no|label=binary_sensor.motion|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e7","type":"timer_toff","isTrigger":false,"label":"00:05:00","src":"conditions[0]","isRecent":true,"baseCond":true},{"id":"e4","type":"coil_s","isTrigger":false,"label":"light.hall","service":"light.turn_on","raw":{"action":"light.turn_on","target":{"entity_id":"light.hall"}},"src":"actions[0]","targetSpec":{"entity_id":["light.hall"]},"fromAction":true,"sig":"type=coil_s|label=light.hall|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}]}],"links":[]},
+};
+
+const sent = [];
+const hass = {
+  states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+  connection: {
+    sendMessagePromise: async (m) => {
+      sent.push(JSON.parse(JSON.stringify(m)));
+      if (m.type === 'libi/ai_status') return { configured: false };
+      if (m.type === 'libi/project_list') return { projects: [] };
+      // [CHANGED 2026-11-04, v3.85.0] SAVE & COMPILE: compile, Home Assistant's config API, then what reached it.
+      if (m.type === 'libi/compile_project') return { ok: true, errors: [], upserts: [], removals: [], unchanged: 1, stamp: 's' };
+      if (m.type === 'libi/save_done') return { status: 'ok', saved: true, message: 'Saved.', written: [], reloaded: [], errors: [] };
+      if (m.type === 'libi/verify_automation') return { results: [], ok: true };
+      if (m.type === 'libi/preview_yaml') return { yaml: '' };
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+
+const walk = (els, out = []) => {
+  (els || []).forEach(el => { out.push(el); (el.branches || []).forEach(b => walk(b, out)); walk(el.sequence, out); });
+  return out;
+};
+
+try {
+  localStorage.clear();
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '800px';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await sleep(300);
+  const sr = panel.shadowRoot;
+  const core = panel.core;
+
+  // An older drawing: a WAIT block, a Send Notification block, and the TOF of "was on lately" named timer_tof.
+  const old = JSON.parse(JSON.stringify(DRAWN.lately));
+  old.id = 'n_old'; old.ha_id = ''; old.name = 'Older drawing';
+  walk(old.rungs[0].elements).forEach(el => { if (el.isRecent) el.type = 'timer_tof'; });
+  old.rungs.push({ id: 'r_old', comment: '', elements: [
+    { id: 'e_old1', type: 'contact_no', label: 'binary_sensor.door', isTrigger: true },
+    { id: 'e_old2', type: 'wait', label: 'binary_sensor.motion', isTrigger: false },
+    { id: 'e_old3', type: 'notify', source: 'Door', target: 'notify.notify', isTrigger: false }] });
+  core.nets = [JSON.parse(JSON.stringify(DRAWN.garden)), old];
+  core.syncCounters();
+  core.repairAST();
+  core.validateAST();
+  panel._project = { slug: 'p', name: 'P' };
+  panel._render(); await sleep(50);
+
+  const garden = core.nets[0];
+  const rung = garden.rungs[0];
+  const wait = rung.elements.find(el => el.waitFor);
+  const block = (el) => sr.querySelector(`.libi-el[data-nid="${garden.id}"][data-eid="${el.id}"]`);
+  check('the wait is drawn with the user\'s own blocks', !!wait && wait.type === 'parallel'
+        && walk(garden.rungs.flatMap(r => r.elements)).every(el => el.type !== 'wait'), wait && wait.type);
+  const [meter, valve, limit] = wait.branches.map(b => b[0]);
+  check('the meter is a CMP >', meter.type === 'cmp_gt' && !!block(meter)
+        && block(meter).querySelector('.plc-header').textContent.trim() === 'CMP >', block(meter) && block(meter).textContent);
+  check('the valve closed by hand is an |N| contact', valve.type === 'contact_n' && !!block(valve)
+        && block(valve).textContent.includes('garden_valve'), block(valve) && block(valve).textContent);
+  check('the time limit is a TON', limit.type === 'timer_ton' && !!block(limit)
+        && block(limit).querySelector('.plc-header').textContent.trim() === 'TON', block(limit) && block(limit).textContent);
+  check('none of them is a trigger', ![meter, valve, limit].some(el => el.isTrigger));
+  check('nothing on the canvas says WAIT', ![...sr.querySelectorAll(`.libi-el[data-nid="${garden.id}"]`)]
+        .some(el => el.textContent.trim() === 'WAIT'));
+  check('the drawing has no red block', sr.querySelectorAll(`.libi-el.has-error[data-nid="${garden.id}"]`).length === 0,
+        [...sr.querySelectorAll('.has-error')].map(e => e.textContent.trim()).join(' | '));
+
+  // The schedule that starts the watering is the CMP DATETIME block: IN1 the date and time, IN2 the schedule.
+  const start = rung.elements[0];
+  check('the schedule that starts it is CMP DATETIME =', start.isTrigger && start.type === 'cmp_eq' && start.sourceA === 'datetime'
+        && start.sourceB === 'schedule.garden' && !!block(start)
+        && block(start).querySelector('.plc-header').textContent.trim() === 'CMP DATETIME ='
+        && [...block(start).querySelectorAll('.pin-val')].map(p => p.textContent).join('|') === 'datetime|schedule.garden',
+        JSON.stringify([start.type, start.sourceA, start.sourceB, block(start) && block(start).textContent.trim()]));
+  check('its rung says when it runs', (rung.comment || '').startsWith('When the schedule garden starts, then '), rung.comment);
+  panel._inspectedEl = { netId: garden.id, rungId: rung.id, elId: start.id };
+  panel._render();
+  const kindSel = sr.querySelector('#propCmpKind');
+  const dtPick = sr.querySelector('#inp_sourceB');
+  check('the inspector says Date and time, and its picker offers the schedules', !!kindSel && kindSel.value === 'datetime'
+        && !!dtPick && dtPick.value === 'schedule.garden' && (dtPick.includeDomains || []).includes('schedule'),
+        JSON.stringify([kindSel && kindSel.value, dtPick && dtPick.value, dtPick && dtPick.includeDomains]));
+  dtPick.dispatchEvent(new CustomEvent('value-changed', { detail: { value: 'schedule.lawn' } }));
+  check('picking another schedule puts it on IN2', start.sourceB === 'schedule.lawn', start.sourceB);
+  start.sourceB = 'schedule.garden';
+  panel._inspectedEl = null;
+  panel._render(); await sleep(20);
+
+  // The Block Type list holds the user's blocks; WAIT and Send Notification only on an old drawing that has one.
+  const typesFor = (net, rid, el) => {
+    panel._inspectedEl = { netId: net.id, rungId: rid, elId: el.id };
+    panel._render();
+    const sel = sr.querySelector('#propType');
+    return sel ? { values: [...sel.options].map(o => o.value), value: sel.value, text: sel.selectedOptions[0] && sel.selectedOptions[0].textContent } : null;
+  };
+  let list = typesFor(garden, rung.id, valve);
+  check('the Block Type list offers no WAIT and no Send Notification', list && !list.values.includes('wait')
+        && !list.values.includes('notify') && list.value === 'contact_n', list && list.values.join(','));
+  const oldRung = core.nets[1].rungs[1];
+  list = typesFor(core.nets[1], oldRung.id, oldRung.elements[1]);
+  check('an old WAIT block still shows what it is', list && list.value === 'wait' && list.text === 'Wait for Trigger (old drawing)',
+        list && `${list.value} ${list.text}`);
+  list = typesFor(core.nets[1], oldRung.id, oldRung.elements[2]);
+  check('an old Send Notification block still shows what it is', list && list.value === 'notify'
+        && list.text === 'Send Notification (old drawing)', list && `${list.value} ${list.text}`);
+  panel._inspectedEl = null;
+  const tof = walk(core.nets[1].rungs[0].elements).find(el => el.isRecent);
+  check('the TOF of an old "was on lately" is the palette\'s TOF', tof && tof.type === 'timer_toff', tof && tof.type);
+
+  // A second block in one branch, or an action inside the wait, has no Home Assistant form: red, and not saved.
+  const extra = core.mkEl('contact_no', 'binary_sensor.rain');
+  wait.branches[0].push(extra);
+  core.validateAST(); panel._render(); await sleep(20);
+  check('a second block in one branch of a wait is marked', /ONE of these happens/.test(extra.structuralError || '')
+        && block(extra) && block(extra).classList.contains('has-error'), extra.structuralError);
+  let before = sent.length;
+  let res = await panel._saveProject();
+  check('and the save is refused', res.refused === true && !sent.slice(before).some(m => m.type === 'libi/compile_project'), JSON.stringify(res));
+  wait.branches[0].pop();
+  const coil = core.mkEl('coil_s', 'light.hall');
+  wait.branches.push([coil]);
+  core.validateAST(); panel._render(); await sleep(20);
+  check('an action inside a wait is marked', /Only what the wait waits for/.test(coil.structuralError || ''), coil.structuralError);
+  wait.branches.pop();
+
+  // As drawn, it saves, and what is sent still says which wait it was, so the backend writes it back unchanged.
+  before = sent.length;
+  res = await panel._saveProject();
+  const save = sent.slice(before).find(m => m.type === 'libi/compile_project');
+  const sentWait = save && save.nets[0].rungs[0].elements.find(el => el.waitFor);
+  check('the drawing as imported saves', res.saved === true && !!save, JSON.stringify(res));
+  check('and carries its wait for the way back', !!sentWait && JSON.stringify(sentWait.waitShape) === '[1,1,1]'
+        && sentWait.waitFor.continue_on_timeout === true && sentWait.branches[2][0].waitTimeout === true
+        && sentWait.branches.every(b => !!b[0].sig), sentWait && JSON.stringify(sentWait.waitShape));
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

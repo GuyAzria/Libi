@@ -34,7 +34,7 @@ When I moved my home to Home Assistant, the one thing I really missed was **Ladd
 LIBI is a graphical editor that takes your existing Home Assistant automations and automatically translates them into a LADDER logic representation. It allows you to:
 
 * Add and modify automation logic using a visual interface.  
-* Save the resulting logic directly back to standard Home Assistant YAML files.  
+* Save the resulting logic back to Home Assistant's standard automation, script and scene files - through the same editor API Home Assistant's own automation, script and scene editors use.  
 * Execute the automations natively within Home Assistant, just like any standard automation.
 
 ### **IEC 61131-3 Compliance**
@@ -47,7 +47,10 @@ The software is built upon the **IEC 61131-3** standard, the international stand
 
 * **Integrated Helper Management:** Search for, manage, and insert variables (Helpers) directly from within the graphical editor.  
 * **Project and File Grouping:** Save and manage groups of YAML files collectively. In LIBI, every **NET** functions as an individual YAML file. This allows you to open a single project and view all related ladders (e.g., "Garden Automations", "Security Automations") in one unified workspace.
-* **Net Versions:** Every NET keeps its earlier versions. Opening a project records **V1**, and every **SAVE & COMPILE** that changes a NET records the next one (V2, V3, ...). The **V** badge on a NET shows the version that runs in Home Assistant; click it to see every version with its date and YAML, put an earlier one back on the canvas, and **SAVE & COMPILE** to make it the one that runs. Without a choice, the newest saved version runs. A change made in Home Assistant's own editor is recorded as a version the next time the project is opened.
+* **Net Versions:** Every NET keeps its earlier versions. When an existing automation is opened in LIBI for the first time, LIBI keeps a copy of it in the version history exactly as it was in Home Assistant - **V1, the original** - and another one as **V2**, the version you work on; a NET you draw from scratch starts at V1. Every **SAVE & COMPILE** that changes a NET records the next version. The **V** badge on a NET shows the version that runs in Home Assistant; click it to see every version with its date and YAML, put an earlier one back on the canvas, and **SAVE & COMPILE** to make it the one that runs. The original is never dropped from the history. A change made in Home Assistant's own editor is recorded as a version the next time the project is opened.
+* **SAVE & COMPILE:** LIBI compiles every NET first and checks it with Home Assistant's own validator. When anything does not hold, nothing is saved and LIBI says which NET and why. Otherwise each change goes to Home Assistant, which writes and reloads it, and LIBI waits until Home Assistant has reloaded it before it says it is saved.
+* **Deleting a NET** asks what becomes of its automation: **Delete completely** (the automation is deleted from Home Assistant too), **Delete and go back to V1** (the original logic is put back; Home Assistant writes it in its own format, as it does with every save), or **Remove from LIBI only** (the automation stays in Home Assistant as it is now).
+* **Changes not saved:** closing a project, opening another one or leaving LIBI with changes that are not saved asks whether to save them first.
 
 ## **Installation**
 
@@ -65,13 +68,10 @@ The quickest way is the two buttons below. Each one opens the right page in your
 
 Or step by step:
 
-1. **Add the repository to HACS.** LIBI is a custom repository, so HACS needs to be told where it is once.
-   - Open **HACS** in the sidebar.
-   - Open the menu (**⋮**, top right) and choose **Custom repositories**.
-   - In **Repository**, enter `https://github.com/GuyAzria/Libi`.
-   - In **Type**, choose **Integration**, and click **Add**.
+1. **Find LIBI in HACS.** Open **HACS** in the sidebar and search for **LIBI**.
+   - Not listed yet? Until LIBI is in the HACS default store, add it once as a custom repository: open the menu (**⋮**, top right), choose **Custom repositories**, enter `https://github.com/GuyAzria/Libi` in **Repository**, choose **Integration** in **Type**, and click **Add**. Then search for **LIBI** again.
 2. **Download LIBI.**
-   - In HACS, search for **LIBI** and open it.
+   - Open **LIBI** in HACS.
    - Click **Download** (bottom right), keep the latest version, and click **Download** again.
 3. **Restart Home Assistant.** Go to **Settings ▸ System**, click the power icon (top right), and choose **Restart Home Assistant**. HACS also shows a *Restart required* notice under **Settings**.
 4. **Add the integration.**
@@ -90,9 +90,10 @@ Download `libi.zip` from the [latest release](https://github.com/GuyAzria/Libi/r
 
 ## **What LIBI changes in your configuration**
 
-* LIBI reads and writes the same `automations.yaml`, `scripts.yaml` and `scenes.yaml` that Home Assistant's own editors use, and reloads them after a save. Nothing has to be added to `configuration.yaml`.
-* Entries you wrote yourself, by hand or in the Home Assistant editor, are kept exactly as they are. A file is only written when its content actually changes.
+* LIBI reads the same `automations.yaml`, `scripts.yaml` and `scenes.yaml` that Home Assistant's own editors use, and never writes them itself. A save goes through Home Assistant's own config API - the one its automation, script and scene editors use - so Home Assistant checks each automation, writes the file and reloads it. Nothing has to be added to `configuration.yaml`.
+* LIBI sends only the automations, scripts and scenes it changed; an unchanged save sends nothing. When Home Assistant writes one of those files it writes the whole file in its own format, exactly as its own editor does: comments in the file are not kept, and an entry without an `id` gets one.
 * If one of those files cannot be read (for example because it contains a syntax error), LIBI saves nothing and tells you why.
+* `libi_automations.yaml`, the file LIBI used before version 3.5.0, is left alone: if it still holds automations, the log says so.
 * Projects are stored as `.libi` files in `config/libi/`, so they are part of your Home Assistant backup.
 * The version history of each project is stored next to it, as `<project>.versions.json` (up to 30 versions per NET; the one that runs is always kept). Deleting a project deletes its history; the automations stay in Home Assistant.
 
@@ -102,8 +103,8 @@ Under the Inspector, the **AI Chat** builds ladder logic from a sentence, in you
 
 You can also ask about the nets on the page ("what does the garden net do?") or ask to change one ("water on Sunday, Tuesday, Thursday and Saturday at 5:00 instead of the button"). A change is drawn as a new version that you can put in place of the old net with **Replace NET**.
 
-1. LIBI asks the AI what the logic needs, then **searches your Home Assistant itself** and shows you the matching devices — every button, every light in the living room. You pick them, several at once if you like.
-2. You answer the few questions it asks (how long, which days, whether you want a dashboard card).
+1. LIBI asks the AI what the logic needs, then **searches your Home Assistant itself** and shows you the matching devices — every button, every light in the living room. You pick them, several at once if you like. The settings the logic reads — the NET's **local variables** (the start time, the days, the litres, the on/off switch) — are in one window at the top: each one uses a free helper of yours that fits, or a new one that LIBI creates when you press the button; **All new** makes every one of them new. Being at a place takes who and where - a person or a phone, and one of your zones, every one of them listed; a zone you choose on the dashboard card is a dropdown of your zones, and the logic checks that the person is in the one chosen.
+2. You answer the few questions it asks (how long, which days, whether you want a dashboard card). For an automation that switches a device, **LIBI asks questions of its own**, the same every time: an on/off switch for the whole automation on the dashboard card (off stops it at once, and nothing starts until it is on again), a message when it starts and when it ends - a notification, spoken by your phone (the Home Assistant app on Android reads it aloud) or both - what to do when the device is offline (its battery ran out, for example), and a message when a battery of its devices runs low (LIBI finds the battery on the device itself). Your answers are written into the logic and checked in the draft.
 3. You get a **draft NET** to add to the canvas, plus a dashboard card to copy if you asked for one.
 
 **The AI never chooses or controls a device on its own.** It only ever sees roles like "the buttons" and "the lights"; the entities are the ones *you* ticked. LIBI rejects any draft that names another entity, a device or area id, or a service outside a safe list, and Home Assistant's own validator checks it too. Nothing is written until you press **SAVE & COMPILE**, and drafts that control locks, alarms, covers, valves or sirens are flagged.

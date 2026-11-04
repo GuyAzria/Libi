@@ -14,11 +14,14 @@
  */
 /**
  * LIBI - Online Engine
- * v3.4.0
+ * v3.77.0
  */
-// [ADDED v3.4.0 | 2026-08-20] Purpose: Renamed LadderOnline to LibiOnline.
+// [ADDED v3.71.0 | 2026-10-29] Purpose: A rung that hangs from a trigger above it has power only while that trigger
+//   has (this.core, set by the panel, says which rungs hang).
+// [ADDED v3.77.0 | 2026-11-01] Purpose: The value of IN1 of a CMP DAY - datetime.day.now - is today's day.
 const ON_STATES = new Set(['on', 'true', 'home', 'open', 'unlocked', 'active', 'detected', 'playing']);
 const PULSE_MS = 4000;
+const DAY_IDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];  // Date.getDay() order, written as a CMP DAY's days
 
 export class LibiOnline {
     constructor() {
@@ -78,8 +81,15 @@ export class LibiOnline {
             if (!isNaN(a) && !isNaN(min) && !isNaN(max)) power = a > min && a < max;
         } else if (t.startsWith('cmp')) {
             const left = String(el.sourceA || '');
-            if (left === 'time' || left === 'weekday' || left === 'datetime' || left === 'sun') {
-                value = left === 'time' ? new Date().toTimeString().slice(0, 8) : left;
+            const schedule = left === 'datetime' && String(el.sourceB || '').startsWith('schedule.');
+            if (schedule && (t === 'cmp_eq' || t === 'cmp_ne')) {
+                // [ADDED v3.70.0] The date and time = schedule.x: on while the clock is inside the schedule.
+                const st = this.stateOf(hass, el.sourceB);
+                value = st;
+                if (st !== null) power = (st === 'on') === (t === 'cmp_eq');
+            } else if (left === 'time' || left === 'weekday' || left === 'datetime' || left === 'sun') {
+                // [CHANGED v3.77.0] IN1 is the clock now or the day now (datetime.time.now / datetime.day.now).
+                value = left === 'time' ? new Date().toTimeString().slice(0, 8) : left === 'weekday' ? DAY_IDS[new Date().getDay()] : left;
             } else {
                 const a = this.numberOf(hass, el.sourceA);
                 const b = this.numberOf(hass, el.sourceB);
@@ -165,8 +175,24 @@ export class LibiOnline {
         this.rungPower.clear();
         for (const net of nets || []) {
             let netLive = false;
+            // [ADDED v3.71.0] The power at the trigger the rungs below hang from: the trigger of the last rung that does
+            // not hang, OR the triggers of the rungs linked to it (an OR of triggers is one rung per trigger).
+            const core = this.core;
+            let head = null;
+            let headRung = null;
             for (const rung of net.rungs || []) {
-                const flow = this.evaluateSeries(rung.elements, hass, now);
+                let flow = this.evaluateSeries(rung.elements, hass, now);
+                if (core && core.hangs(rung)) {
+                    flow = (head === false || flow === false) ? false : (head === true && flow === true ? true : null);
+                } else if (core) {
+                    const trig = core.triggerHead(rung);
+                    const own = trig && this.result.has(trig.id) ? this.result.get(trig.id).power : null;
+                    const joined = headRung !== null && (net.links || []).some(l =>
+                        (l.aRung === headRung && l.bRung === rung.id) || (l.bRung === headRung && l.aRung === rung.id));
+                    if (!trig) { head = null; headRung = null; }
+                    else if (joined) head = (head === true || own === true) ? true : (head === false && own === false ? false : null);
+                    else { head = own; headRung = rung.id; }
+                }
                 this.rungPower.set(rung.id, flow);
                 if (flow === true) netLive = true;
             }

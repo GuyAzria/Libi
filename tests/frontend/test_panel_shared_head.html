@@ -1,0 +1,199 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-10-29] Purpose: The automation's trigger is drawn once. The rungs below hang from it with a
+  drop under it, exactly as the importer draws the user's garden watering (DRAWN is its output); none of them is red,
+  the wait at the end of a rung included; online they have power only while the trigger has; a rung opened among
+  them hangs too; with no trigger above, a hanging rung is red and the save is refused. With two triggers, the drop
+  comes down from the link that joins them. The schedule's CMP DATETIME block says its days and hours.
+  [ADDED v1.1.0 | 2026-10-29] Purpose: The ladder way (one trigger per rung, a for as the TON after its trigger)
+  draws with no hanging rung and no red block; the rungs below a trigger with a for come down after its TON.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi shared trigger test</title></head>
+<body style="margin:0; width:1280px; height:800px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+// Each check also writes the results so far, so a page that stalls shows where it stopped.
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+// Home Assistant's entity picker as far as the inspector uses it: an element that holds its properties.
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+// What yaml_to_ast draws for the user's garden watering (NET 4, texts in English) and for a hall light with two
+// triggers, an if / else and one more step.
+const DRAWN = {
+  net4: {"id":"n_libi_ai_1793303366077","ha_id":"libi_ai_1793303366077","name":"Advanced garden watering","description":"Watering by the schedule, the litres, the forecast, a manual close and a time limit.","collapsed":false,"level":"automation","mode":"single","max":null,"variables":null,"extra":{},"rungs":[{"id":"r1","comment":"When the schedule lvkh zmnym lhshqyyt gynh starts, then call get forecasts on guy smart home","elements":[{"id":"e3","type":"cmp_eq","isTrigger":true,"sourceA":"datetime","sourceB":"schedule.lvkh_zmnym_lhshqyyt_gynh","raw":{"trigger":"state","entity_id":"schedule.lvkh_zmnym_lhshqyyt_gynh","to":"on"},"src":"triggers[0]","autoGate":true,"sig":"type=cmp_eq|label=|sourceA=datetime|sourceB=schedule.lvkh_zmnym_lhshqyyt_gynh|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e2","type":"move","isTrigger":false,"mode":"value","source":"weather.get_forecasts","target":"weather.guy_smart_home","service":"weather.get_forecasts","moveKind":"action","raw":{"action":"weather.get_forecasts","target":{"entity_id":"weather.guy_smart_home"},"data":{"type":"daily"},"response_variable":"forecast"},"src":"actions[0]","targetSpec":{"entity_id":["weather.guy_smart_home"]},"fromAction":true,"sig":"type=move|label=|sourceA=|sourceB=|sourceC=|target=weather.guy_smart_home|source=weather.get_forecasts|mode=value|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}]},{"id":"r2","comment":"If states('weather.guy smart home') not in ['rai\u2026 is true, then turn on valve garden switch and call variables on start water and wait until valve garden sum...","elements":[{"id":"e5","type":"cmp_eq","isTrigger":false,"sourceA":"states('weather.guy_smart_home') not in ['rai\u2026","sourceB":"true","src":"actions[1].opt[0].cond[0]","tplId":"tple4","expr":"{{ states('weather.guy_smart_home') not in ['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail'] and forecast['weather.guy_smart_home'].forecast[0].condition not in ['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail'] }}","dispA":"states('weather.guy_smart_home') not in ['rai\u2026","raw":{"condition":"template","value_template":"{{ states('weather.guy_smart_home') not in ['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail'] and forecast['weather.guy_smart_home'].forecast[0].condition not in ['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail'] }}"},"tplRoot":true,"tplText":"{{ states('weather.guy_smart_home') not in ['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail'] and forecast['weather.guy_smart_home'].forecast[0].condition not in ['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail'] }}","sig":"type=cmp_eq|label=|sourceA=states('weather.guy_smart_home') not in ['rai\u2026|sourceB=true|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e6","type":"coil_s","isTrigger":false,"label":"switch.valve_garden_switch","service":"switch.turn_on","raw":{"action":"switch.turn_on","target":{"entity_id":"switch.valve_garden_switch"}},"src":"actions[1].opt[0].seq[0]","targetSpec":{"entity_id":["switch.valve_garden_switch"]},"fromAction":true,"sig":"type=coil_s|label=switch.valve_garden_switch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e7","type":"move","isTrigger":false,"mode":"value","source":"{{ states('sensor.valve_garden_summation_delivered') | floa\u2026","target":"start_water","service":"variables","raw":{"variables":{"start_water":"{{ states('sensor.valve_garden_summation_delivered') | float(0) }}"}},"src":"actions[1].opt[0].seq[1]","fromAction":true,"sig":"type=move|label=|sourceA=|sourceB=|sourceC=|target=start_water|source={{ states('sensor.valve_garden_summation_delivered') | floa\u2026|mode=value|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e11","type":"parallel","branches":[[{"id":"e8","type":"cmp_gt","isTrigger":false,"sourceA":"sensor.valve_garden_summation_delivered","sourceB":"input_number.kmvt_mym_lhshqyh_blytrym","src":"actions[1].opt[0].seq[2].wait_for_trigger[0]","raw":{"trigger":"numeric_state","entity_id":"sensor.valve_garden_summation_delivered","above":"input_number.kmvt_mym_lhshqyh_blytrym"},"sig":"type=cmp_gt|label=|sourceA=sensor.valve_garden_summation_delivered|sourceB=input_number.kmvt_mym_lhshqyh_blytrym|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],[{"id":"e9","type":"contact_n","isTrigger":false,"label":"switch.valve_garden_switch","raw":{"trigger":"state","entity_id":"switch.valve_garden_switch","to":"off"},"src":"actions[1].opt[0].seq[2].wait_for_trigger[1]","sig":"type=contact_n|label=switch.valve_garden_switch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],[{"id":"e10","type":"timer_ton","isTrigger":false,"label":"minutes {{ states('input_number.zmn_hshqyh_mqsymly_bdqvt') \u2026","src":"actions[1].opt[0].seq[2]","waitTimeout":true,"sig":"type=timer_ton|label=minutes {{ states('input_number.zmn_hshqyh_mqsymly_bdqvt') \u2026|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}]],"closed":true,"src":"actions[1].opt[0].seq[2]","waitFor":{"wait_for_trigger":[{"trigger":"numeric_state","entity_id":"sensor.valve_garden_summation_delivered","above":"input_number.kmvt_mym_lhshqyh_blytrym"},{"trigger":"state","entity_id":"switch.valve_garden_switch","to":"off"}],"timeout":{"minutes":"{{ states('input_number.zmn_hshqyh_mqsymly_bdqvt') | int(45) }}"},"continue_on_timeout":true},"waitShape":[1,1,1],"fromAction":true}],"group":"g1","groupIdx":0,"groupTotal":1,"groupKind":"if","isDefault":false,"src":"actions[1]","sharesHead":true},{"id":"r3","comment":"If trigger is not none and trigger.platform is numeric_state, then turn off valve garden switch","elements":[{"id":"e13","type":"cmp_ne","isTrigger":false,"sourceA":"wait.trigger","sourceB":"none","src":"actions[2].opt[0].cond[0]","tplId":"tple12","exprA":"wait.trigger","exprB":"none","dispA":"wait.trigger","dispB":"none","expr":"","negated":true,"raw":{"condition":"template","value_template":"{{ not wait.trigger is none and wait.trigger.platform == 'numeric_state' }}"},"tplRoot":true,"tplText":"{{ not wait.trigger is none and wait.trigger.platform == 'numeric_state' }}","sig":"type=cmp_ne|label=|sourceA=wait.trigger|sourceB=none|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e14","type":"cmp_eq","isTrigger":false,"sourceA":"wait.trigger.platform","sourceB":"numeric_state","src":"actions[2].opt[0].cond[0]","tplId":"tple12","exprA":"wait.trigger.platform","exprB":"'numeric_state'","dispA":"wait.trigger.platform","dispB":"numeric_state","sig":"type=cmp_eq|label=|sourceA=wait.trigger.platform|sourceB=numeric_state|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e15","type":"coil_r","isTrigger":false,"label":"switch.valve_garden_switch","service":"switch.turn_off","raw":{"action":"switch.turn_off","target":{"entity_id":"switch.valve_garden_switch"}},"src":"actions[2].opt[0].seq[0]","targetSpec":{"entity_id":["switch.valve_garden_switch"]},"fromAction":true,"sig":"type=coil_r|label=switch.valve_garden_switch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"group":"g2","groupIdx":0,"groupTotal":1,"groupKind":"if","isDefault":false,"src":"actions[2]","sharesHead":true},{"id":"r4","comment":"If trigger is none, then turn off valve garden switch and send a notification to mobile app sm s918b and send a notification to mobile app sm s938b","elements":[{"id":"e17","type":"cmp_eq","isTrigger":false,"sourceA":"wait.trigger","sourceB":"none","src":"actions[3].opt[0].cond[0]","tplId":"tple16","exprA":"wait.trigger","exprB":"none","dispA":"wait.trigger","dispB":"none","raw":{"condition":"template","value_template":"{{ wait.trigger is none }}"},"tplRoot":true,"tplText":"{{ wait.trigger is none }}","sig":"type=cmp_eq|label=|sourceA=wait.trigger|sourceB=none|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e18","type":"coil_r","isTrigger":false,"label":"switch.valve_garden_switch","service":"switch.turn_off","raw":{"action":"switch.turn_off","target":{"entity_id":"switch.valve_garden_switch"}},"src":"actions[3].opt[0].seq[0]","targetSpec":{"entity_id":["switch.valve_garden_switch"]},"fromAction":true,"sig":"type=coil_r|label=switch.valve_garden_switch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e19","type":"move","isTrigger":false,"mode":"notify","target":"notify.mobile_app_sm_s918b","source":"Watering stopped: the time limit ran out","title":"","tts":"","stream":"","raw":{"action":"notify.mobile_app_sm_s918b","data":{"message":"Watering stopped: the time limit ran out"}},"src":"actions[3].opt[0].seq[1]","fromAction":true,"sig":"type=move|label=|sourceA=|sourceB=|sourceC=|target=notify.mobile_app_sm_s918b|source=Watering stopped: the time limit ran out|mode=notify|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e20","type":"move","isTrigger":false,"mode":"notify","target":"notify.mobile_app_sm_s938b","source":"Watering stopped: the time limit ran out","title":"","tts":"","stream":"","raw":{"action":"notify.mobile_app_sm_s938b","data":{"message":"Watering stopped: the time limit ran out"}},"src":"actions[3].opt[0].seq[2]","fromAction":true,"sig":"type=move|label=|sourceA=|sourceB=|sourceC=|target=notify.mobile_app_sm_s938b|source=Watering stopped: the time limit ran out|mode=notify|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"group":"g3","groupIdx":0,"groupTotal":1,"groupKind":"if","isDefault":false,"src":"actions[3]","sharesHead":true}],"links":[]},
+  two: {"id":"n_a5","ha_id":"a5","name":"Hall light","description":"","collapsed":false,"level":"automation","mode":"single","max":null,"variables":null,"extra":{},"rungs":[{"id":"r1","comment":"When either door is on or motion is on, then turn on hall","elements":[{"id":"e6","type":"contact_no","isTrigger":true,"label":"binary_sensor.door","raw":{"trigger":"state","entity_id":"binary_sensor.door","to":"on"},"src":"triggers[0]","autoGate":true,"sig":"type=contact_no|label=binary_sensor.door|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e3","type":"coil_s","isTrigger":false,"label":"light.hall","service":"light.turn_on","raw":{"action":"light.turn_on","target":{"entity_id":"light.hall"}},"src":"actions[0]","targetSpec":{"entity_id":["light.hall"]},"fromAction":true,"sig":"type=coil_s|label=light.hall|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}]},{"id":"r5","comment":"","elements":[{"id":"e7","type":"contact_no","isTrigger":true,"label":"binary_sensor.motion","raw":{"trigger":"state","entity_id":"binary_sensor.motion","to":"on"},"src":"triggers[1]","autoGate":true,"sig":"type=contact_no|label=binary_sensor.motion|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}]},{"id":"r2","comment":"If sun is below_horizon, then turn on porch","elements":[{"id":"e8","type":"cmp_eq","isTrigger":false,"sourceA":"sun.sun","sourceB":"below_horizon","raw":{"condition":"state","entity_id":"sun.sun","state":"below_horizon"},"src":"actions[1].opt[0].cond[0]","sig":"type=cmp_eq|label=|sourceA=sun.sun|sourceB=below_horizon|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e9","type":"coil_s","isTrigger":false,"label":"light.porch","service":"light.turn_on","raw":{"action":"light.turn_on","target":{"entity_id":"light.porch"}},"src":"actions[1].opt[0].seq[0]","targetSpec":{"entity_id":["light.porch"]},"fromAction":true,"sig":"type=coil_s|label=light.porch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"group":"g1","groupIdx":0,"groupTotal":2,"groupKind":"if","isDefault":false,"src":"actions[1]","sharesHead":true},{"id":"r3","comment":"Turn off porch","elements":[{"id":"e10","type":"coil_r","isTrigger":false,"label":"light.porch","service":"light.turn_off","raw":{"action":"light.turn_off","target":{"entity_id":"light.porch"}},"src":"actions[1].opt[1].seq[0]","targetSpec":{"entity_id":["light.porch"]},"fromAction":true,"sig":"type=coil_r|label=light.porch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"group":"g1","groupIdx":1,"groupTotal":2,"groupKind":"if","isDefault":true,"src":"actions[1]","sharesHead":true},{"id":"r4","comment":"Send a notification to notify","elements":[{"id":"e11","type":"move","isTrigger":false,"mode":"notify","target":"notify.notify","source":"someone is in the hall","title":"","tts":"","stream":"","raw":{"action":"notify.notify","data":{"message":"someone is in the hall"}},"src":"actions[2]","fromAction":true,"sig":"type=move|label=|sourceA=|sourceB=|sourceC=|target=notify.notify|source=someone is in the hall|mode=notify|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"sharesHead":true}],"links":[{"id":"k1","aRung":"r1","aPath":"1","bRung":"r5","bPath":"1"}]},
+  ladder: {"id":"n_garden_ladder","ha_id":"garden_ladder","name":"Garden watering, the ladder way","description":"","collapsed":false,"level":"automation","mode":"queued","max":null,"variables":null,"extra":{},"rungs":[{"id":"r1","comment":"When the schedule lvkh zmnym lhshqyyt gynh starts, if states('weather.guy smart home') not in ['rai\u2026 is true, then call get forecasts on guy smart home and g...","elements":[{"id":"e5","type":"cmp_eq","isTrigger":true,"sourceA":"datetime","sourceB":"schedule.lvkh_zmnym_lhshqyyt_gynh","raw":{"trigger":"state","entity_id":"schedule.lvkh_zmnym_lhshqyyt_gynh","to":"on","id":"start"},"src":"actions[0].opt[0].cond[0]","trigId":"start","sig":"type=cmp_eq|label=|sourceA=datetime|sourceB=schedule.lvkh_zmnym_lhshqyyt_gynh|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e7","type":"cmp_eq","isTrigger":false,"sourceA":"states('weather.guy_smart_home') not in ['rai\u2026","sourceB":"true","src":"actions[0].opt[0].cond[1]","tplId":"tple6","expr":"{{ states('weather.guy_smart_home') not in ['rainy'] }}","dispA":"states('weather.guy_smart_home') not in ['rai\u2026","raw":{"condition":"template","value_template":"{{ states('weather.guy_smart_home') not in ['rainy'] }}"},"tplRoot":true,"tplText":"{{ states('weather.guy_smart_home') not in ['rainy'] }}","sig":"type=cmp_eq|label=|sourceA=states('weather.guy_smart_home') not in ['rai\u2026|sourceB=true|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e8","type":"move","isTrigger":false,"mode":"value","source":"weather.get_forecasts","target":"weather.guy_smart_home","service":"weather.get_forecasts","moveKind":"action","raw":{"action":"weather.get_forecasts","target":{"entity_id":"weather.guy_smart_home"},"data":{"type":"daily"},"response_variable":"forecast"},"src":"actions[0].opt[0].seq[0]","targetSpec":{"entity_id":["weather.guy_smart_home"]},"fromAction":true,"sig":"type=move|label=|sourceA=|sourceB=|sourceC=|target=weather.guy_smart_home|source=weather.get_forecasts|mode=value|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e10","type":"cmp_eq","isTrigger":false,"sourceA":"forecast['weather.guy_smart_home'].forecast[0\u2026","sourceB":"true","src":"actions[0].opt[0].seq[1]","tplId":"tple9","expr":"{{ forecast['weather.guy_smart_home'].forecast[0].condition not in ['rainy'] }}","dispA":"forecast['weather.guy_smart_home'].forecast[0\u2026","raw":{"condition":"template","value_template":"{{ forecast['weather.guy_smart_home'].forecast[0].condition not in ['rainy'] }}"},"tplRoot":true,"tplText":"{{ forecast['weather.guy_smart_home'].forecast[0].condition not in ['rainy'] }}","fromAction":true,"sig":"type=cmp_eq|label=|sourceA=forecast['weather.guy_smart_home'].forecast[0\u2026|sourceB=true|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e11","type":"coil_s","isTrigger":false,"label":"switch.valve_garden_switch","service":"switch.turn_on","raw":{"action":"switch.turn_on","target":{"entity_id":"switch.valve_garden_switch"}},"src":"actions[0].opt[0].seq[2]","targetSpec":{"entity_id":["switch.valve_garden_switch"]},"fromAction":true,"sig":"type=coil_s|label=switch.valve_garden_switch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"group":"g1","groupIdx":0,"groupTotal":4,"groupKind":"choose","isDefault":false,"src":"actions[0]"},{"id":"r2","comment":"When valve garden summation delivered is above input_number.kmvt_mym_lhshqyh_blytrym, if valve garden switch is on, then turn off valve garden switch","elements":[{"id":"e12","type":"cmp_gt","isTrigger":true,"sourceA":"sensor.valve_garden_summation_delivered","sourceB":"input_number.kmvt_mym_lhshqyh_blytrym","src":"actions[0].opt[1].cond[0]","raw":{"trigger":"numeric_state","entity_id":"sensor.valve_garden_summation_delivered","above":"input_number.kmvt_mym_lhshqyh_blytrym","id":"amount_reached"},"trigId":"amount_reached","sig":"type=cmp_gt|label=|sourceA=sensor.valve_garden_summation_delivered|sourceB=input_number.kmvt_mym_lhshqyh_blytrym|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e13","type":"contact_no","isTrigger":false,"label":"switch.valve_garden_switch","raw":{"condition":"state","entity_id":"switch.valve_garden_switch","state":"on"},"src":"actions[0].opt[1].cond[1]","sig":"type=contact_no|label=switch.valve_garden_switch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e14","type":"coil_r","isTrigger":false,"label":"switch.valve_garden_switch","service":"switch.turn_off","raw":{"action":"switch.turn_off","target":{"entity_id":"switch.valve_garden_switch"}},"src":"actions[0].opt[1].seq[0]","targetSpec":{"entity_id":["switch.valve_garden_switch"]},"fromAction":true,"sig":"type=coil_r|label=switch.valve_garden_switch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"group":"g1","groupIdx":1,"groupTotal":4,"groupKind":"choose","isDefault":false,"src":"actions[0]"},{"id":"r3","comment":"When valve garden switch turns on for minutes {{ states('input_number.zmn_hshqyh_mqsymly_bdqvt') \u2026, then turn off valve garden switch and send a notification...","elements":[{"id":"e15","type":"contact_no","isTrigger":true,"label":"switch.valve_garden_switch","raw":{"trigger":"state","entity_id":"switch.valve_garden_switch","to":"on","for":{"minutes":"{{ states('input_number.zmn_hshqyh_mqsymly_bdqvt') | int(45) }}"},"id":"time_limit"},"src":"actions[0].opt[2].cond[0]","trigId":"time_limit","forTimer":true,"sig":"type=contact_no|label=switch.valve_garden_switch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e16","type":"timer_ton","isTrigger":false,"label":"minutes {{ states('input_number.zmn_hshqyh_mqsymly_bdqvt') \u2026","src":"actions[0].opt[2].cond[0]","isFor":true,"forValue":{"minutes":"{{ states('input_number.zmn_hshqyh_mqsymly_bdqvt') | int(45) }}"}},{"id":"e17","type":"coil_r","isTrigger":false,"label":"switch.valve_garden_switch","service":"switch.turn_off","raw":{"action":"switch.turn_off","target":{"entity_id":"switch.valve_garden_switch"}},"src":"actions[0].opt[2].seq[0]","targetSpec":{"entity_id":["switch.valve_garden_switch"]},"fromAction":true,"sig":"type=coil_r|label=switch.valve_garden_switch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e18","type":"move","isTrigger":false,"mode":"notify","target":"notify.mobile_app_sm_s918b","source":"The time limit ended the watering","title":"","tts":"","stream":"","raw":{"action":"notify.mobile_app_sm_s918b","data":{"message":"The time limit ended the watering"}},"src":"actions[0].opt[2].seq[1]","fromAction":true,"sig":"type=move|label=|sourceA=|sourceB=|sourceC=|target=notify.mobile_app_sm_s918b|source=The time limit ended the watering|mode=notify|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"group":"g1","groupIdx":2,"groupTotal":4,"groupKind":"choose","isDefault":false,"src":"actions[0]"},{"id":"r4","comment":"When start is triggered, if valve garden switch is on, then turn off valve garden switch","elements":[{"id":"e19","type":"contact_p","isTrigger":true,"label":"homeassistant.start","src":"actions[0].opt[3].cond[0]","eventKind":"homeassistant","raw":{"trigger":"homeassistant","event":"start","id":"restarted"},"trigId":"restarted","sig":"type=contact_p|label=homeassistant.start|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e20","type":"contact_no","isTrigger":false,"label":"switch.valve_garden_switch","raw":{"condition":"state","entity_id":"switch.valve_garden_switch","state":"on"},"src":"actions[0].opt[3].cond[1]","sig":"type=contact_no|label=switch.valve_garden_switch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e21","type":"coil_r","isTrigger":false,"label":"switch.valve_garden_switch","service":"switch.turn_off","raw":{"action":"switch.turn_off","target":{"entity_id":"switch.valve_garden_switch"}},"src":"actions[0].opt[3].seq[0]","targetSpec":{"entity_id":["switch.valve_garden_switch"]},"fromAction":true,"sig":"type=coil_r|label=switch.valve_garden_switch|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"group":"g1","groupIdx":3,"groupTotal":4,"groupKind":"choose","isDefault":false,"src":"actions[0]"}],"links":[]},
+  forhead: {"id":"n_trigger_for_then_steps","ha_id":"trigger_for_then_steps","name":"x","description":"","collapsed":false,"level":"automation","mode":null,"max":null,"variables":null,"extra":{},"rungs":[{"id":"r1","comment":"When garden valve turns on for 00:30:00, then turn off garden valve","elements":[{"id":"e4","type":"contact_no","isTrigger":true,"label":"switch.garden_valve","raw":{"trigger":"state","entity_id":"switch.garden_valve","to":"on","for":{"minutes":30}},"src":"triggers[0]","forTimer":true,"autoGate":true,"sig":"type=contact_no|label=switch.garden_valve|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e5","type":"timer_ton","isTrigger":false,"label":"00:30:00","src":"triggers[0]","isFor":true,"forValue":{"minutes":30},"autoGate":true},{"id":"e2","type":"coil_r","isTrigger":false,"label":"switch.garden_valve","service":"switch.turn_off","raw":{"action":"switch.turn_off","target":{"entity_id":"switch.garden_valve"}},"src":"actions[0]","targetSpec":{"entity_id":["switch.garden_valve"]},"fromAction":true,"sig":"type=coil_r|label=switch.garden_valve|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}]},{"id":"r2","comment":"If away is on, then send a notification to notify","elements":[{"id":"e6","type":"contact_no","isTrigger":false,"label":"input_boolean.away","raw":{"condition":"state","entity_id":"input_boolean.away","state":"on"},"src":"actions[1].opt[0].cond[0]","sig":"type=contact_no|label=input_boolean.away|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="},{"id":"e7","type":"move","isTrigger":false,"mode":"notify","target":"notify.notify","source":"valve closed","title":"","tts":"","stream":"","raw":{"action":"notify.notify","data":{"message":"valve closed"}},"src":"actions[1].opt[0].seq[0]","fromAction":true,"sig":"type=move|label=|sourceA=|sourceB=|sourceC=|target=notify.notify|source=valve closed|mode=notify|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}],"group":"g1","groupIdx":0,"groupTotal":1,"groupKind":"if","isDefault":false,"src":"actions[1]","sharesHead":true}],"links":[]},
+};
+const SCHEDULE = 'schedule.lvkh_zmnym_lhshqyyt_gynh';
+const SPAN = [{ from: '06:00:00', to: '06:30:00' }];
+const SCHEDULES = [{ id: 'lvkh_zmnym_lhshqyyt_gynh', name: 'Garden schedule', icon: 'mdi:sprinkler',
+  monday: [], tuesday: SPAN, wednesday: [], thursday: SPAN, friday: [], saturday: [], sunday: SPAN }];
+
+const sent = [];
+const hass = {
+  states: { [SCHEDULE]: { entity_id: SCHEDULE, state: 'off', attributes: { friendly_name: 'Garden schedule' } } },
+  entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+  connection: {
+    sendMessagePromise: async (m) => {
+      sent.push(JSON.parse(JSON.stringify(m)));
+      if (m.type === 'libi/ai_status') return { configured: false };
+      if (m.type === 'libi/project_list') return { projects: [] };
+      if (m.type === 'schedule/list') return SCHEDULES;
+      // [CHANGED 2026-11-04, v3.85.0] SAVE & COMPILE: compile, Home Assistant's config API, then what reached it.
+      if (m.type === 'libi/compile_project') return { ok: true, errors: [], upserts: [], removals: [], unchanged: 1, stamp: 's' };
+      if (m.type === 'libi/save_done') return { status: 'ok', saved: true, message: 'Saved.', written: [], reloaded: [], errors: [] };
+      if (m.type === 'libi/verify_automation') return { results: [], ok: true };
+      if (m.type === 'libi/preview_yaml') return { yaml: '' };
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+
+try {
+  localStorage.clear();
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '800px';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await sleep(300);
+  const sr = panel.shadowRoot;
+  const core = panel.core;
+  core.nets = [DRAWN.net4, DRAWN.two, DRAWN.ladder, DRAWN.forhead].map(n => JSON.parse(JSON.stringify(n)));
+  core.syncCounters();
+  core.repairAST();
+  core.validateAST();
+  panel._project = { slug: 'p', name: 'P' };
+  panel._render(); await sleep(50);
+
+  const net = core.nets[0];
+  const [r1, r2, r3, r4] = net.rungs;
+  const inNet = (sel, n = net) => [...sr.querySelectorAll(`.libi-el${sel}[data-nid="${n.id}"]`)];
+  check('the trigger is drawn once', inNet('.is-trigger').length === 1, inNet('.is-trigger').length);
+  check('the three rungs below hang from it', net.rungs.length === 4 && [r2, r3, r4].every(r => r.sharesHead && core.hangs(r))
+        && !core.hangs(r1) && [r2, r3, r4].every(r => core.headIndex(net, net.rungs.indexOf(r)) === 0));
+
+  // The drop: a vertical line under the dot after the trigger, down to every rung below; each starts there.
+  const L = panel._netLayout[net.id];
+  const after = L.dotIndex[`${r1.id}|1`];
+  const x = after.x + Math.round(core.LAY.DOT / 2);
+  const base = (r) => L.rungs.find(b => b.id === r.id).baseY;
+  const drops = L.lines.filter(l => l.x1 === x && l.x2 === x && l.y1 !== l.y2);
+  const covers = (y) => drops.some(l => Math.min(l.y1, l.y2) <= y && y <= Math.max(l.y1, l.y2));
+  check('a drop comes down from the trigger to every rung below it', covers(base(r1)) && [r2, r3, r4].every(r => covers(base(r))),
+        JSON.stringify({ x, drops, bases: [r1, r2, r3, r4].map(base) }));
+  check('each rung below starts at the drop, not at the rail', [r2, r3, r4].every(r => L.dotIndex[`${r.id}|0`].x === after.x
+        && !L.lines.some(l => l.y1 === base(r) && l.y2 === base(r) && Math.min(l.x1, l.x2) < x)),
+        JSON.stringify([r2, r3, r4].map(r => L.dotIndex[`${r.id}|0`].x)));
+  const trigBox = sr.querySelector(`.libi-el[data-nid="${net.id}"][data-eid="${r1.elements[0].id}"]`).getBoundingClientRect();
+  const firstBox = sr.querySelector(`.libi-el[data-nid="${net.id}"][data-eid="${r2.elements[0].id}"]`).getBoundingClientRect();
+  check('the first block of a hanging rung sits right of the trigger', firstBox.left > trigBox.right, `${firstBox.left} ${trigBox.right}`);
+  check('no block is red, the wait that ends rung 2 included', inNet('.has-error').length === 0,
+        inNet('.has-error').map(e => e.textContent.trim().slice(0, 80)).join(' | '));
+
+  // The schedule's days and hours, on the block and in the inspector.
+  const trig = r1.elements[0];
+  const note = sr.querySelector(`.libi-el[data-nid="${net.id}"][data-eid="${trig.id}"] .plc-note`);
+  check('the CMP DATETIME block says the days and hours of the schedule', !!note && note.textContent === 'Tue Thu Sun 06:00–06:30',
+        note && note.textContent);
+  panel._schedules.other = { id: 'other', monday: SPAN, thursday: [{ from: '07:00:00', to: '07:15:00' }] };
+  panel._schedules.empty = { id: 'empty' };
+  check('hours that differ by day are said day by day', panel._scheduleText('schedule.other') === 'Mon 06:00–06:30 · Thu 07:00–07:15'
+        && panel._scheduleText('schedule.empty') === 'no days marked yet' && panel._scheduleText('schedule.unknown') === '',
+        [panel._scheduleText('schedule.other'), panel._scheduleText('schedule.empty')].join(' | '));
+  panel._inspectedEl = { netId: net.id, rungId: r1.id, elId: trig.id };
+  panel._render();
+  const insp = [...sr.querySelectorAll('.insp-note')].map(n => n.textContent.trim());
+  check('the inspector says the days and hours and where they are set', insp[0] === 'Tue Thu Sun 06:00–06:30'
+        && /Helpers/.test(insp[1] || ''), JSON.stringify(insp));
+  panel._inspectedEl = null;
+  panel._render(); await sleep(20);
+
+  // Online: the rungs below have power only while the trigger has. This NET alone: the online engine keys its
+  // results by rung and block id, and the importer numbers both from 1 in every NET (r1, e1 ...), so a second NET
+  // on the canvas overwrites them - a fault of its own, not of the hanging rungs.
+  const online = panel.online;
+  hass.states[SCHEDULE].state = 'off';
+  online.update([net], hass);
+  check('online, with the schedule off, the rungs below the trigger have no power', [r2, r3, r4].every(r => online.rungPower.get(r.id) === false),
+        JSON.stringify([r2, r3, r4].map(r => online.rungPower.get(r.id))));
+  hass.states[SCHEDULE].state = 'on';
+  online.update([net], hass);
+  const own = [r2, r3, r4].map(r => online.evaluateSeries(r.elements, hass, Date.now()));
+  online.update([net], hass);
+  check('with it on, each has what its own blocks give', online.rungPower.get(r1.id) === true
+        && [r2, r3, r4].every((r, i) => online.rungPower.get(r.id) === own[i]), JSON.stringify(own));
+  hass.states[SCHEDULE].state = 'off';
+
+  // A rung opened among them hangs too, so the ones below keep their trigger.
+  core.openBranchAt(net.id, r3.id, '0');
+  check('a rung opened below a hanging rung hangs from the trigger too', net.rungs.length === 5 && net.rungs[3].sharesHead === true
+        && core.hangs(net.rungs[3]) && core.headIndex(net, 4) === 0);
+  net.rungs.splice(3, 1);
+  core.openBranchAt(net.id, r1.id, '0');
+  check('and one opened right above a hanging rung', net.rungs[1].sharesHead === true && core.headIndex(net, 4) === 0);
+  net.rungs.splice(1, 1);
+
+  // With no trigger above, a hanging rung is red and nothing is saved.
+  const head = r1.elements.shift();
+  core.validateAST(); panel._render(); await sleep(20);
+  check('without a trigger above it, a hanging rung is red', /hangs from the trigger above it/.test(r2.elements[0].structuralError || ''),
+        r2.elements[0].structuralError);
+  let before = sent.length;
+  let res = await panel._saveProject();
+  check('and the save is refused', res.refused === true && !sent.slice(before).some(m => m.type === 'libi/compile_project'), JSON.stringify(res));
+  r1.elements.unshift(head);
+  core.validateAST(); panel._render(); await sleep(20);
+
+  // As drawn it saves, and the backend is told which rungs hang, so it gives them the trigger back.
+  before = sent.length;
+  res = await panel._saveProject();
+  const save = sent.slice(before).find(m => m.type === 'libi/compile_project');
+  const saved = save && save.nets.find(n => n.id === net.id);
+  check('as drawn it saves, and says which rungs hang from the trigger', res.saved === true && !!saved
+        && saved.rungs.slice(1).every(r => r.sharesHead === true && !r.elements.some(e => e.isTrigger)), JSON.stringify(res));
+
+  // Two triggers are one rung per trigger joined by a link; the rungs below come down from that link.
+  const two = core.nets[1];
+  const L2 = panel._netLayout[two.id];
+  const link = L2.lines.find(l => l.link);
+  const hanging = two.rungs.filter(r => core.hangs(r));
+  check('with two triggers, the drop comes down from the link that joins them', !!link && hanging.length === 3
+        && hanging.every(r => L2.dotIndex[`${r.id}|0`].x + Math.round(core.LAY.DOT / 2) === link.x1)
+        && inNet('.is-trigger', two).length === 2 && inNet('.has-error', two).length === 0,
+        JSON.stringify({ link: link && link.x1, xs: hanging.map(r => L2.dotIndex[`${r.id}|0`].x) }));
+
+  // The ladder way, as the user's own automations are: every rung starts with its own trigger and none hangs; the
+  // time limit is its trigger and the TON of its for.
+  const ladder = core.nets[2];
+  check('the ladder way: every rung starts with its own trigger, none hangs, none is red', ladder.rungs.length === 4
+        && ladder.rungs.every(r => core.triggerHead(r) && !core.hangs(r)) && inNet('.is-trigger', ladder).length === 4
+        && inNet('.has-error', ladder).length === 0, inNet('.has-error', ladder).map(e => e.textContent.trim().slice(0, 60)).join(' | '));
+  const limitRung = ladder.rungs[2];
+  check('the time limit is its trigger with the TON of its for', limitRung.elements[0].isTrigger
+        && limitRung.elements[1].type === 'timer_ton' && limitRung.elements[1].isFor && core.headLength(limitRung) === 2);
+  // A trigger with a for: the rung below comes down after its TON.
+  const fh = core.nets[3];
+  const L3 = panel._netLayout[fh.id];
+  const afterTon = L3.dotIndex[`${fh.rungs[0].id}|2`];
+  check('the drop comes down after the TON of the for of the trigger', core.hangs(fh.rungs[1]) && !!afterTon
+        && L3.dotIndex[`${fh.rungs[1].id}|0`].x === afterTon.x && inNet('.has-error', fh).length === 0,
+        JSON.stringify({ after: afterTon && afterTon.x, hang: L3.dotIndex[`${fh.rungs[1].id}|0`].x }));
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

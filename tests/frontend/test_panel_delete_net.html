@@ -1,0 +1,311 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-01] Purpose: Deleting a NET asks whether to delete its local variables too - the user's
+  request. The question comes before anything is deleted, and names each variable and each one kept, with the reason.
+  The variables go only once the NET is gone, each asked about again (libi/net_helpers with nothing left out), with Home
+  Assistant's own <domain>/delete; not when Home Assistant did not confirm the automation is gone, when an automation with
+  the NET's id still runs, when the user says Cancel, or when the check could not be made. The variables bar still
+  deletes one variable, and says the first error, and a change of type still deletes the old helper first.
+  [ADDED v1.1.0 | 2026-11-04] Purpose: One way to delete a NET, which asks what becomes of its entry in Home Assistant -
+  the user's rule: deleted completely, or deleted and its automation put back as V1, the original; or removed from LIBI
+  only, its automation left as it is now. Home Assistant's own config API makes the change (DELETE, or POST of V1), and
+  libi/net_removed lets the project go of the NET.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi delete net test</title></head>
+<body style="margin:0; width:1280px; height:800px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const until = async (cond, ms = 3000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await sleep(10); return cond(); };
+
+// A headless page blocks on a dialog: the questions are recorded and answered from a list, the messages recorded.
+const asked = [], told = [];
+let answers = [];
+window.confirm = (q) => { asked.push(String(q)); return answers.length ? answers.shift() : false; };
+window.alert = (m) => { told.push(String(m)); };
+window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const DAYS = { entity_id: 'input_number.garden_days', name: 'Garden days', domain: 'input_number', item_id: 'garden_days' };
+const RUNNING = { entity_id: 'automation.garden', state: 'on', attributes: { id: 'a_garden', friendly_name: 'Garden' } };
+const ORIGINAL = { id: 'a_garden', alias: 'Garden', trigger: [{ platform: 'state', entity_id: 'input_boolean.garden_go', to: 'on' }],
+  action: [{ service: 'switch.turn_on', target: { entity_id: 'switch.garden_valve' } }] };
+const sent = [], api = [];
+let before, after, plan, removed, helperDelete, apiAnswer;
+const reset = () => {
+  sent.length = 0; api.length = 0; asked.length = 0; told.length = 0; answers = [];
+  before = { helpers: [DAYS], kept: [{ entity_id: 'input_number.garden_litres', name: 'Garden litres', reason: 'used by automation "Valve Garden Turn Off"' }], error: '' };
+  after = { helpers: [DAYS], kept: [], error: '' };
+  plan = (m) => m.net_id === 'n_draft' ? { domain: '', key: '', in_ha: false, errors: [], original: null, stamp: 's1' }
+    : { domain: 'automation', key: 'a_garden', in_ha: true, errors: [], original: { v: 1, config: ORIGINAL }, stamp: 's1' };
+  removed = { ok: true, errors: [] };
+  helperDelete = async () => null;
+  apiAnswer = async () => ({ result: 'ok' });
+  delete hass.states['automation.garden'];
+};
+const hass = {
+  states: {
+    'input_number.garden_days': { entity_id: 'input_number.garden_days', state: '21', attributes: { friendly_name: 'Garden days' } },
+  },
+  entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+  // Home Assistant's own config API, as the panel calls it.
+  callApi: async (method, path, body) => {
+    api.push([method, path, body === undefined ? null : JSON.parse(JSON.stringify(body))]);
+    return apiAnswer(method, path);
+  },
+  connection: {
+    sendMessagePromise: async (m) => {
+      sent.push(JSON.parse(JSON.stringify(m)));
+      if (m.type === 'libi/ai_status') return { configured: false };
+      if (m.type === 'libi/project_list') return { projects: [] };
+      // Asked first with the NET's automation left out (it is being deleted), then again with nothing left out.
+      if (m.type === 'libi/net_helpers') return m.automation_id ? before : after;
+      if (m.type === 'libi/net_delete_plan') return plan(m);
+      if (m.type === 'libi/net_removed') return removed;
+      if (/\/delete$/.test(m.type)) return helperDelete(m);
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+const NET = (id, name, haId) => Object.assign({ id, name, level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r1', comment: '', elements: [
+  { id: 'e1', type: 'contact_no', isTrigger: true, label: 'input_boolean.garden_go' },
+  { id: 'e2', type: 'cmp_eq', sourceA: 'weekday', sourceB: 'input_number.garden_days', kind: 'date' },
+  { id: 'e3', type: 'coil_s', label: 'switch.garden_valve' }] }] }, haId ? { ha_id: haId } : {});
+const GARDEN = NET('n_garden', 'Garden', 'a_garden'), DRAFT = NET('n_draft', 'Draft');
+
+try {
+  localStorage.clear();
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '800px';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await sleep(300);
+  const sr = panel.shadowRoot;
+  const core = panel.core;
+  const canvas = (...nets) => {
+    core.nets = nets.map(n => JSON.parse(JSON.stringify(n)));
+    core.syncCounters(); core.repairAST(); core.validateAST();
+    panel._project = { slug: 'p', name: 'P' };
+    panel._markSaved();
+    panel._render();
+  };
+  const click = (cls, nid) => {
+    const b = sr.querySelector(`${cls}[data-nid="${nid}"]`);
+    if (!b) throw new Error(`no ${cls} for ${nid}`);
+    b.click();
+  };
+  // The panel's own question: what it offers, and an answer clicked as a user clicks it.
+  const offered = () => [...sr.querySelectorAll('.ask-answer')].map(b => b.dataset.answer).join();
+  const answer = async (id) => {
+    await until(() => sr.querySelector(`.ask-answer[data-answer="${id}"]`));
+    const b = sr.querySelector(`.ask-answer[data-answer="${id}"]`);
+    if (!b) throw new Error(`no answer ${id} in ${offered()}`);
+    b.click();
+  };
+  const open = async (nid) => { click('.delete-net-btn', nid); await until(() => sr.querySelector('.ask-modal')); };
+  // What the deletion sent, without what the panel lists and loads on its own.
+  const did = () => sent.map(m => m.type).filter(t => !/\/list$/.test(t) && !t.startsWith('libi/ai') && t !== 'libi/project_list');
+  const helperDeletes = () => sent.filter(m => /\/delete$/.test(m.type));
+  const ids = () => core.nets.map(n => n.id).join();
+  const removedMsg = () => sent.find(m => m.type === 'libi/net_removed');
+
+  // ---- One way to delete a NET
+  reset(); canvas(GARDEN, DRAFT);
+  check('every NET has one delete in its menu, and the two before are gone', sr.querySelectorAll('.delete-net-btn').length === 2
+        && !sr.querySelector('.remove-net-btn') && !sr.querySelector('.delete-auto-btn')
+        && sr.querySelector('.delete-net-btn[data-nid="n_garden"]').textContent.trim() === '🗑️ Delete NET…');
+
+  // ---- Delete completely, its variables too
+  reset(); canvas(GARDEN, DRAFT);
+  await open('n_garden');
+  check('the question says which NET, and asks what becomes of its automation', sr.querySelector('.ask-modal .modal-title').textContent === 'Delete NET 1 "Garden"?'
+        && sr.querySelector('.ask-text').textContent === 'What becomes of its automation in Home Assistant?', sr.querySelector('.ask-modal').textContent);
+  check('it offers: delete completely, back to V1, from LIBI only, or cancel', offered() === 'delete,restore,keep,cancel'
+        && sr.querySelector('.ask-answer[data-answer="restore"]').textContent === 'Delete and go back to V1', offered());
+  check('and says what each one does', [...sr.querySelectorAll('.ask-note')].map(p => p.textContent).join('|')
+        === 'Delete completely: the NET goes, and its automation is deleted from Home Assistant.'
+        + '|Delete and go back to V1: the NET goes, and its automation goes back to V1, the original it was before LIBI changed it.'
+        + '|Remove from LIBI only: the NET goes, and its automation stays in Home Assistant as it is now.',
+        [...sr.querySelectorAll('.ask-note')].map(p => p.textContent).join('|'));
+  const asking = sent.find(m => m.type === 'libi/net_delete_plan');
+  check('the question is made from what the backend says of the NET', !!asking && asking.slug === 'p' && asking.net_id === 'n_garden'
+        && asking.nets.map(n => n.id).join() === 'n_garden,n_draft');
+  answers = [true];
+  await answer('delete');
+  await until(() => told.length);
+  const q = asked[0] || '';
+  check('then it asks whether its local variables go too, each by name and id', q.startsWith('Also delete the local variables of NET 1 "Garden"?')
+        && q.includes('  • Garden days (input_number.garden_days)'), q);
+  check('says which are kept, and why', q.includes('\nKept:\n  • Garden litres (input_number.garden_litres) - used by automation "Valve Garden Turn Off"'), q);
+  check('and what LIBI does not check', q.includes('Not checked: dashboard cards and template entities'), q);
+  const first = sent.find(m => m.type === 'libi/net_helpers');
+  check('the variables are asked about before anything is deleted, the NET\'s automation left out', !!first && first.automation_id === 'a_garden' && first.slug === 'p'
+        && first.net.id === 'n_garden' && first.nets.map(n => n.id).join() === 'n_draft', JSON.stringify(first && { a: first.automation_id, s: first.slug, n: first.nets.map(n => n.id) }));
+  check('Home Assistant\'s config API deletes the automation', JSON.stringify(api) === JSON.stringify([['DELETE', 'config/automation/config/a_garden', null]]), JSON.stringify(api));
+  check('then the project lets go of the NET', JSON.stringify(removedMsg()) === JSON.stringify({ type: 'libi/net_removed', slug: 'p', net_id: 'n_garden',
+        stamp: 's1', mode: 'deleted', domain: 'automation', key: 'a_garden' }), JSON.stringify(removedMsg()));
+  check('they are checked again, and Home Assistant deletes the helper', JSON.stringify(did())
+        === '["libi/net_delete_plan","libi/net_helpers","libi/net_removed","libi/net_helpers","input_number/delete"]', JSON.stringify(did()));
+  const again = sent.filter(m => m.type === 'libi/net_helpers')[1];
+  check('checked again with nothing left out', !!again && again.automation_id === '' && again.nets.map(n => n.id).join() === 'n_draft', JSON.stringify(again && again.automation_id));
+  check('with the id Home Assistant gave the helper, and nothing else', JSON.stringify(helperDeletes()) === JSON.stringify([{ type: 'input_number/delete', input_number_id: 'garden_days' }]),
+        JSON.stringify(helperDeletes()));
+  check('the user is told what happened', told[0] === 'NET 1 and its automation were deleted.\n\nDeleted 1 variable: Garden days.', told[0]);
+  check('the NET is off the canvas, and nothing else is unsaved', ids() === 'n_draft' && panel._hasUnsavedChanges(true) === false, ids());
+
+  // ---- Cancel on the variables
+  reset(); canvas(GARDEN, DRAFT);
+  answers = [false];
+  await open('n_garden'); await answer('delete');
+  await until(() => told.length);
+  check('Cancel on the variables deletes the NET only', JSON.stringify(did()) === '["libi/net_delete_plan","libi/net_helpers","libi/net_removed"]'
+        && told[0] === 'NET 1 and its automation were deleted.', JSON.stringify([did(), told]));
+
+  // ---- Home Assistant has not confirmed that it is gone
+  reset(); canvas(GARDEN, DRAFT);
+  removed = { ok: false, errors: ['automation a_garden: Home Assistant has not removed it within 20 seconds'] };
+  answers = [true];
+  await open('n_garden'); await answer('delete');
+  await until(() => told.length);
+  check('when Home Assistant has not confirmed it, the variables stay: the old automation may still run with them', helperDeletes().length === 0
+        && told[0].startsWith('NET 1 and its automation were deleted.\n\nBut: automation a_garden: Home Assistant has not removed it within 20 seconds')
+        && told[0].includes('Its variables were kept: Home Assistant has not confirmed the automation is gone'), JSON.stringify([did(), told]));
+
+  // ---- Back to V1, the original
+  reset(); canvas(GARDEN, DRAFT);
+  await open('n_garden'); await answer('restore');
+  await until(() => told.length);
+  check('back to V1: Home Assistant\'s config API puts the original back, exactly as V1 holds it',
+        JSON.stringify(api) === JSON.stringify([['POST', 'config/automation/config/a_garden', ORIGINAL]]), JSON.stringify(api));
+  check('and the project lets go of the NET, its automation now the user\'s alone', removedMsg() && removedMsg().mode === 'restored'
+        && removedMsg().key === 'a_garden', JSON.stringify(removedMsg()));
+  check('the variables are not asked about: V1 may use them', asked.length === 0 && helperDeletes().length === 0, JSON.stringify(asked));
+  check('and the user is told', told[0] === 'NET 1 was deleted, and its automation is back to V1, the original.' && ids() === 'n_draft', JSON.stringify(told));
+
+  // ---- Removed from LIBI only
+  reset(); canvas(GARDEN, DRAFT);
+  await open('n_garden'); await answer('keep');
+  await until(() => told.length);
+  check('from LIBI only: nothing goes to Home Assistant, and the project lets go of the NET', api.length === 0
+        && removedMsg() && removedMsg().mode === 'kept' && asked.length === 0, JSON.stringify([api, removedMsg()]));
+  check('the automation stays as it is', told[0] === 'NET 1 was removed from LIBI. Its automation stays in Home Assistant as it is now.' && ids() === 'n_draft', JSON.stringify(told));
+
+  // ---- Cancel
+  reset(); canvas(GARDEN, DRAFT);
+  await open('n_garden'); await answer('cancel');
+  await sleep(100);
+  check('Cancel deletes nothing and says nothing', JSON.stringify(did()) === '["libi/net_delete_plan"]' && api.length === 0 && told.length === 0
+        && ids() === 'n_garden,n_draft' && !sr.querySelector('.ask-modal'), JSON.stringify([did(), told]));
+
+  // ---- Home Assistant refuses
+  reset(); canvas(GARDEN, DRAFT);
+  apiAnswer = async () => { throw { error: 'Request error', status_code: 400, body: { message: 'Resource not found' } }; };
+  answers = [true];
+  await open('n_garden'); await answer('delete');
+  await until(() => told.length);
+  check('a refusal of Home Assistant\'s deletes nothing, and says its reason', told[0] === 'Nothing was deleted: Home Assistant refused it - Resource not found'
+        && !removedMsg() && helperDeletes().length === 0 && ids() === 'n_garden,n_draft', JSON.stringify([told, did()]));
+
+  // ---- Without a V1 of its own: no going back to it
+  reset(); canvas(GARDEN, DRAFT);
+  plan = () => ({ domain: 'automation', key: 'a_garden', in_ha: true, errors: [], original: null, stamp: 's1' });
+  await open('n_garden');
+  check('a NET drawn in LIBI has no original to go back to', offered() === 'delete,keep,cancel', offered());
+  await answer('cancel');
+
+  // ---- A draft, never in Home Assistant
+  reset(); canvas(GARDEN, DRAFT);
+  after = { helpers: [{ entity_id: 'input_boolean.draft_flag', name: 'Draft flag', domain: 'input_boolean', item_id: 'draft_flag' }], kept: [], error: '' };
+  answers = [true];
+  await open('n_draft');
+  check('a NET not in Home Assistant can only be deleted', offered() === 'delete,cancel' && sr.querySelector('.ask-text').textContent === 'This NET is not in Home Assistant.', offered());
+  await answer('delete');
+  await until(() => told.length);
+  check('its variables are asked about, nothing left out of the check', (asked[0] || '').startsWith('Also delete the local variables of NET 2 "Draft"?')
+        && sent.filter(m => m.type === 'libi/net_helpers').every(m => m.automation_id === ''), JSON.stringify(asked));
+  check('and deleted once it is off the canvas, nothing sent to Home Assistant\'s config API', api.length === 0 && removedMsg().mode === 'deleted' && removedMsg().domain === ''
+        && JSON.stringify(helperDeletes()) === JSON.stringify([{ type: 'input_boolean/delete', input_boolean_id: 'draft_flag' }]) && ids() === 'n_garden'
+        && told[0] === 'NET 2 was deleted.\n\nDeleted 1 variable: Draft flag.', JSON.stringify([did(), told, ids()]));
+
+  // ---- An automation with its id still runs, though not in automations.yaml
+  reset(); canvas(GARDEN, DRAFT);
+  plan = () => ({ domain: 'automation', key: 'a_garden', in_ha: false, errors: [], original: null, stamp: 's1' });
+  hass.states['automation.garden'] = RUNNING;
+  answers = [true];
+  await open('n_garden'); await answer('delete');
+  await until(() => told.length);
+  check('when an automation with its id still runs, its variables are not offered', asked.length === 0 && helperDeletes().length === 0
+        && told[0] === 'NET 1 was deleted.', JSON.stringify([asked, told]));
+
+  // ---- Used again by the time it would go; Home Assistant refusing a helper
+  reset(); canvas(GARDEN, DRAFT);
+  after = { helpers: [], kept: [{ entity_id: 'input_number.garden_days', name: 'Garden days', reason: 'used by automation "New"' }], error: '' };
+  answers = [true];
+  await open('n_garden'); await answer('delete');
+  await until(() => told.length);
+  check('one that something uses by then is kept, and said', helperDeletes().length === 0
+        && told[0] === 'NET 1 and its automation were deleted.\n\nKept: input_number.garden_days (used by automation "New").', JSON.stringify(told));
+  reset(); canvas(GARDEN, DRAFT);
+  helperDelete = async () => { throw new Error('boom'); };
+  answers = [true];
+  await open('n_garden'); await answer('delete');
+  await until(() => told.length);
+  check('one Home Assistant does not delete is said', told[0] === 'NET 1 and its automation were deleted.\n\nCould not delete: input_number.garden_days (boom).', JSON.stringify(told));
+
+  // ---- Nothing of its own, or a check that failed: no question about variables
+  reset(); canvas(GARDEN, DRAFT);
+  before = { helpers: [], kept: before.kept, error: '' };
+  await open('n_garden'); await answer('delete');
+  await until(() => told.length);
+  check('a NET with no variable of its own gets no question about them', asked.length === 0
+        && JSON.stringify(did()) === '["libi/net_delete_plan","libi/net_helpers","libi/net_removed"]', JSON.stringify([asked, did()]));
+  reset(); canvas(GARDEN, DRAFT);
+  before = { helpers: [DAYS], kept: [], error: 'automations.yaml, scripts.yaml or scenes.yaml could not be read' };
+  await open('n_garden'); await answer('delete');
+  await until(() => told.length);
+  check('a check that could not be made offers nothing', asked.length === 0 && helperDeletes().length === 0 && told[0] === 'NET 1 and its automation were deleted.',
+        JSON.stringify([asked, told]));
+
+  // ---- The backend cannot read Home Assistant's files: nothing is asked or deleted
+  reset(); canvas(GARDEN, DRAFT);
+  plan = () => ({ domain: 'automation', key: 'a_garden', in_ha: false, errors: ['automations.yaml could not be read'], original: null, stamp: 's1' });
+  click('.delete-net-btn', 'n_garden');
+  await until(() => told.length);
+  check('an unreadable file deletes nothing', told[0] === 'Nothing was deleted: automations.yaml could not be read' && !sr.querySelector('.ask-modal')
+        && JSON.stringify(did()) === '["libi/net_delete_plan"]' && ids() === 'n_garden,n_draft', JSON.stringify([told, did()]));
+
+  // ---- The variables bar
+  reset(); canvas(GARDEN, DRAFT);
+  answers = [true];
+  await panel._varsDelete('input_number.garden_days');
+  check('the variables bar still deletes one variable', JSON.stringify(helperDeletes()) === JSON.stringify([{ type: 'input_number/delete', input_number_id: 'garden_days' }])
+        && told.length === 0, JSON.stringify([helperDeletes(), told]));
+  reset();
+  answers = [true];
+  helperDelete = async (m) => { throw new Error(m.input_number_id ? 'Unable to find input_number_id garden_days' : 'extra keys not allowed'); };
+  await panel._varsDelete('input_number.garden_days');
+  check('and says the first error, the one that tells why', told[0] === 'Could not delete the variable: Unable to find input_number_id garden_days'
+        && helperDeletes().length === 3, JSON.stringify([told, helperDeletes()]));
+  reset();
+  answers = [true];
+  await panel._varsChangeType('input_number.garden_days', 'BOOL');
+  check('a change of type still deletes the old helper, then makes the new one', JSON.stringify(sent.filter(m => /\/(delete|create)$/.test(m.type)))
+        === JSON.stringify([{ type: 'input_number/delete', input_number_id: 'garden_days' }, { type: 'input_boolean/create', name: 'Garden days' }]),
+        JSON.stringify(sent));
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

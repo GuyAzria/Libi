@@ -11,35 +11,41 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.42.0 | 2026-10-27] Purpose: With sharing on, the only YAML sent is the nets open in the page;
-#   the helpers and, for the build, the candidate devices go too. The YAML files are never sent.
-# [ADDED v3.47.0 | 2026-10-27] Purpose: Every net keeps its earlier versions in <project>.versions.json.
-#   Opening records V1, a save that changes a net records the next one; the version that runs is the
-#   one whose YAML is in Home Assistant now. New command libi/net_versions.
+# [ADDED v3.84.0 | 2026-11-02] Purpose: libi/ai_plan makes the zone chosen on the card a dropdown of the user's zones
+#   (ai.zone_choices), before anything is proposed for it.
+# [ADDED v3.85.0 | 2026-11-04] Purpose: LIBI writes none of Home Assistant's files - the HACS review: SAVE & COMPILE is
+#   libi/compile_project (compile, check, plan; nothing written), the panel's calls to Home Assistant's config API, and
+#   libi/save_done (what reached Home Assistant is read back, recorded, and its reload waited for). An automation opened
+#   the first time is V1, the original as it was, and V2 its copy; deleting a NET asks what becomes of its entry.
 import asyncio
+import copy
 import json
 import logging
 import os
 import re
 import threading
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import voluptuous as vol
 import yaml
 
 from homeassistant.components import websocket_api
+from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util.file import write_utf8_file_atomic
 
 from . import ai
-from .libi_to_yaml import ast_to_yaml, verify_round_trip, net_level, slugify
+from .libi_to_yaml import ast_to_yaml, verify_round_trip, net_level, same_config, slugify
 from .yaml_to_libi import yaml_to_ast
 
 _LOGGER = logging.getLogger(__name__)
 
-# [ADDED v3.34.0] Every read-modify-write of automations.yaml, scripts.yaml, scenes.yaml and the
-# project files runs in the executor, so two saves can overlap. One lock makes each of them whole.
+# [ADDED v3.34.0] Every read-modify-write of the project files, and every read of automations.yaml, scripts.yaml and
+# scenes.yaml, runs in the executor, so two saves can overlap. One lock makes each of them whole. [CHANGED v3.85.0] LIBI
+# writes none of those three files: Home Assistant's config API does, under a lock of its own.
 _FILE_LOCK = threading.Lock()
 
 
@@ -113,39 +119,57 @@ def _read_versions_sync(hass: HomeAssistant, slug: str) -> dict | None:
     return data
 
 
-def _net_yaml_text(hass: HomeAssistant, net: dict) -> str | None:
-    """What a net puts into Home Assistant, as text. Two versions are the same when this is the
-    same, so a moved element or a renumbered id does not make a new version. A net that compiles to
-    nothing is not written to Home Assistant and has no version."""
+def _net_config(hass: HomeAssistant, net: dict) -> dict | None:
+    """[ADDED v3.85.0] What a net puts into Home Assistant. A net that compiles to nothing, or does not compile, is not
+    written to Home Assistant and has no version: None."""
     try:
         compiled = ast_to_yaml(hass, net)
     except Exception:  # noqa: BLE001
         return None
     if not compiled.get(_LEVEL_BODY_KEY.get(net_level(net), "actions")):
         return None
-    return yaml.dump(compiled, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return compiled
+
+
+def _version_yaml(config: dict) -> str:
+    """[ADDED v3.85.0] A version's YAML, as the versions list shows it."""
+    return yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
+def _net_yaml_text(hass: HomeAssistant, net: dict) -> str | None:
+    """What a net puts into Home Assistant, as text. Two versions are the same when this is the
+    same, so a moved element or a renumbered id does not make a new version.
+    [CHANGED v3.85.0] Compared only with a version recorded before 3.85.0, which has its text alone (_record_versions)."""
+    config = _net_config(hass, net)
+    return _version_yaml(config) if config is not None else None
 
 
 def _record_versions(history: dict, entries: list, reason: str, now: str) -> bool:
-    """Adds a version for every net whose YAML is new and points `active` at the version whose YAML
-    is the one going into Home Assistant. A net that is back at an earlier version's YAML does not
-    get a copy of it: that earlier version becomes the active one again. Returns whether anything
-    changed, so an unchanged history is not rewritten."""
+    """Adds a version for every net whose config is new and points `active` at the version whose config is the one
+    in Home Assistant. A net that is back at an earlier version does not get a copy of it: that earlier version
+    becomes the active one again. Returns whether anything changed, so an unchanged history is not rewritten.
+    [CHANGED v3.85.0] entries are (net, config, text). Compared by what the config means (same_config) - Home Assistant's
+    config API writes keys in an order and a spelling of its own - and, with a version recorded before 3.85.0, which has
+    its text alone, by that text. Of two versions alike - V1, the original, and V2, its copy - the newer is the active
+    one. An original is never dropped."""
     changed = False
-    for net, text in entries:
+    for net, config, text in entries:
         nid = str(net.get("id") or "")
-        if not nid or text is None:
+        if not nid or config is None:
             continue
+        text = text or _version_yaml(config)
         rec = history["nets"].setdefault(nid, {"active": 0, "versions": []})
         versions = rec.setdefault("versions", [])
-        match = next((v for v in versions if v.get("yaml") == text), None)
+        match = next((v for v in reversed(versions)
+                      if (same_config(v.get("config"), config) if "config" in v else v.get("yaml") == text)), None)
         if match is None:
             number = max((int(v.get("v") or 0) for v in versions), default=0) + 1
             versions.append({
                 "v": number, "saved": now,
                 "reason": reason if versions or reason != "external" else "opened",
                 "name": str(net.get("name") or ""),
-                "yaml": text,
+                "yaml": _version_yaml(config),
+                "config": copy.deepcopy(config),
                 "net": {k: val for k, val in net.items() if k not in _SNAPSHOT_SKIP},
             })
             active = number
@@ -155,17 +179,42 @@ def _record_versions(history: dict, entries: list, reason: str, now: str) -> boo
         if rec.get("active") != active:
             rec["active"] = active
             changed = True
-        # The oldest go first; the version that runs is never dropped.
+        # The oldest go first; neither the version that runs nor an original is ever dropped.
         while len(versions) > MAX_NET_VERSIONS:
-            drop = next(i for i, v in enumerate(versions) if v.get("v") != rec["active"])
+            drop = next((i for i, v in enumerate(versions)
+                         if v.get("v") != rec["active"] and not v.get("original")), None)
+            if drop is None:
+                break
             versions.pop(drop)
             changed = True
     return changed
 
 
+def _record_original(history: dict, net: dict, domain: str, key: str, config: dict, now: str) -> bool:
+    """[ADDED v3.85.0] The user's rule (2026-11-04): an automation opened in LIBI for the first time is kept exactly as
+    Home Assistant has it - V1, the original - and copied unchanged to V2, the version to work on, so the NET can always
+    go back to the original. Once per automation a NET opens; returns whether it was recorded."""
+    nid = str(net.get("id") or "")
+    if not nid or not isinstance(config, dict):
+        return False
+    rec = history["nets"].setdefault(nid, {"active": 0, "versions": []})
+    versions = rec.setdefault("versions", [])
+    if any(v.get("original") and (v.get("domain"), str(v.get("key"))) == (domain, key) for v in versions):
+        return False
+    first = max((int(v.get("v") or 0) for v in versions), default=0) + 1
+    drawing = {k: val for k, val in net.items() if k not in _SNAPSHOT_SKIP}
+    base = {"saved": now, "name": str(net.get("name") or ""), "yaml": _version_yaml(config)}
+    versions.append({**base, "v": first, "reason": "original", "original": True, "domain": domain, "key": key,
+                     "config": copy.deepcopy(config), "net": copy.deepcopy(drawing)})
+    versions.append({**base, "v": first + 1, "reason": "copy", "config": copy.deepcopy(config),
+                     "net": copy.deepcopy(drawing)})
+    rec["active"] = first + 1
+    return True
+
+
 def _versions_summary(history: dict | None) -> dict:
     """Per net: the version that runs, the newest one and how many there are. Enough to draw the
-    badge; the list itself comes from libi/net_versions."""
+    badge; the list itself comes from libi/net_versions. [CHANGED v3.85.0] And its original, when it has one."""
     out = {}
     for nid, rec in ((history or {}).get("nets") or {}).items():
         versions = rec.get("versions") or []
@@ -174,18 +223,25 @@ def _versions_summary(history: dict | None) -> dict:
         out[nid] = {"active": rec.get("active") or 0,
                     "latest": max(int(v.get("v") or 0) for v in versions),
                     "count": len(versions)}
+        original = max((int(v.get("v") or 0) for v in versions if v.get("original")), default=0)
+        if original:
+            out[nid]["original"] = original
     return out
 
 
 def _update_versions_locked(hass: HomeAssistant, slug: str, entries: list, reason: str,
-                            keep_ids: set | None = None) -> dict:
+                            keep_ids: set | None = None, originals: tuple | list = ()) -> dict:
     """Reads, records and writes the history of one project. Called with _FILE_LOCK held. With
-    `keep_ids`, the history of a net that is no longer in the project is removed."""
+    `keep_ids`, the history of a net that is no longer in the project is removed.
+    [CHANGED v3.85.0] originals: (net, domain, key, config) of automations opened for the first time (_record_original)."""
     history = _read_versions_sync(hass, slug)
     if history is None:
         return {}
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    changed = _record_versions(history, entries, reason, now)
+    changed = False
+    for net, domain, key, config in originals:
+        changed = _record_original(history, net, domain, key, config, now) or changed
+    changed = _record_versions(history, entries, reason, now) or changed
     if keep_ids is not None:
         for nid in [n for n in history["nets"] if n not in keep_ids]:
             del history["nets"][nid]
@@ -200,12 +256,32 @@ def _update_versions_locked(hass: HomeAssistant, slug: str, entries: list, reaso
     return _versions_summary(history)
 
 
-def _record_open_versions_sync(hass: HomeAssistant, slug: str, nets: list) -> dict:
-    """[ADDED v3.47.0] Opening a project records what is in Home Assistant now: V1 for a net that has
-    no history yet, and a new version when the automation was changed outside LIBI since."""
+def _record_open_versions_sync(hass: HomeAssistant, slug: str, nets: list, live: dict) -> dict:
+    """[ADDED v3.47.0] Opening a project records what is in Home Assistant now.
+    [CHANGED v3.85.0] The user's rule (2026-11-04): an automation opened for the first time is V1, the original exactly
+    as Home Assistant has it (`live`), and V2, a copy of it to work on. A NET with a history gets a version only when its
+    automation was changed outside LIBI since; a NET drawn from scratch gets its V1 the first time it is saved."""
     with _FILE_LOCK:
-        entries = [(net, _net_yaml_text(hass, net)) for net in nets if isinstance(net, dict)]
-        return _update_versions_locked(hass, slug, entries, "external")
+        history = _read_versions_sync(hass, slug) or {"nets": {}}
+        originals, entries = [], []
+        for net in nets:
+            if not isinstance(net, dict):
+                continue
+            ha_id = str(net.get("ha_id") or "")
+            linked = net.get("source") == "ha" and ha_id in live
+            if linked and not (history["nets"].get(str(net.get("id") or "")) or {}).get("versions"):
+                originals.append((net, "automation", ha_id, live[ha_id]))
+            elif linked:
+                entries.append((net, live[ha_id], _net_yaml_text(hass, net)))
+            else:
+                entries.append((net, _net_config(hass, net), None))
+        return _update_versions_locked(hass, slug, entries, "external", originals=originals)
+
+
+def _record_original_sync(hass: HomeAssistant, slug: str, net: dict, key: str, config: dict) -> dict:
+    """[ADDED v3.85.0] An automation loaded into a NET from the list: its V1, the original, and V2, its copy."""
+    with _FILE_LOCK:
+        return _update_versions_locked(hass, slug, [], "external", originals=[(net, "automation", key, config)])
 
 
 def _net_versions_sync(hass: HomeAssistant, slug: str, net_id: str) -> dict | None:
@@ -298,19 +374,44 @@ def _write_project_sync(hass: HomeAssistant, slug: str, data: dict) -> None:
                            json.dumps(data, indent=2, ensure_ascii=False))
 
 # [CHANGED v3.5.0] These are the three files Home Assistant's own automation, script and scene
-# editors read and write, and the three a fresh configuration.yaml already includes. Writing here is
-# what lets LIBI stay a pure config entry integration: the user adds nothing to any YAML file.
+# editors read and write, and the three a fresh configuration.yaml already includes.
+# [CHANGED v3.85.0] LIBI only reads them. Home Assistant's own config API writes them - the endpoints its editors use,
+# called by the panel - and validates, writes and reloads: the HACS review of 2026-11-03, an integration does not patch
+# the user's YAML files.
 def _get_automations_path(hass: HomeAssistant) -> str: return hass.config.path("automations.yaml")
 def _get_scripts_path(hass: HomeAssistant) -> str: return hass.config.path("scripts.yaml")
 def _get_scenes_path(hass: HomeAssistant) -> str: return hass.config.path("scenes.yaml")
 
-# LIBI wrote its own file before v3.5.0. If an install still has an include line pointing at it, the
-# file is emptied once on upgrade so the same automation cannot appear twice.
+# LIBI wrote its own file before v3.5.0, and up to v3.84.0 a save emptied it. [CHANGED v3.85.0] It is never written
+# again: the log says when it still holds automations (legacy_file_note_sync).
 def _get_legacy_yaml_path(hass: HomeAssistant) -> str: return hass.config.path("libi_automations.yaml")
 
 # What an empty net looks like per level. An automation with no actions, a script with no sequence
 # and a scene with no entities are all half drawn rungs and are not written out.
 _LEVEL_BODY_KEY = {"automation": "actions", "script": "sequence", "scene": "entities"}
+
+# [ADDED v3.85.0] Per domain: its file and the shape of it, the key of its record in a project's "owned", and the
+# platform its entities are registered under, by the key of their config (a scene of the editor's is homeassistant's).
+_DOMAIN_FILES = {"automation": (_get_automations_path, list), "script": (_get_scripts_path, dict),
+                 "scene": (_get_scenes_path, list)}
+_OWNED_KEYS = {"automation": "automations", "script": "scripts", "scene": "scenes"}
+_ENTITY_PLATFORM = {"automation": "automation", "script": "script", "scene": "homeassistant"}
+# [ADDED v3.85.0] Home Assistant's config API reloads in the background after it writes: how long LIBI waits to see it.
+RELOAD_WAIT_SECONDS = 20.0
+
+def _config_text_sync(hass: HomeAssistant) -> str:
+    """[ADDED v3.56.0] The text of automations.yaml and scripts.yaml, only to see whether a helper's
+    entity_id appears in them (a template). Read only; a file that cannot be read adds nothing."""
+    parts = []
+    with _FILE_LOCK:
+        for path in (_get_automations_path(hass), _get_scripts_path(hass)):
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    parts.append(handle.read())
+            except OSError:
+                continue
+    return "\n".join(parts)
+
 
 def _read_ast_sync(hass: HomeAssistant) -> dict:
     path = _get_ast_path(hass)
@@ -337,192 +438,219 @@ def _read_target_sync(path: str, empty):
         return None
     return data
 
-def _write_if_changed_sync(path: str, data, skip_when_empty: bool) -> bool:
-    """Writes only when the result differs from what is already on disk, so an untouched domain is
-    never rewritten and never reloaded. Returns whether the file was written."""
-    if skip_when_empty and not data and not os.path.exists(path):
-        return False
-    new_text = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                if f.read() == new_text:
-                    return False
-        except Exception:  # noqa: BLE001
-            pass
-    # [CHANGED v3.34.0] Atomic: Home Assistant never reads a half written automations.yaml.
-    write_utf8_file_atomic(path, new_text)
-    return True
+def _read_home_assistant_files(hass: HomeAssistant) -> tuple[dict, list[str]]:
+    """[ADDED v3.85.0] automations.yaml, scripts.yaml and scenes.yaml as they are now, read only. A file that cannot be
+    read is an error, and then nothing is planned or recorded (RULE 5)."""
+    files: dict[str, Any] = {}
+    errors: list[str] = []
+    for domain, (path_of, empty) in _DOMAIN_FILES.items():
+        files[domain] = _read_target_sync(path_of(hass), empty())
+        if files[domain] is None:
+            errors.append(f"{os.path.basename(path_of(hass))} could not be read")
+    return files, errors
 
-def _merge_list_sync(existing: list, mine: list, owned_ids: set) -> list:
-    """Keeps every entry the user wrote by hand and replaces only the ones LIBI owns. Ownership is
-    the id, both the ids LIBI is writing now and the ids it wrote the previous time, so a net that
-    was renamed or deleted does not leave an orphan behind. An entry that is being replaced keeps
-    its place in the file, so re-saving does not shuffle the order the user sees in the editor."""
-    by_id = {str(item.get("id", "")): item for item in mine if isinstance(item, dict) and item.get("id")}
-    out = []
-    placed = set()
-    for item in existing:
-        key = str(item.get("id", "")) if isinstance(item, dict) else ""
-        if key and key in by_id:
-            out.append(by_id[key])
-            placed.add(key)
-        elif key and key in owned_ids:
-            continue  # LIBI wrote this last time and no longer owns it
-        else:
-            out.append(item)
-    out.extend(item for item in mine
-               if not isinstance(item, dict) or str(item.get("id", "")) not in placed)
-    return out
 
-def _merge_map_sync(existing: dict, mine: dict, owned_keys: set) -> dict:
-    """The same rule for scripts.yaml, which is a mapping keyed by object id rather than a list. A
-    key that is being rewritten keeps its position, since a dict preserves insertion order."""
-    out = {}
-    for key, value in existing.items():
-        if key in mine:
-            out[key] = mine[key]
-        elif key in owned_keys:
-            continue  # LIBI wrote this last time and no longer owns it
-        else:
-            out[key] = value
-    for key, value in mine.items():
-        out.setdefault(key, value)
-    return out
+def _file_entry(data: Any, key: str) -> Any:
+    """[ADDED v3.85.0] The entry a file holds under a key: the item with that id in a list, the value under that key in
+    scripts.yaml. None when there is none."""
+    if isinstance(data, dict):
+        return data.get(key)
+    return next((item for item in data or [] if isinstance(item, dict) and str(item.get("id", "")) == key), None)
 
-def _migrate_legacy_file_sync(hass: HomeAssistant) -> None:
-    """An install upgrading from an earlier LIBI may still include libi_automations.yaml. The file is
-    emptied rather than deleted, so an include line that points at it stays valid and stops producing
-    a duplicate of every automation LIBI now writes into automations.yaml."""
+
+def legacy_file_note_sync(hass: HomeAssistant) -> None:
+    """[CHANGED v3.85.0] Read only - the HACS review: LIBI leaves libi_automations.yaml alone and says in the log when it
+    still holds automations. Up to v3.84.0 a save emptied it, so an install upgraded since has [] there and hears nothing."""
     path = _get_legacy_yaml_path(hass)
     if not os.path.exists(path):
         return
     try:
         with open(path, encoding="utf-8") as f:
-            if f.read().strip() in ("", "[]"):
-                return
-        write_utf8_file_atomic(path, "[]\n")
-        _LOGGER.warning("[libi] libi_automations.yaml is no longer used and was emptied. LIBI now "
-                        "writes into automations.yaml, the same file the Home Assistant editor uses. "
-                        "The include line for it can be removed from configuration.yaml.")
+            data = yaml.safe_load(f)
     except Exception as err:  # noqa: BLE001
-        _LOGGER.error("[libi] could not empty the old libi_automations.yaml: %s", err)
-
-def _write_ast_and_yaml_sync(hass: HomeAssistant, payload: dict, slug: str = "", name: str = "") -> dict:
-    """Compiles every net of one project and merges the result into Home Assistant's own three files.
-
-    [CHANGED v3.14.0] The record of what LIBI owns is read from this project and from no other. Two
-    projects can sit side by side in automations.yaml and saving one leaves the other alone, which
-    is the whole point of having projects at all.
-
-    [CHANGED v3.34.0] All three files are read before any of them is written. When one cannot be
-    read, nothing at all is written, the project file included, so the ownership record never claims
-    an entry that is not on disk."""
-    with _FILE_LOCK:
-        return _write_ast_and_yaml_locked(hass, payload, slug or "default", name)
+        _LOGGER.warning("[libi] libi_automations.yaml, from LIBI before 3.5.0, could not be read; LIBI leaves it as it "
+                        "is: %s", err)
+        return
+    if isinstance(data, list) and data:
+        _LOGGER.warning(
+            "[libi] libi_automations.yaml, from LIBI before 3.5.0, still holds %d automation(s). LIBI no longer uses or "
+            "changes it. If configuration.yaml still includes it, the same automations may also be in automations.yaml "
+            "and run twice: check them, then remove the file and its include line.", len(data))
 
 
-def _write_ast_and_yaml_locked(hass: HomeAssistant, payload: dict, slug: str, name: str) -> dict:
-    _migrate_single_ast_sync(hass)
-    project = _read_project_sync(hass, slug) or {}
-    previous = project.get("owned") or {}
-    # What the other projects claim right now. These ids are off limits no matter what this project
-    # used to own, so a shared or copied id can never be deleted out from under another workspace.
-    protected = _all_owned_except_sync(hass, slug)
-
-    automations = []
-    scripts: dict[str, Any] = {}
-    scenes = []
-    errors = []
-    # [ADDED v3.47.0] What each net put into Home Assistant, for the version history.
-    written = []
-    for net in payload.get("nets", []):
+def _compile_nets(hass: HomeAssistant, nets: list) -> tuple[list[dict], list[str]]:
+    """[ADDED v3.85.0] Every net of a project, compiled: one entry for each that compiles to something - its domain,
+    the key Home Assistant files it under and its config. A net that compiles to nothing is a half drawn one: it stays
+    in the project and is not sent. A net that does not compile is an error, and then nothing is saved.
+    scripts.yaml is a mapping, so a script needs an object id: its name as a slug, a repeated name with a number."""
+    entries: list[dict] = []
+    errors: list[str] = []
+    scripts: set[str] = set()
+    for index, net in enumerate(nets or []):
+        if not isinstance(net, dict):
+            continue
         level = net_level(net)
+        label = f'NET {index + 1} "{str(net.get("name") or "")[:60]}"'
         try:
             compiled = ast_to_yaml(hass, net)
-            # A net that compiles to nothing is almost always a half drawn rung. It stays in the AST
-            # file but is not written out, so nothing silently breaks.
-            if not compiled.get(_LEVEL_BODY_KEY.get(level, "actions")):
-                _LOGGER.warning("[libi] %s net %s is empty, skipped in the output", level, net.get("name"))
-                continue
-            written.append((net, yaml.dump(compiled, default_flow_style=False, allow_unicode=True,
-                                           sort_keys=False)))
-            if level == "script":
-                # scripts.yaml is a mapping, so the net needs an object id. The name becomes a slug and
-                # a repeated name gets a number rather than quietly overwriting the net before it.
-                # [CHANGED v3.34.0] Its own variable: reusing `slug` here renamed the project file.
-                base = slugify(net.get("name"), fallback="libi_" + slugify(net.get("id"), "script"))
-                script_key = base
-                counter = 2
-                while script_key in scripts:
-                    script_key = f"{base}_{counter}"
-                    counter += 1
-                scripts[script_key] = compiled
-            elif level == "scene":
-                scenes.append(compiled)
-            else:
-                automations.append(compiled)
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("[libi] failed to compile net %s: %s", net.get("name"), err)
-            errors.append(f"{net.get('name')}: {err}")
+            errors.append(f"{label}: {err}")
+            continue
+        if not compiled.get(_LEVEL_BODY_KEY.get(level, "actions")):
+            continue
+        if level == "script":
+            base = slugify(net.get("name"), fallback="libi_" + slugify(net.get("id"), "script"))
+            key, counter = base, 2
+            while key in scripts:
+                key, counter = f"{base}_{counter}", counter + 1
+            scripts.add(key)
+        else:
+            key = str(compiled.get("id") or "")
+            if not key:
+                errors.append(f"{label}: it has no id for Home Assistant")
+                continue
+        entries.append({"net": net, "label": label, "domain": level, "key": key, "config": compiled})
+    return entries, errors
 
-    owned = {
-        "automations": [str(a.get("id", "")) for a in automations if a.get("id")],
-        "scripts": sorted(scripts.keys()),
-        "scenes": [str(s.get("id", "")) for s in scenes if s.get("id")],
-    }
 
-    plans = (
-        ("automation", _get_automations_path(hass), [], automations,
-         (set(owned["automations"]) | set(previous.get("automations") or [])) - protected["automations"]),
-        ("script", _get_scripts_path(hass), {}, scripts,
-         (set(owned["scripts"]) | set(previous.get("scripts") or [])) - protected["scripts"]),
-        ("scene", _get_scenes_path(hass), [], scenes,
-         (set(owned["scenes"]) | set(previous.get("scenes") or [])) - protected["scenes"]),
-    )
-    existing_by_domain = {}
-    for domain, path, empty, _mine, _owned_keys in plans:
-        existing = _read_target_sync(path, empty)
-        if existing is None:
-            errors.append(f"{os.path.basename(path)} could not be read")
-        existing_by_domain[domain] = existing
-    if any(v is None for v in existing_by_domain.values()):
-        errors.append("nothing was saved")
-        return {"changed": [], "errors": errors, "slug": slug, "saved": False,
-                "counts": {"automations": 0, "scripts": 0, "scenes": 0}}
+def _originals(history: dict | None) -> dict[str, dict]:
+    """[ADDED v3.85.0] Per net, its newest original: the V1 an automation was opened with."""
+    out: dict[str, dict] = {}
+    for nid, rec in ((history or {}).get("nets") or {}).items():
+        for version in rec.get("versions") or []:
+            if version.get("original") and isinstance(version.get("config"), dict):
+                out[nid] = version
+    return out
 
-    _migrate_legacy_file_sync(hass)
 
-    changed = []
-    for domain, path, empty, mine, owned_keys in plans:
-        existing = existing_by_domain[domain]
-        merged = _merge_map_sync(existing, mine, owned_keys) if isinstance(empty, dict) \
-            else _merge_list_sync(existing, mine, owned_keys)
-        if _write_if_changed_sync(path, merged, skip_when_empty=not mine and not owned_keys):
-            changed.append(domain)
+async def _originals_as_they_were(hass: HomeAssistant, slug: str, entries: list[dict]) -> None:
+    """[ADDED v3.85.0] A net nobody changed since its automation was opened goes back as its original - V1, exactly as
+    Home Assistant had it - not as LIBI would write it: a save never rewrites an automation nobody changed (RULE 5), and
+    V1 put back on the canvas restores it as it was. Unchanged is the net compiling to what its original opens as. The
+    importer reads the registries, so this runs on the event loop and yields after every net."""
+    originals = _originals(await hass.async_add_executor_job(_read_versions_sync, hass, slug))
+    for entry in entries:
+        original = originals.get(str(entry["net"].get("id") or ""))
+        if not original or (original.get("domain"), str(original.get("key"))) != (entry["domain"], entry["key"]):
+            continue
+        try:
+            opened = yaml_to_ast(hass, copy.deepcopy(original["config"]))
+            opened.update(id=entry["net"].get("id"), ha_id=entry["key"], level=entry["domain"])
+            as_opened = ast_to_yaml(hass, opened)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("[libi] the original of %s could not be compared: %s", entry["label"], err)
+            continue
+        if as_opened == entry["config"]:
+            entry["config"] = copy.deepcopy(original["config"])
+        await asyncio.sleep(0)
 
-    # The project file is written last and carries the ownership record, so the next save of THIS
-    # project knows exactly which entries in Home Assistant's files are its own.
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    _write_project_sync(hass, slug, {
-        "libi_project": 1,
-        "slug": slug,
-        "name": name or project.get("name") or slug,
-        "created": project.get("created") or now,
-        "updated": now,
-        # Every net exactly as it was left, unfinished logic and all, including which automation each
-        # one was loaded from, which is the ha_id carried on the net.
-        "nets": payload.get("nets", []),
-        "owned": owned,
-    })
 
-    # [ADDED v3.47.0] Only a save that reached Home Assistant's files records versions, so the history
-    # never holds a version that did not run. A net removed from the project takes its history along.
-    keep_ids = {str(n.get("id")) for n in payload.get("nets", []) if isinstance(n, dict) and n.get("id")}
-    versions = _update_versions_locked(hass, slug, written, "saved", keep_ids)
+def _plan_save_sync(hass: HomeAssistant, slug: str, entries: list[dict]) -> dict:
+    """[ADDED v3.85.0] What a save changes in Home Assistant's files - read, never written: each entry whose config does
+    not mean what the one in its file means (same_config), or is not there yet, and each entry this project wrote before
+    and no longer has - never one another project claims. A file that cannot be read means no plan at all (RULE 5)."""
+    with _FILE_LOCK:
+        files, errors = _read_home_assistant_files(hass)
+        if errors:
+            return {"ok": False, "errors": errors + ["nothing was saved"]}
+        previous = (_read_project_sync(hass, slug) or {}).get("owned") or {}
+        protected = _all_owned_except_sync(hass, slug)
+    now: dict[str, set] = {domain: set() for domain in _DOMAIN_FILES}
+    upserts: list[dict] = []
+    unchanged = 0
+    for entry in entries:
+        now[entry["domain"]].add(entry["key"])
+        current = _file_entry(files[entry["domain"]], entry["key"])
+        if current is not None and same_config(current, entry["config"]):
+            unchanged += 1
+            continue
+        upserts.append({"domain": entry["domain"], "key": entry["key"], "config": entry["config"],
+                        "net_id": str(entry["net"].get("id") or ""), "label": entry["label"]})
+    removals: list[dict] = []
+    for domain, owned_key in _OWNED_KEYS.items():
+        gone = {str(k) for k in previous.get(owned_key) or []} - now[domain] - protected[owned_key]
+        removals += [{"domain": domain, "key": key} for key in sorted(gone)
+                     if _file_entry(files[domain], key) is not None]
+    return {"ok": True, "errors": [], "upserts": upserts, "removals": removals, "unchanged": unchanged}
 
-    return {"changed": changed, "errors": errors, "slug": slug, "saved": True, "versions": versions,
-            "counts": {"automations": len(automations), "scripts": len(scripts), "scenes": len(scenes)}}
+
+def _record_save_sync(hass: HomeAssistant, slug: str, name: str, nets: list, entries: list[dict],
+                      write_project: bool) -> dict:
+    """[ADDED v3.85.0] After the panel sent the changes to Home Assistant's config API: Home Assistant's files are read
+    back - the browser's word is not taken for it - and the project records what they hold. Its nets; the entries it
+    owns there, a removal that failed included, so the next save removes it; a version of every net that runs as it was
+    built. Only a save that reached Home Assistant, or had nothing to change there, writes the project."""
+    with _FILE_LOCK:
+        files, errors = _read_home_assistant_files(hass)
+        if errors:
+            return {"saved": False, "errors": errors}
+        project = _read_project_sync(hass, slug) or {}
+        previous = project.get("owned") or {}
+        protected = _all_owned_except_sync(hass, slug)
+        owned: dict[str, list] = {}
+        for domain, owned_key in _OWNED_KEYS.items():
+            mine = {e["key"] for e in entries if e["domain"] == domain}
+            mine |= {str(k) for k in previous.get(owned_key) or []} - protected[owned_key]
+            owned[owned_key] = sorted(k for k in mine if _file_entry(files[domain], k) is not None)
+        running = [e for e in entries
+                   if (current := _file_entry(files[e["domain"]], e["key"])) is not None and same_config(current, e["config"])]
+        if not write_project:
+            return {"saved": False, "errors": []}
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _write_project_sync(hass, slug, {
+            "libi_project": 1,
+            "slug": slug,
+            "name": name or project.get("name") or slug,
+            "created": project.get("created") or now,
+            "updated": now,
+            # Every net exactly as it was left, unfinished logic and all, including which automation each
+            # one was loaded from, which is the ha_id carried on the net.
+            "nets": nets,
+            "owned": owned,
+        })
+        # [ADDED v3.47.0] Only what runs in Home Assistant is a version, so the history never holds one that did not
+        # run. A net removed from the project takes its history along.
+        keep_ids = {str(n.get("id")) for n in nets if isinstance(n, dict) and n.get("id")}
+        versions = _update_versions_locked(hass, slug, [(e["net"], e["config"], None) for e in running], "saved",
+                                           keep_ids)
+    return {"saved": True, "errors": [], "versions": versions,
+            "counts": {owned_key: sum(1 for e in entries if e["domain"] == domain)
+                       for domain, owned_key in _OWNED_KEYS.items()}}
+
+
+def _net_entry_sync(hass: HomeAssistant, slug: str, net_id: str, domain: str, key: str) -> dict:
+    """[ADDED v3.85.0] Whether a NET's entry is in Home Assistant's files now, and its original (V1), if it has one."""
+    with _FILE_LOCK:
+        files, errors = _read_home_assistant_files(hass)
+        history = _read_versions_sync(hass, slug)
+    versions = (((history or {}).get("nets") or {}).get(net_id) or {}).get("versions") or []
+    original = next((v for v in reversed(versions) if v.get("original") and isinstance(v.get("config"), dict)
+                     and (v.get("domain"), str(v.get("key"))) == (domain, key)), None)
+    return {"in_ha": bool(domain and key and not errors and _file_entry(files.get(domain), key) is not None),
+            "errors": errors,
+            "original": {"v": original.get("v"), "config": original["config"]} if original else None}
+
+
+def _release_net_sync(hass: HomeAssistant, slug: str, net_id: str, domain: str, key: str) -> None:
+    """[ADDED v3.85.0] The project lets go of a NET deleted from the canvas: its drawing, the entry it owned in Home
+    Assistant - so no later save removes what is now the user's alone - and its history."""
+    with _FILE_LOCK:
+        project = _read_project_sync(hass, slug)
+        if project is not None:
+            project["nets"] = [n for n in project.get("nets") or []
+                               if not (isinstance(n, dict) and str(n.get("id") or "") == net_id)]
+            if domain in _OWNED_KEYS and key:
+                owned = project.get("owned") or {}
+                owned[_OWNED_KEYS[domain]] = [k for k in owned.get(_OWNED_KEYS[domain]) or [] if str(k) != key]
+                project["owned"] = owned
+            project["updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            _write_project_sync(hass, slug, project)
+        history = _read_versions_sync(hass, slug)
+        if history is not None and net_id in history["nets"]:
+            del history["nets"][net_id]
+            os.makedirs(_get_projects_dir(hass), exist_ok=True)
+            write_utf8_file_atomic(_versions_path(hass, slug), json.dumps(history, indent=2, ensure_ascii=False))
 
 
 def _delete_project_sync(hass: HomeAssistant, slug: str) -> dict:
@@ -564,24 +692,6 @@ def _create_project_sync(hass: HomeAssistant, name: str) -> dict:
             "created": now, "updated": now, "nets": [], "owned": {},
         })
     return {"slug": slug, "name": name or slug}
-
-
-def _delete_automation_sync(hass: HomeAssistant, auto_id: str) -> dict:
-    """[ADDED v3.34.0] Removes the one automation the user deleted in LIBI and leaves every other
-    entry exactly as it was, under the same rules as a save: an unreadable file is not written, and
-    a file that would not change is not rewritten (and not reloaded)."""
-    path = _get_automations_path(hass)
-    with _FILE_LOCK:
-        existing = _read_target_sync(path, [])
-        if existing is None:
-            return {"ok": False, "changed": False,
-                    "error": "automations.yaml could not be read and was left untouched"}
-        kept = [a for a in existing
-                if not (isinstance(a, dict) and str(a.get("id", "")) == auto_id)]
-        if len(kept) == len(existing):
-            return {"ok": True, "changed": False}
-        changed = _write_if_changed_sync(path, kept, skip_when_empty=False)
-    return {"ok": True, "changed": changed}
 
 
 def _automations_by_id_sync(hass: HomeAssistant) -> dict:
@@ -674,18 +784,60 @@ def _get_all_automations(hass: HomeAssistant):
     return autos
 
 
-async def _reload(hass: HomeAssistant, domains, errors: list) -> list:
-    """[ADDED v3.34.0] Reloads each domain whose file was written and waits for it. A reload that
-    fails is reported as a failure next to the save, never hidden behind it."""
-    reloaded = []
-    for domain in domains or []:
-        try:
-            await hass.services.async_call(domain, "reload", blocking=True)
-            reloaded.append(domain)
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.error("[libi] %s reload failed: %s", domain, err)
-            errors.append(f"{domain} reload failed: {err}")
-    return reloaded
+def _since(stamp: str) -> datetime:
+    """[ADDED v3.85.0] When a save began, from the stamp libi/compile_project gave - never later than now. Without one, a
+    minute ago."""
+    now = datetime.now(timezone.utc)
+    try:
+        when = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return now - timedelta(seconds=60)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return min(when, now)
+
+
+def _an_op(op: Any) -> dict | None:
+    """[ADDED v3.85.0] A change the panel says it made through Home Assistant's config API, or None when it is not one."""
+    if not isinstance(op, dict) or op.get("domain") not in _DOMAIN_FILES or op.get("op") not in ("upsert", "remove"):
+        return None
+    key = str(op.get("key") or "")
+    return {"domain": op["domain"], "key": key, "op": op["op"]} if 0 < len(key) <= 255 else None
+
+
+async def _wait_for_reloads(hass: HomeAssistant, ops: list[dict], since: datetime) -> tuple[set[str], list[str]]:
+    """[ADDED v3.85.0] Home Assistant's config API reloads in the background after it writes. An entry it saved is
+    reloaded once its entity is back, set up after the save began; one it removed, once its entity is gone. Not so within
+    RELOAD_WAIT_SECONDS, or back unavailable, is a failure, said next to the save and never hidden behind it (RULE 10).
+    Returns the domains that failed, and why."""
+    ent_reg = er.async_get(hass)
+    pending = {(op["domain"], op["key"], op["op"]) for op in ops}
+    bad: set[str] = set()
+    errors: list[str] = []
+    deadline = time.monotonic() + RELOAD_WAIT_SECONDS
+    while pending:
+        for item in sorted(pending):
+            domain, key, op = item
+            entity_id = ent_reg.async_get_entity_id(domain, _ENTITY_PLATFORM[domain], key)
+            if op == "remove":
+                if entity_id is None:
+                    pending.discard(item)
+                continue
+            state = hass.states.get(entity_id) if entity_id else None
+            if state is not None and state.last_changed >= since:
+                pending.discard(item)
+                if state.state == STATE_UNAVAILABLE:
+                    bad.add(domain)
+                    errors.append(f"{entity_id} is unavailable: Home Assistant did not accept it - see Settings ▸ "
+                                  "System ▸ Logs")
+        if not pending or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(0.25)
+    for domain, key, op in sorted(pending):
+        bad.add(domain)
+        errors.append(f"{domain} {key}: Home Assistant has not {'removed' if op == 'remove' else 'reloaded'} it within "
+                      f"{int(RELOAD_WAIT_SECONDS)} seconds - see Settings ▸ System ▸ Logs")
+    return bad, errors
 
 
 def async_register_websockets(hass: HomeAssistant) -> None:
@@ -695,58 +847,121 @@ def async_register_websockets(hass: HomeAssistant) -> None:
     for handler in (
         ws_handle_save_automation, ws_handle_load_automation, ws_handle_list_automations,
         ws_handle_get_automation, ws_handle_delete_automation, ws_handle_verify_automation,
+        ws_handle_compile_project, ws_handle_save_done, ws_handle_net_delete_plan, ws_handle_net_removed,
         ws_handle_project_list, ws_handle_project_open, ws_handle_project_create,
-        ws_handle_project_delete, ws_handle_preview_yaml,
+        ws_handle_project_delete, ws_handle_preview_yaml, ws_handle_net_card,
         ws_handle_ai_status, ws_handle_ai_plan, ws_handle_ai_build,
-        ws_handle_net_versions,
+        ws_handle_net_versions, ws_handle_net_helpers,
     ):
         websocket_api.async_register_command(hass, handler)
     _LOGGER.debug("[libi] WebSocket commands registered")
 
 
+# [CHANGED v3.85.0] A page that still runs the LIBI before 3.85.0 - open since before the update - would save with these
+# two, which wrote Home Assistant's files. They write nothing now: the page is told to reload.
+_OUTDATED = "LIBI was updated: reload this page. Nothing was saved or deleted."
+
+
 @websocket_api.websocket_command({
     vol.Required("type"): "libi/save_automation",
-    vol.Optional("slug", default="default"): str,
-    vol.Optional("name", default=""): str,
+    vol.Optional("slug"): str,
+    vol.Optional("name"): str,
     vol.Optional("nets"): [dict],
-    # Older panels sent the nets wrapped in a payload object.
     vol.Optional("payload"): dict,
 })
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_save_automation(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    # [CHANGED v3.14.0] The save belongs to a project. Without a slug it is the Default workspace,
-    # which is what an installation from before projects is migrated into.
+    """[CHANGED v3.85.0] Refused: SAVE & COMPILE is libi/compile_project, Home Assistant's config API and libi/save_done."""
+    connection.send_error(msg["id"], "outdated_panel", _OUTDATED)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/compile_project",
+    vol.Optional("slug", default="default"): str,
+    vol.Optional("name", default=""): str,
+    vol.Required("nets"): [dict],
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_compile_project(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.85.0] SAVE & COMPILE, step 1 - the user's rule (2026-11-04): compile first, and save only when that
+    holds. Every net is compiled; every one that changes something in Home Assistant is checked with Home Assistant's
+    own validator, the one its config API runs before it writes. When any of it does not hold, the answer says why and
+    nothing is saved. Otherwise it is what to send to Home Assistant's config API. Nothing is written here."""
     slug = msg["slug"] or "default"
     if not valid_project_slug(slug):
         connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
         return
-    payload = {"nets": msg["nets"]} if "nets" in msg else (msg.get("payload") or {})
-    if not isinstance(payload.get("nets", []), list):
-        connection.send_error(msg["id"], "invalid_format", "nets must be a list")
+    stamp = datetime.now(timezone.utc).isoformat()
+    entries, errors = _compile_nets(hass, msg["nets"])
+    if errors:
+        connection.send_result(msg["id"], {"ok": False, "errors": errors, "stamp": stamp})
         return
-    result = await hass.async_add_executor_job(
-        _write_ast_and_yaml_sync, hass, payload, slug, msg["name"])
-    # [ADDED v3.5.0] Reloading through the service is what makes the change live without a restart,
-    # and it is the same call the Home Assistant editors make after they save.
-    errors = list(result.get("errors") or [])
-    reloaded = await _reload(hass, result.get("changed"), errors)
+    await _originals_as_they_were(hass, slug, entries)
+    plan = await hass.async_add_executor_job(_plan_save_sync, hass, slug, entries)
+    for op in plan.get("upserts") or []:
+        problem = await ai.validate_with_home_assistant(hass, op["domain"], op["config"])
+        if problem:
+            plan["errors"].append(f"{op['label']}: Home Assistant does not accept it: {problem}")
+    if plan["errors"]:
+        plan = {"ok": False, "errors": plan["errors"]}
+    connection.send_result(msg["id"], {**plan, "stamp": stamp})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/save_done",
+    vol.Optional("slug", default="default"): str,
+    vol.Optional("name", default=""): str,
+    vol.Required("nets"): [dict],
+    vol.Optional("done", default=[]): [dict],
+    vol.Optional("failure"): vol.Any(None, dict),
+    vol.Optional("stamp", default=""): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_save_done(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.85.0] SAVE & COMPILE, step 3, after the panel sent the changes to Home Assistant's config API, which
+    stops at the first one refused: the project records what reached Home Assistant's files, read back from them, and
+    LIBI waits for every reload. A save is reported as one only when Home Assistant confirms it (RULE 10)."""
+    slug = msg["slug"] or "default"
+    if not valid_project_slug(slug):
+        connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
+        return
+    entries, errors = _compile_nets(hass, msg["nets"])
+    await _originals_as_they_were(hass, slug, entries)
+    done = [op for op in (_an_op(x) for x in msg["done"]) if op]
+    failure = msg.get("failure") if isinstance(msg.get("failure"), dict) else None
+    result = await hass.async_add_executor_job(_record_save_sync, hass, slug, msg["name"], msg["nets"], entries,
+                                               bool(done) or failure is None)
+    errors = list(result.get("errors") or []) + errors
+    if failure:
+        what = str(failure.get("label") or f"{failure.get('domain', '')} {failure.get('key', '')}").strip()
+        errors.append(f"{what}: Home Assistant refused it: {str(failure.get('message') or 'no reason given')[:300]}")
+        not_sent = failure.get("not_sent")
+        if isinstance(not_sent, int) and not_sent > 0:
+            errors.append(f"{not_sent} more change(s) were not sent.")
+    bad, reload_errors = await _wait_for_reloads(hass, done, _since(msg["stamp"]))
+    errors += reload_errors
+    written = sorted({op["domain"] for op in done})
+    saved = bool(result.get("saved"))
     counts = result.get("counts") or {}
-    if result.get("saved"):
-        message = ("Saved. {automations} automations, {scripts} scripts, {scenes} scenes written into "
-                   "Home Assistant.").format(automations=counts.get("automations", 0),
-                                             scripts=counts.get("scripts", 0),
-                                             scenes=counts.get("scenes", 0))
+    if saved:
+        message = ("Saved. {automations} automations, {scripts} scripts, {scenes} scenes in this project; {changed} "
+                   "sent to Home Assistant.").format(automations=counts.get("automations", 0),
+                                                     scripts=counts.get("scripts", 0),
+                                                     scenes=counts.get("scenes", 0),
+                                                     changed=f"{len(done)} change(s)" if done else "no change")
     else:
         message = "Not saved."
     if errors:
         message += " Problems: " + "; ".join(errors[:5])
     connection.send_result(msg["id"], {"status": "error" if errors else "ok",
-                                       "saved": bool(result.get("saved")),
+                                       "saved": saved,
                                        "message": message,
-                                       "slug": result.get("slug") or slug,
-                                       "written": result.get("changed") or [],
-                                       "reloaded": reloaded,
+                                       "slug": slug,
+                                       "written": written,
+                                       "reloaded": [d for d in written if d not in bad],
                                        "versions": result.get("versions") or {},
                                        "errors": errors})
 
@@ -771,11 +986,18 @@ async def ws_handle_list_automations(hass: HomeAssistant, connection: websocket_
 @websocket_api.websocket_command({
     vol.Required("type"): "libi/get_automation",
     vol.Required("automation_id"): str,
+    # [ADDED v3.85.0] The NET it is loaded into, whose V1 and V2 it becomes (the user's rule of 2026-11-04).
+    vol.Optional("slug"): str,
+    vol.Optional("net_id"): str,
 })
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_get_automation(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     auto_id = msg["automation_id"]
+    slug = msg.get("slug") or "default"
+    if not valid_project_slug(slug):
+        connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
+        return
     autos = await hass.async_add_executor_job(_get_all_automations, hass)
     target = next((a for a in autos if str(a["id"]) == auto_id), None)
     if not target:
@@ -786,9 +1008,15 @@ async def ws_handle_get_automation(hass: HomeAssistant, connection: websocket_ap
         report = verify_round_trip(hass, target["raw"])
         if not report.get("ok"):
             _LOGGER.warning("[libi] %s does not round trip cleanly: %s", auto_id, report.get("issues"))
-        connection.send_result(msg["id"], {"net": ast_net, "verify": report})
     except Exception as err:  # noqa: BLE001
         connection.send_error(msg["id"], "parse_error", str(err))
+        return
+    versions = {}
+    if msg.get("net_id"):
+        opened = {**ast_net, "id": msg["net_id"], "ha_id": auto_id}
+        versions = await hass.async_add_executor_job(_record_original_sync, hass, slug, opened, auto_id,
+                                                     copy.deepcopy(target["raw"]))
+    connection.send_result(msg["id"], {"net": ast_net, "verify": report, "versions": versions})
 
 
 @websocket_api.websocket_command({
@@ -817,25 +1045,198 @@ async def ws_handle_verify_automation(hass: HomeAssistant, connection: websocket
 
 @websocket_api.websocket_command({
     vol.Required("type"): "libi/delete_automation",
-    vol.Required("automation_id"): str,
+    vol.Optional("automation_id"): str,
 })
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_delete_automation(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    """[CHANGED v3.34.0] Read, filter and write in the executor under the file lock, then wait for
-    the reload. Before this the file was read and rewritten on the event loop with its keys sorted,
-    which reordered every automation in it, and the result was "ok" whatever happened."""
-    result = await hass.async_add_executor_job(
-        _delete_automation_sync, hass, msg["automation_id"])
-    if not result.get("ok"):
-        connection.send_error(msg["id"], "delete_failed", result.get("error") or "could not delete")
+    """[CHANGED v3.85.0] Refused: deleting is the panel's call to Home Assistant's config API, then libi/net_removed."""
+    connection.send_error(msg["id"], "outdated_panel", _OUTDATED)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/net_delete_plan",
+    vol.Optional("slug", default="default"): str,
+    vol.Required("net_id"): str,
+    vol.Required("nets"): [dict],
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_net_delete_plan(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.85.0] What deleting a NET can do - the user's rule (2026-11-04): delete it completely, or delete it and
+    go back to V1, the original as Home Assistant had it before LIBI changed it. Says where the NET's entry is in Home
+    Assistant (the key of a script depends on the other nets) and what its V1 holds. Reads only."""
+    slug = msg["slug"] or "default"
+    if not valid_project_slug(slug):
+        connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
         return
-    errors: list = []
-    reloaded = await _reload(hass, ["automation"] if result.get("changed") else [], errors)
-    connection.send_result(msg["id"], {"status": "error" if errors else "ok",
-                                       "deleted": bool(result.get("changed")),
-                                       "reloaded": reloaded,
-                                       "errors": errors})
+    net = next((n for n in msg["nets"] if str(n.get("id") or "") == msg["net_id"]), None)
+    if net is None:
+        connection.send_error(msg["id"], "not_found", "No such NET")
+        return
+    entries, _errors = _compile_nets(hass, msg["nets"])
+    entry = next((e for e in entries if e["net"] is net), None)
+    if entry:
+        domain, key = entry["domain"], entry["key"]
+    elif net.get("ha_id") and net_level(net) == "automation":
+        domain, key = "automation", str(net["ha_id"])
+    else:
+        domain, key = "", ""
+    stamp = datetime.now(timezone.utc).isoformat()
+    info = await hass.async_add_executor_job(_net_entry_sync, hass, slug, msg["net_id"], domain, key)
+    # The stamp is when the delete began: libi/net_removed waits for what Home Assistant does after it.
+    connection.send_result(msg["id"], {"domain": domain, "key": key, "stamp": stamp, **info})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/net_removed",
+    vol.Optional("slug", default="default"): str,
+    vol.Required("net_id"): str,
+    vol.Required("mode"): vol.In(["deleted", "restored", "kept"]),
+    vol.Optional("domain", default=""): vol.In(["", "automation", "script", "scene"]),
+    vol.Optional("key", default=""): str,
+    vol.Optional("stamp", default=""): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_net_removed(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.85.0] A NET deleted from the canvas: with its entry, which the panel removed through Home Assistant's
+    config API; with V1 put back there the same way; or with its entry left in Home Assistant as it is. The project lets
+    go of it, and LIBI waits for Home Assistant to remove or reload the entry (RULE 10)."""
+    slug = msg["slug"] or "default"
+    if not valid_project_slug(slug):
+        connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
+        return
+    domain, key = msg["domain"], msg["key"][:255]
+    await hass.async_add_executor_job(_release_net_sync, hass, slug, msg["net_id"], domain, key)
+    errors: list[str] = []
+    if domain and key and msg["mode"] in ("deleted", "restored"):
+        op = {"domain": domain, "key": key, "op": "remove" if msg["mode"] == "deleted" else "upsert"}
+        _bad, errors = await _wait_for_reloads(hass, [op], _since(msg["stamp"]))
+    connection.send_result(msg["id"], {"ok": not errors, "errors": errors})
+
+
+# [ADDED v3.77.0] ------------------------------------------------------- the local variables of a NET
+# A helper the NET uses and nothing else uses is what a ladder programmer calls a local variable. Deleting a NET asks
+# whether to delete them too - the user's request. LIBI only finds them here; the panel deletes the ones the user
+# confirms with Home Assistant's own helper commands, and only once the NET's automation is gone.
+_HELPER_ID = re.compile(r"(?<!\w)(?:" + "|".join(ai.HELPER_DOMAINS) + r")\.[a-z0-9_]+(?!\w)")
+
+
+def _as_text(item) -> str:
+    return json.dumps(item, ensure_ascii=False, default=str)
+
+
+def _lists(members, entity_id: str) -> bool:
+    return members == entity_id or (isinstance(members, (list, tuple)) and entity_id in members)
+
+
+def _helper_users_sync(hass: HomeAssistant, slug: str, automation_id: str) -> dict:
+    """[ADDED v3.77.0] Everything else that could use a helper, as text with a name: every automation in
+    automations.yaml but the one being deleted (its text is returned apart, as more of what the NET uses), every script
+    and scene, and every NET of the other projects - the open project is the canvas, which the panel sends. Read only.
+    A file that cannot be read is an error, and then no helper counts as local (RULE 31)."""
+    out = {"own": "", "users": [], "error": ""}
+    with _FILE_LOCK:
+        automations = _read_target_sync(_get_automations_path(hass), [])
+        scripts = _read_target_sync(_get_scripts_path(hass), {})
+        scenes = _read_target_sync(_get_scenes_path(hass), [])
+        if automations is None or scripts is None or scenes is None:
+            out["error"] = "automations.yaml, scripts.yaml or scenes.yaml could not be read"
+            return out
+        for item in automations:
+            if isinstance(item, dict) and automation_id and str(item.get("id", "")) == automation_id:
+                out["own"] = _as_text(item)
+            elif isinstance(item, dict):
+                out["users"].append((f'automation "{item.get("alias") or item.get("id")}"', _as_text(item)))
+        for key, item in scripts.items():
+            name = item.get("alias") if isinstance(item, dict) else ""
+            out["users"].append((f'script "{name or key}"', _as_text(item)))
+        for item in scenes:
+            if isinstance(item, dict):
+                out["users"].append((f'scene "{item.get("name") or item.get("id")}"', _as_text(item)))
+        directory = _get_projects_dir(hass)
+        for fname in sorted(os.listdir(directory)) if os.path.isdir(directory) else []:
+            other = fname[: -len(PROJECT_EXT)]
+            if not fname.endswith(PROJECT_EXT) or other == slug or not valid_project_slug(other):
+                continue
+            data = _read_project_sync(hass, other)
+            if data is None:
+                out["error"] = f"the project {fname} could not be read"
+                return out
+            for net in data.get("nets") or []:
+                if isinstance(net, dict):
+                    out["users"].append((f'NET "{net.get("name") or net.get("id")}" of project "{data.get("name") or other}"',
+                                         _as_text(net)))
+    return out
+
+
+@callback
+def _local_helpers(hass: HomeAssistant, net: dict, nets: list, texts: dict, automation_id: str) -> dict:
+    """[ADDED v3.77.0] The NET's local variables: the helpers its drawing - or its automation being deleted - names and
+    nothing else uses: no text of _helper_users_sync, no other NET on the canvas, and, when no text names them, neither
+    Home Assistant's own index of automations and scripts (which holds the ones written outside automations.yaml too,
+    but sees an entity_id, never a template) nor a group, a scene or any other entity that lists it as a member. Only a
+    helper made in Home Assistant's UI can be deleted; one written in YAML is kept."""
+    from homeassistant.components.automation import automations_with_entity  # noqa: PLC0415
+    from homeassistant.components.script import scripts_with_entity  # noqa: PLC0415
+
+    if texts["error"]:
+        return {"helpers": [], "kept": [], "error": texts["error"]}
+    users = list(texts["users"]) + [
+        (f'NET "{other.get("name") or other.get("id")}" on the canvas', _as_text(other))
+        for other in nets if isinstance(other, dict) and other.get("id") != net.get("id")]
+    # The automation being deleted is still loaded until the reload: the index lists it, and it does not count.
+    going = {s.entity_id for s in hass.states.async_all("automation")
+             if automation_id and str(s.attributes.get("id", "")) == automation_id}
+    registry = er.async_get(hass)
+    helpers, kept = [], []
+    for eid in sorted(set(_HELPER_ID.findall(_as_text(net) + texts["own"]))):
+        state = hass.states.get(eid)
+        if state is None:
+            continue
+        name = ai._sanitize(state.name)[:60]
+        by = [label for label, text in users if ai.mentions(eid, text)]
+        reason = ""
+        if not by:
+            try:
+                index = [x for x in automations_with_entity(hass, eid) if x not in going] + scripts_with_entity(hass, eid)
+                # A group, a scene and every other entity made of others list their members in entity_id.
+                index += [s.entity_id for s in hass.states.async_all() if _lists(s.attributes.get("entity_id"), eid)]
+                by = [hass.states.get(x).name if hass.states.get(x) else x for x in index]
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("[libi] could not ask Home Assistant what uses %s: %s", eid, ai._sanitize(err))
+                reason = "not checked: Home Assistant could not say what uses it"
+        if by:
+            reason = f"used by {ai._sanitize(by[0])[:80]}" + (f" and {len(by) - 1} more" if len(by) > 1 else "")
+        entry = registry.async_get(eid)
+        if not reason and (state.attributes.get("editable") is not True or entry is None or entry.platform != state.domain):
+            reason = "written in YAML, so it cannot be deleted from here"
+        if reason:
+            kept.append({"entity_id": eid, "name": name, "reason": reason})
+        else:
+            helpers.append({"entity_id": eid, "name": name, "domain": state.domain, "item_id": entry.unique_id})
+    return {"helpers": helpers, "kept": kept, "error": ""}
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/net_helpers",
+    vol.Required("net"): dict,
+    vol.Optional("nets", default=[]): [dict],
+    vol.Optional("slug", default=""): str,
+    vol.Optional("automation_id", default=""): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_net_helpers(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.77.0] The local variables of a NET (_local_helpers), for the question the panel asks when the NET is
+    deleted. Reads only. slug: the open project, whose NETs are the canvas (nets). automation_id: the NET's automation
+    the panel is deleting, the one user that does not count; asked again without it once that automation is gone."""
+    if msg["slug"] and not valid_project_slug(msg["slug"]):
+        connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
+        return
+    texts = await hass.async_add_executor_job(_helper_users_sync, hass, msg["slug"], msg["automation_id"])
+    connection.send_result(msg["id"], _local_helpers(hass, msg["net"], msg["nets"], texts, msg["automation_id"]))
 
 # [ADDED v3.14.0] ---------------------------------------------------------------- projects
 
@@ -873,8 +1274,9 @@ async def ws_handle_project_open(hass: HomeAssistant, connection: websocket_api.
     live = await hass.async_add_executor_job(_automations_by_id_sync, hass)
     hydrated = _hydrate_project_nets(hass, data.get("nets") or [], live)
     # [ADDED v3.47.0] What runs now becomes V1, or the next version when it was changed elsewhere.
+    # [CHANGED v3.85.0] An automation opened for the first time is V1, the original as it is in Home Assistant, and V2.
     versions = await hass.async_add_executor_job(
-        _record_open_versions_sync, hass, slug, hydrated["nets"])
+        _record_open_versions_sync, hass, slug, hydrated["nets"], live)
     connection.send_result(msg["id"], {
         "slug": data.get("slug") or slug,
         "name": data.get("name") or slug,
@@ -958,6 +1360,26 @@ async def ws_handle_preview_yaml(hass: HomeAssistant, connection: websocket_api.
         connection.send_error(msg["id"], "preview_error", str(err))
 
 
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/net_card",
+    vol.Required("net"): dict,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_net_card(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.63.0] A dashboard card for a net, from what LIBI compiles for it: the settings it reads and the
+    devices it switches. The card the AI chat showed was gone with the chat. Nothing is written anywhere."""
+    try:
+        config = ast_to_yaml(hass, msg["net"])
+    except Exception as err:  # noqa: BLE001
+        connection.send_error(msg["id"], "card_error", ai._sanitize(err))
+        return
+    alias = config.get("alias") if isinstance(config, dict) else ""
+    card = ai.card_for_config(hass, config, str(msg["net"].get("name") or alias or "LIBI")[:60])
+    text = yaml.dump(card, default_flow_style=False, allow_unicode=True, sort_keys=False) if card else ""
+    connection.send_result(msg["id"], {"yaml": text})
+
+
 # [ADDED v3.36.0] ------------------------------------------------------------------- AI chat
 # The model only drafts. Every entity comes from the user's own picks, every service and trigger is
 # checked against an allow list and against Home Assistant's validator in ai.py, and the result is a
@@ -991,9 +1413,15 @@ async def ws_handle_ai_plan(hass: HomeAssistant, connection: websocket_api.Activ
         connection.send_error(msg["id"], "invalid_format", "The last message must be the user's.")
         return
     canvas, by_id = ai.canvas_context(hass, msg["nets"])
+    request = messages[-1]["content"]
+    # [ADDED v3.62.0] The user's own words, before the context below is added to them.
+    said = [m["content"] for m in messages if m["role"] == "user"]
+    # [ADDED v3.78.0] The names the message quotes that nothing in this Home Assistant has - a helper it says exists that
+    # is gone - told to the model with the helpers, and proposed again below.
+    missing = ai.helpers_missing(hass, request)
     extra = [canvas] if canvas else []
     if msg["share"]:
-        extra.append(ai.helpers_context(hass))
+        extra += [ai.helpers_context(hass), ai.missing_context(missing)]
     extra = [x for x in extra if x]
     if extra:
         messages[-1] = {"role": "user", "content": messages[-1]["content"] + "\n\n" + "\n\n".join(extra)}
@@ -1003,25 +1431,67 @@ async def ws_handle_ai_plan(hass: HomeAssistant, connection: websocket_api.Activ
         connection.send_error(msg["id"], "ai_error", str(err))
         return
     plan = ai.clean_plan(hass, raw, set(by_id))
+    # [ADDED v3.59.0] The user's rule, from the user's own words: no net is changed that was not named.
+    ai.only_named_changes(plan, request, msg["nets"])
+    # [ADDED v3.62.0] A message service the user named that does not exist is said now, not at Build; a phone
+    # role is optional when the user named services that do exist.
+    services, plan["missing_services"] = ai.services_named(hass, said)
+    on_canvas = ai.canvas_entities(hass, msg["nets"], by_id)
     candidates = {}
     for role in plan["roles"]:
-        candidates[role["id"]] = ai.find_candidates(hass, role)
+        candidates[role["id"]] = ai.find_candidates(hass, role, on_canvas)
         await asyncio.sleep(0)
+    # [ADDED v3.84.0] A zone chosen on the card is a dropdown of the user's zones, before anything is proposed for it.
+    ai.zone_choices(hass, plan, candidates)
+    # [ADDED v3.56.0] Settings another automation or script uses are not offered, and a helper that
+    # already exists is not proposed again.
+    config_text = await hass.async_add_executor_job(_config_text_sync, hass)
+    # [ADDED v3.60.0] A helper the user's own message names is offered and ticked, and not hidden below.
+    named = ai.roles_for_named_helpers(hass, plan, ai.helpers_named(hass, request), candidates, config_text)
     # [ADDED v3.40.0] A change starts from the devices the net already uses: they are ticked and,
     # when the search did not find them, added to the list, marked as the current ones.
-    preselect = ai.preselect(hass, plan, by_id.get(plan["target_net"], "")) if plan["target_net"] else {}
-    for rid, ids in preselect.items():
-        items = candidates.setdefault(rid, {"items": [], "exact": True})["items"]
-        listed = {i["entity_id"] for i in items}
-        for eid in reversed(ids):
-            if eid not in listed:
-                state = hass.states.get(eid)
-                items.insert(0, {"entity_id": eid, "name": state.name, "area": "",
-                                 "device_class": state.attributes.get("device_class") or "",
-                                 "state": state.state})
-        for item in items:
-            if item["entity_id"] in ids:
-                item["current"] = True
+    # [CHANGED v3.75.0] Before anything is hidden or proposed, and with the net's alarm clock in the roles of its days
+    # and its time: the net's own helpers are used - by the net itself - so a change of the user's NET 3 hid them and
+    # offered new ones.
+    preselect: dict[str, list[str]] = {}
+    own: set[str] = set()
+    if plan["target_net"]:
+        net_yaml = by_id.get(plan["target_net"], "")
+        own = ai.net_entities(hass, net_yaml)
+        preselect = ai.keep_net_alarm_clock(hass, plan, net_yaml)
+        taken = {e for ids in [*named.values(), *preselect.values()] for e in ids}
+        for rid, ids in ai.preselect(hass, plan, net_yaml, taken, set(named) | set(preselect)).items():
+            preselect.setdefault(rid, ids)
+        ai.offer_current(hass, candidates, preselect)
+        plan["new_helpers"] = [h for h in plan["new_helpers"] if h["role"] not in preselect]
+    # [ADDED v3.78.0] A helper the message names that this Home Assistant does not have, in a role no helper of the user's
+    # fills: proposed again under that name (the user's chat of 2026-11-01, after NET 3 was deleted with its helpers).
+    ai.roles_for_missing_helpers(plan, missing, candidates, set(named) | set(preselect))
+    ai.drop_used_helpers(hass, candidates, config_text, own | {e for ids in preselect.values() for e in ids})
+    # [CHANGED v3.74.0] With the helpers the message names: a schedule the user names gives way to the alarm clock when
+    # the days and the hours are set on the screen.
+    ai.helpers_for_open_roles(plan, candidates, named)
+    ai.dedupe_new_helpers(hass, plan, candidates, config_text)
+    ai.roles_for_named_nets(hass, plan, request, msg["nets"], by_id, candidates, on_canvas)
+    # [ADDED v3.60.0] Ticked at the start as well, after the loop above: a helper the user named is not "current".
+    for rid, ids in named.items():
+        preselect[rid] = preselect.get(rid, []) + [e for e in ids if e not in preselect.get(rid, [])]
+    # [ADDED v3.82.0] The local variables in one place: each can be made new, and a free helper that fits comes first.
+    ai.local_variables(hass, plan, candidates, preselect)
+    # [ADDED v3.64.0] The phones a message goes to, by LIBI, the named ones ticked; without a notify entity to offer,
+    # a phone role of the model's is optional and the services named are used as written.
+    phones = ai.phones_role(hass, plan, services, candidates) if services or plan["missing_services"] else None
+    if phones is None:
+        ai.optional_message_roles(plan, services)
+    elif phones:
+        preselect[ai.PHONES_ROLE] = phones
+    # [ADDED v3.83.0] Being at a place takes who and where; a message must have somewhere to go.
+    ai.presence_roles(hass, plan, candidates)
+    ai.message_phones(hass, plan, candidates)
+    # [ADDED v3.80.0] LIBI's own questions, after every role is known: an on/off switch for the whole automation, what to
+    # do when a device it switches is offline, a message when a battery runs low.
+    ai.safety_questions(hass, plan, candidates, preselect, by_id.get(plan["target_net"], "") if plan["target_net"] else "",
+                        config_text, own | {e for ids in preselect.values() for e in ids})
     connection.send_result(msg["id"], {"plan": plan, "candidates": candidates, "preselect": preselect})
 
 
@@ -1046,49 +1516,133 @@ async def ws_handle_ai_build(hass: HomeAssistant, connection: websocket_api.Acti
     # The plan comes back from the browser, so it is cleaned again rather than trusted.
     _canvas, by_id = ai.canvas_context(hass, msg["nets"])
     plan = ai.clean_plan(hass, msg["plan"], set(by_id))
+    messages = ai.clean_messages(msg["messages"])
+    # [ADDED v3.59.0] The same rule as for the plan, from the user's last message: the plan comes back from
+    # the browser, so its intent is not taken on trust either.
+    request = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    ai.only_named_changes(plan, request, msg["nets"])
     if plan["intent"] == "answer":
         connection.send_error(msg["id"], "invalid_format", "A question has nothing to build.")
         return
+    answers = {str(k)[:40]: str(v)[:200] for k, v in msg["answers"].items()}
+    # [ADDED v3.80.0] The on/off switch the user did not say yes to asks for no pick.
+    ai.drop_declined(plan, answers)
     selections, problems = ai.clean_selections(hass, plan, msg["selections"])
     if problems:
         connection.send_result(msg["id"], {"ok": False, "errors": problems})
         return
-    answers = {str(k)[:40]: str(v)[:200] for k, v in msg["answers"].items()}
-    messages = ai.clean_messages(msg["messages"])
-    context = ai.build_context(plan, selections, answers, hass, by_id.get(plan["target_net"], ""))
+    # [ADDED v3.75.0] A schedule that gave way to the alarm clock is not part of the logic, whatever the browser ticked:
+    # the user's choice (2026-10-31) is that it is no longer used, and ticked it started the user's NET 3 in place of
+    # the time set on the card.
+    for role in plan["roles"]:
+        if role.get("replaced"):
+            selections.pop(role["id"], None)
+    # [ADDED v3.54.0] An optional role nobody picked is not part of the logic.
+    plan["roles"] = [r for r in plan["roles"]
+                     if not r.get("replaced") and (r["id"] in selections or not r.get("optional"))]
+    # [ADDED v3.75.0] The alarm clock the user picked: its time starts the logic (requirement_report checks it).
+    alarm = ai.picked_alarm_clock(hass, plan, selections)
+    # [ADDED v3.80.0] What the user answered to LIBI's own questions: the switch, the devices offline, the batteries -
+    # which LIBI finds itself on the devices picked.
+    # [ADDED v3.62.0] Which of the message services the user named exist, from the user's own words.
+    services = ai.services_named(hass, [m["content"] for m in messages if m["role"] == "user"])
+    # [CHANGED v3.81.0] With the phones the user named, for the messages of the answers.
+    safety = ai.safety_answers(hass, plan, selections, answers, services[0])
+    context = ai.build_context(plan, selections, answers, hass, by_id.get(plan["target_net"], ""), services, safety)
     if msg["share"]:
         # The candidates are found again here rather than taken back from the browser.
-        candidates = {role["id"]: ai.find_candidates(hass, role) for role in plan["roles"]}
+        on_canvas = ai.canvas_entities(hass, msg["nets"], by_id)
+        # [CHANGED v3.80.0] A role LIBI filled itself lists only what LIBI put in it, not every battery of the house.
+        candidates = {role["id"]: ai.filled_candidates(hass, selections.get(role["id"]) or []) if role.get("filled")
+                      else ai.find_candidates(hass, role, on_canvas) for role in plan["roles"]}
         parts = [ai.candidates_context(hass, plan, candidates, selections), ai.helpers_context(hass)]
         context += "\n\n" + "\n\n".join(x for x in parts if x)
     messages.append({"role": "user", "content": context})
-    try:
-        raw = await ai.async_llm_json(hass, settings, ai.BUILD_SYSTEM, messages, ai.BUILD_SCHEMA)
-    except ai.AiError as err:
-        connection.send_error(msg["id"], "ai_error", str(err))
-        return
-    draft = await ai.async_build_draft(hass, plan, selections, raw)
     # [ADDED v3.40.0] A change keeps the automation's id, so saving it updates that automation
     # instead of adding a second one next to it.
     target = next((n for n in msg["nets"] if isinstance(n, dict) and str(n.get("id")) == plan["target_net"]), None)
-    if target and target.get("ha_id") and draft["level"] == "automation":
-        draft["auto"]["id"] = str(target["ha_id"])
+    # [CHANGED v3.62.0] An answer that does not hold - rejected by LIBI or by Home Assistant, not drawable, or
+    # changed by the ladder - goes back to the model with what is wrong and how to fix it, up to MAX_BUILD_TRIES
+    # answers in all (this replaces the one retry of v3.57.0). Every answer is checked the same way and the best
+    # is returned: one slip of the model no longer ends the build, and nothing unchecked is ever offered.
+    best, history = None, []
+    for attempt in range(1, ai.MAX_BUILD_TRIES + 1):
+        try:
+            raw = await ai.async_llm_json(hass, settings, ai.BUILD_SYSTEM, messages, ai.BUILD_SCHEMA)
+        except ai.AiError as err:
+            if best is None:
+                connection.send_error(msg["id"], "ai_error", str(err))
+                return
+            break
+        draft = await ai.async_build_draft(hass, plan, selections, raw)
+        if target and target.get("ha_id") and draft["level"] == "automation":
+            draft["auto"]["id"] = str(target["ha_id"])
+        drawn = _draw_draft(hass, draft)
+        # [ADDED v3.73.0] And every line of the user's request, checked in the logic: a draft that misses one goes back.
+        report = ai.requirement_report(plan, draft, drawn, raw, alarm, safety)
+        problems = ai.draft_problems(draft, drawn) + ai.requirement_problems(report)
+        history.append((attempt, problems))
+        rank = ai.draft_rank(draft, drawn, problems)
+        if best is None or rank <= best[4]:
+            best = (draft, drawn, problems, attempt, rank, report)
+        if not problems:
+            break
+        if attempt < ai.MAX_BUILD_TRIES:
+            messages += ai.repair_request(raw, problems, selections)
+    draft, drawn, problems, chosen, _rank, report = best
     result = {key: draft[key] for key in ("ok", "errors", "level", "yaml", "card_yaml",
                                            "sensitive", "reply", "notes")}
+    # [ADDED v3.80.0] A yes to one of LIBI's questions that could not be kept, said: no battery on the devices picked.
+    if safety["notes"]:
+        result["notes"] = list(result["notes"]) + safety["notes"]
+    # [ADDED v3.65.0] A branch the model kept inside another step, after every correction: the user is told.
+    if draft["ok"] and ai.nested_branches(draft["auto"].get("actions")):
+        result["notes"] = list(result["notes"]) + [
+            "Part of this logic is an if or a choose inside another step, so the ladder shows it as one block "
+            "instead of its elements."]
+    # [ADDED v3.72.0] A wait the model kept after every correction: the rungs after it read what it waited for.
+    if draft["ok"] and ai.waits_in(draft["auto"].get("actions")):
+        result["notes"] = list(result["notes"]) + [
+            "This logic waits inside a run, which a ladder does not do: the rungs after the wait read what it waited "
+            "for. Ask again for it the ladder way - a trigger with an id for every event, and a choose."]
+    # [ADDED v3.75.0] Two rungs of one trigger the model kept after every correction: Home Assistant runs only the first
+    # of them that holds, which is not what the ladder shows - so the chat does not save the draft on its own.
+    shared = ai.shared_options(draft["auto"].get("actions")) if draft["ok"] else []
+    if shared:
+        result["notes"] = list(result["notes"]) + [
+            f"Two rungs start with the same trigger ({', '.join(tid for tid, _numbers in shared)}): Home Assistant runs "
+            "only the first one that holds, so the second runs only when the first does not. Ask again for one rung "
+            "per trigger."]
+    result["shared_rungs"] = [tid for tid, _numbers in shared]
     result["intent"] = plan["intent"]
     result["target_net"] = plan["target_net"]
-    if draft["ok"]:
-        try:
-            net = yaml_to_ast(hass, draft["auto"])
-        except Exception as err:  # noqa: BLE001
-            result.update(ok=False, errors=[f"The draft could not be drawn: {ai._sanitize(err)}"])
-            connection.send_result(msg["id"], result)
-            return
+    # [ADDED v3.62.0] How many answers it took, and what the model corrected on the way to the one returned.
+    result["tries"] = len(history)
+    result["repaired"] = list(dict.fromkeys(p for n, found in history if n < chosen for p in found
+                                            if p not in problems))[:10]
+    if drawn.get("error"):
+        result.update(ok=False, errors=[drawn["error"]])
+    elif draft["ok"]:
+        net = drawn["net"]
         net["level"] = draft["level"]
         net["name"] = draft["auto"]["alias"]
         net["source"] = "draft"
         net["source_note"] = "Drafted by the AI chat. Review it, then SAVE & COMPILE to write it."
         result["net"] = net
-        report = verify_round_trip(hass, draft["auto"]) if draft["level"] == "automation" else {"ok": True}
-        result["round_trip"] = {"ok": bool(report.get("ok")), "issues": report.get("issues", [])[:10]}
+        result["round_trip"] = drawn["round_trip"]
+        # [ADDED v3.73.0] The request line by line: what LIBI saw in the logic, and the rung that does each line.
+        result["checklist"] = report
     connection.send_result(msg["id"], result)
+
+
+def _draw_draft(hass: HomeAssistant, draft: dict) -> dict:
+    """[ADDED v3.62.0] A draft that holds, drawn as a ladder net, and how well the ladder keeps it. Runs on the
+    event loop: the importer reads Home Assistant's registries (CLAUDE.md RULE 13)."""
+    if not draft["ok"]:
+        return {}
+    try:
+        net = yaml_to_ast(hass, draft["auto"])
+    except Exception as err:  # noqa: BLE001
+        return {"error": f"The draft could not be drawn: {ai._sanitize(err)}"}
+    report = verify_round_trip(hass, draft["auto"]) if draft["level"] == "automation" else {"ok": True}
+    return {"net": net, "round_trip": {"ok": bool(report.get("ok")), "issues": report.get("issues", [])[:10]}}

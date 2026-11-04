@@ -11,10 +11,10 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.40.0 | 2026-10-27] Purpose: Automation-level conditions go back under conditions: when every
-#   rung still carries them, so an automation with conditions and an if keeps its shape.
-# [ADDED v3.37.0 | 2026-10-26] Purpose: A template trigger is no longer written into the conditions, and a
-#   trigger id LIBI generated is written only when a condition refers to it.
+# [ADDED v3.76.0 | 2026-10-31] Purpose: CMP DAY is written by _day_condition: its days as a time condition, or the days
+#   an 8-bit helper holds as DAY_BITS_TEMPLATE. An edited CMP DAY no longer gets the entity_id "weekday" patched in.
+# [ADDED v3.85.0 | 2026-11-04] Purpose: same_config - two configs that mean the same, compared as the round trip
+#   compares them: Home Assistant's config API writes the current spelling of what it saves (trigger is triggers).
 # [ADDED v1.69.0] Output perfectly formed logic for standard triggers, retrieving native YAML dictionary if present via raw_trigger.
 # [ADDED v3.5.0 | 2026-08-24] Purpose: A net now carries a level. automation compiles to the
 #   automation schema exactly as before, script compiles to alias plus sequence, and scene
@@ -31,9 +31,11 @@ import logging
 import re
 
 from .yaml_to_libi import (
+    DAY_BITS_DOMAINS, day_bits_template,
+    COMPARED_DOMAINS, norm_entity,
     norm_service, norm_kind, domain_of, short,
     element_sig, EVENT_TRIGGER_KEYS, target_spec,
-    hms_to_seconds, yaml_to_ast,
+    hms_to_seconds, yaml_to_ast, repeat_loop, for_to_hms, duration_label, wait_parts,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -90,11 +92,15 @@ def _without_triggers(rungs):
 
 def _is_condition(el):
     t = el.get("type", "")
+    if el.get("waitFor"):
+        return False  # [ADDED v3.68.0] a wait is a step, drawn with the blocks of what it waits for
     if el.get("tplId") or el.get("timeId"):
         # every piece of a decomposed template or time window gates the rung, including its MATH block
         return True
     if t in ("parallel",):
-        return all(_is_condition(x) for b in el.get("branches", []) for x in b) and \
+        # [CHANGED v3.72.0] The TON of a for is part of the check before it: an OR whose branch held one went to the
+        # actions and was written as a parallel.
+        return all(_is_condition(x) or _is_for_timer(x) for b in el.get("branches", []) for x in b) and \
                any(x for b in el.get("branches", []) for x in b)
     if t == "wait":
         return False
@@ -260,6 +266,29 @@ def _patch(raw, updates, target_kind=""):
 # TRIGGERS
 # ==========================================================================================
 
+def _clock_trigger(el, raw):
+    """[ADDED v3.70.0] CMP DATETIME as a trigger. Against a schedule it is a state trigger, to on for cmp_eq and to
+    off for cmp_ne; against a date and time helper (input_datetime, a timestamp sensor) a time trigger at it. An
+    edited node of the same kind keeps every key the block does not draw (for, enabled, variables, a second
+    entity while the first is still the one shown)."""
+    val = clean_target(el.get("sourceB"))
+    raw = raw if isinstance(raw, dict) else {}
+    if domain_of(val) in COMPARED_DOMAINS:
+        to = "off" if el.get("type") == "cmp_ne" else "on"
+        if norm_kind(raw) != "state":
+            return {"trigger": "state", "entity_id": val, "to": to}
+        out = dict(raw) if clean_target(norm_entity(raw)) == val else _patch(raw, {"entity_id": val})
+        out["to"] = to
+        if str(out.get("from", "")).lower() == to:
+            out.pop("from")  # from on to on never happens: the block was turned from = into the other one
+        return out
+    if norm_kind(raw) != "time":
+        return {"trigger": "time", "at": val}
+    out = dict(raw)
+    out["at"] = val
+    return out
+
+
 def _element_to_trigger(el, trig_id):
     # [ADDED v3.33.0] A group LIBI understood but did not invent goes back untouched. Editing the
     # members of one is not offered, so there is nothing here that could quietly rewrite it.
@@ -272,6 +301,13 @@ def _element_to_trigger(el, trig_id):
 
     if _untouched(el) and (norm_kind(raw) or "platform" in raw or "trigger" in raw):
         out = dict(raw)
+        if trig_id:
+            out["id"] = trig_id
+        return out
+
+    # [ADDED v3.70.0] CMP DATETIME, edited or drawn new: the clock against a schedule or a date and time helper.
+    if t in ("cmp_eq", "cmp_ne") and str(el.get("sourceA")) == "datetime":
+        out = _clock_trigger(el, raw)
         if trig_id:
             out["id"] = trig_id
         return out
@@ -378,6 +414,19 @@ def _trigger_key(el):
 # CONDITIONS
 # ==========================================================================================
 
+def _clock_condition(el, raw):
+    """[ADDED v3.70.0] CMP DATETIME against a schedule as a condition: the schedule is on for cmp_eq and off for
+    cmp_ne. An edited state condition keeps every key the block does not draw; any other node (the not of an
+    imported schedule) becomes the state condition the block says."""
+    val = clean_target(el.get("sourceB"))
+    state = "off" if el.get("type") == "cmp_ne" else "on"
+    if not (isinstance(raw, dict) and str(raw.get("condition", "")).lower() == "state"):
+        return {"condition": "state", "entity_id": val, "state": state}
+    out = dict(raw) if clean_target(norm_entity(raw)) == val else _patch(raw, {"entity_id": val})
+    out["state"] = state
+    return out
+
+
 def _element_to_condition(el):
     t = el.get("type", "")
     raw = el.get("raw")
@@ -398,6 +447,16 @@ def _element_to_condition(el):
 
     if _untouched(el) and isinstance(raw, dict) and raw.get("condition"):
         return dict(raw)
+
+    # [ADDED v3.70.0] CMP DATETIME against a schedule, edited or drawn new.
+    if t in ("cmp_eq", "cmp_ne") and str(el.get("sourceA")) == "datetime" and \
+            domain_of(clean_target(el.get("sourceB"))) in COMPARED_DOMAINS:
+        return _clock_condition(el, raw)
+
+    # [ADDED v3.76.0] CMP DAY, edited or drawn new: its days, or the days an 8-bit helper holds. Patched from its raw
+    # node like the others, an edited one got the entity_id "weekday" written into its time condition.
+    if t == "cmp_eq" and str(el.get("sourceA")) == "weekday":
+        return _day_condition(el.get("sourceB"), raw)
 
     if isinstance(raw, dict) and raw.get("condition"):
         out = dict(raw)
@@ -435,8 +494,6 @@ def _element_to_condition(el):
 
     if t.startswith("contact_"):
         return {"condition": "state", "entity_id": ent, "state": "off" if t in ("contact_nc", "contact_n") else "on"}
-    if t == "cmp_eq" and str(ent) == "weekday":
-        return {"condition": "time", "weekday": [d.strip() for d in str(val or "").split(",") if d.strip()]}
     if t == "cmp_eq":
         if domain_of(val) == "zone" or str(val).startswith("zone."):
             return {"condition": "zone", "entity_id": ent, "zone": val}
@@ -613,9 +670,87 @@ def _math_action(el):
     return {"action": svc, "target": {"entity_id": target}, "data": {"value": expr}}
 
 
+_LOOP_KEYS = ("count", "for_each", "while", "until")
+
+
+def _repeat_node(el):
+    """[ADDED v3.57.0] A repeat goes back from its original node: keys the block does not show
+    (continue_on_error, enabled, alias) are kept, and so is the loop itself while the block still shows
+    what the import drew - a while template is shown shortened, and writing that back broke it. Only an
+    edited loop is built from the block. The sequence always comes from the blocks inside."""
+    raw = el.get("raw") if isinstance(el.get("raw"), dict) else {}
+    given = raw.get("repeat") if isinstance(raw.get("repeat"), dict) else {}
+    out = {k: v for k, v in raw.items() if k != "repeat"}
+    rep = {k: v for k, v in given.items() if k not in _LOOP_KEYS and k != "sequence"}
+    loop = el.get("loopType", "count")
+    val = el.get("value", "1")
+    if given and (loop, str(val)) == repeat_loop(given) and loop in given:
+        rep[loop] = given[loop]
+    elif loop == "count":
+        try:
+            rep["count"] = int(val)
+        except (TypeError, ValueError):
+            rep["count"] = val
+    elif loop == "for_each":
+        rep["for_each"] = [x.strip() for x in str(val).split(",")]
+    elif loop == "while":
+        rep["while"] = [{"condition": "template", "value_template": val}]
+    elif loop == "until":
+        rep["until"] = [{"condition": "template", "value_template": val}]
+    rep["sequence"] = _elements_to_actions(el.get("sequence", []) or [])
+    out["repeat"] = rep
+    return out
+
+
+def _wait_untouched(el):
+    """[ADDED v3.68.0] Every block of the wait is the one the importer drew, unchanged, and none was added or
+    taken away."""
+    parts = wait_parts(el)
+    if [len(b) for b in parts] != el.get("waitShape"):
+        return False
+    return all(x.get("sig") and _group_untouched([x]) for b in parts for x in b)
+
+
+def _wait_node(el):
+    """[ADDED v3.68.0] A wait drawn with the blocks it waits for goes back as the wait_for_trigger it came from.
+    Untouched, the node is written as it is. Edited, each block is written as its trigger and the TON as the
+    time limit, and every other key of the node stays (continue_on_timeout, alias, enabled, ...). A branch that
+    holds anything but one contact, one CMP or the TON has no wait_for_trigger form: the panel marks it red,
+    and here the node is kept as it was rather than guessed at."""
+    node = el["waitFor"]
+    if _wait_untouched(el):
+        return [dict(node)]
+    triggers, limit = [], None
+    for branch in wait_parts(el):
+        if not branch:
+            continue
+        kind = str(branch[0].get("type", ""))
+        if len(branch) > 1:
+            return [dict(node)]
+        if kind.startswith("timer_"):
+            limit = branch[0]
+        elif kind.startswith(("contact_", "cmp_")) or kind == "parallel":
+            triggers.append(_element_to_trigger(branch[0], None))
+        else:
+            return [dict(node)]
+    if not triggers and limit is None:
+        return []  # every block of the wait was taken off the rung, so there is no wait any more
+    out = dict(node)
+    one = len(triggers) == 1 and isinstance(node.get("wait_for_trigger"), dict)
+    out["wait_for_trigger"] = triggers[0] if one else triggers
+    if limit is None:
+        out.pop("timeout", None)
+    elif "timeout" not in node or limit.get("label") != duration_label(node["timeout"]):
+        out["timeout"] = limit.get("label")
+    return [out]
+
+
 def _element_to_actions(el):
     """Always returns a list. An element that carries an unmapped node returns it untouched."""
     t = el.get("type", "")
+
+    if isinstance(el.get("waitFor"), dict):
+        return _wait_node(el)
 
     if t == "move" and el.get("mode") == "both" and _untouched(el) and isinstance(el.get("raw2"), dict):
         return [dict(el["raw"]), dict(el["raw2"])]
@@ -633,25 +768,7 @@ def _element_to_actions(el):
         return [dict(raw)] if isinstance(raw, dict) else []
 
     if t == "repeat":
-        rep = {}
-        loop = el.get("loopType", "count")
-        val = el.get("value", "1")
-        if loop == "count":
-            try:
-                rep["count"] = int(val)
-            except (TypeError, ValueError):
-                rep["count"] = val
-        elif loop == "for_each":
-            rep["for_each"] = [x.strip() for x in str(val).split(",")]
-        elif loop == "while":
-            rep["while"] = [{"condition": "template", "value_template": val}]
-        elif loop == "until":
-            rep["until"] = [{"condition": "template", "value_template": val}]
-        seq = []
-        for child in el.get("sequence", []) or []:
-            seq.extend(_element_to_actions(child))
-        rep["sequence"] = seq
-        return [{"repeat": rep}]
+        return [_repeat_node(el)]
 
     if t == "parallel":
         if _is_condition(el):
@@ -660,9 +777,7 @@ def _element_to_actions(el):
         branches = []
         shapes = el.get("branchWrapped") or []
         for idx, b in enumerate(el.get("branches", [])):
-            seq = []
-            for child in b:
-                seq.extend(_element_to_actions(child))
+            seq = _elements_to_actions(b)
             if not seq:
                 continue
             wrap = shapes[idx] if idx < len(shapes) else (len(seq) > 1)
@@ -674,7 +789,7 @@ def _element_to_actions(el):
     if t == "timer_toff":
         return [{"delay": el.get("label", "00:00:01")}]
 
-    if t == "wait":
+    if t == "wait":  # legacy drawings only, a wait is drawn with the blocks it waits for since v3.68.0
         return [{"wait_for_trigger": [{"trigger": "state", "entity_id": el.get("label", "")}]}]
 
     if t == "move":
@@ -751,6 +866,8 @@ def _split_rung(elements):
 
 
 def _group_key(el):
+    if el.get("waitFor"):
+        return None  # [ADDED v3.68.0] a wait is one step, even when the block that stands for it is a template's
     return el.get("tplId") or el.get("timeId")
 
 
@@ -836,8 +953,23 @@ def _collect_math(elements, math_map):
                 _collect_math(b, math_map)
 
 
+def _day_condition(val, raw=None):
+    """[ADDED v3.76.0] A CMP DAY as Home Assistant takes it: the days it holds as a time condition (its raw node kept,
+    the weekday replaced), or the days an 8-bit helper holds as DAY_BITS_TEMPLATE."""
+    raw = raw if isinstance(raw, dict) else {}
+    helper = clean_target(val)
+    if domain_of(helper) in DAY_BITS_DOMAINS:
+        out = dict(raw) if raw.get("condition") == "template" else {"condition": "template"}
+        out["value_template"] = day_bits_template(helper)
+        return out
+    out = dict(raw) if raw.get("condition") == "time" else {"condition": "time"}
+    out["weekday"] = [d.strip() for d in str(val or "").split(",") if d.strip()]
+    return out
+
+
 def _time_condition(span):
     out = {"condition": "time"}
+    bits = []
     for el in span:
         t = el.get("type")
         if t == "cmp_rng":
@@ -848,9 +980,16 @@ def _time_condition(span):
         elif t in ("cmp_le", "cmp_lt"):
             out["before"] = el.get("sourceB")
         elif t == "cmp_eq" and str(el.get("sourceA")) == "weekday":
+            # [CHANGED v3.76.0] The days of an 8-bit helper are no weekday of a time condition: a template of their own.
+            if domain_of(clean_target(el.get("sourceB"))) in DAY_BITS_DOMAINS:
+                bits.append(_day_condition(el.get("sourceB")))
+                continue
             days = str(el.get("sourceB") or "")
             out["weekday"] = [d.strip() for d in days.split(",") if d.strip()]
-    return out
+    if not bits:
+        return out
+    parts = ([out] if len(out) > 1 else []) + bits
+    return parts[0] if len(parts) == 1 else {"condition": "and", "conditions": parts}
 
 
 def _group_untouched(elements):
@@ -897,7 +1036,8 @@ def _is_for_timer(el):
 def _is_recent_timer(el):
     """[ADDED v3.33.0] An off delay timer drawn straight after a contact says that the contact only
     has to have been true lately, not right now."""
-    return el.get("type") == "timer_tof" and el.get("isRecent")
+    # [CHANGED v3.68.0] timer_toff, the TOF of the palette; timer_tof is its name in drawings before 3.68.0.
+    return el.get("type") in ("timer_toff", "timer_tof") and el.get("isRecent")
 
 
 def _recent_after(head, index):
@@ -926,13 +1066,19 @@ def _recent_condition(el, seconds):
     }
 
 
+def _timer_for(timer):
+    """[ADDED v3.72.0] The for that the on delay timer of a for says. [ADDED v3.58.0] Untouched, it goes back as the
+    user wrote it, template and all; edited, as its new time."""
+    if "forValue" in timer and timer.get("label") == for_to_hms(timer["forValue"]):
+        return copy.deepcopy(timer["forValue"])
+    return hms_to_for(timer.get("label"))
+
+
 def _for_after(head, index):
     """[ADDED v3.27.0] The on delay timer drawn straight after the element at this position, which is
     that condition's for. A timer with no marker is an ordinary delay and is not one of these."""
     nxt = head[index + 1] if index + 1 < len(head) else None
-    if nxt and _is_for_timer(nxt):
-        return hms_to_for(nxt.get("label"))
-    return None
+    return _timer_for(nxt) if nxt and _is_for_timer(nxt) else None
 
 
 def _rung_conditions(head, trig_ids, use_trigger_refs, skip_base=False):
@@ -1027,7 +1173,8 @@ def _rung_conditions(head, trig_ids, use_trigger_refs, skip_base=False):
 def _all_triggers(el):
     if el.get("type") != "parallel":
         return False
-    return all(x.get("isTrigger") or _all_triggers(x) for b in el.get("branches", []) for x in b)
+    # [CHANGED v3.72.0] The TON of a trigger's for belongs to that trigger.
+    return all(x.get("isTrigger") or _is_for_timer(x) or _all_triggers(x) for b in el.get("branches", []) for x in b)
 
 
 def _head_trigger_keys(head):
@@ -1041,57 +1188,124 @@ def _head_trigger_keys(head):
     return keys
 
 
-def _rung_actions(body):
-    out = []
-    for key, span in _spans(body):
-        if key:
-            root = span[0]
-            raw = root.get("raw")
-            if isinstance(raw, dict) and "wait_template" in raw and _group_untouched(span):
-                out.append(dict(raw))
-                continue
-            cond = _group_condition(span)
-            if cond:
-                if isinstance(raw, dict) and "wait_template" in raw:
-                    out.append({"wait_template": cond.get("value_template", "")})
-                else:
-                    out.append(cond)
+def _variables_src(el):
+    """[ADDED v3.57.0] Where a MOVE block drawn from a variables step came from, or None. The importer draws
+    one block per value, and every block carries the whole step as raw."""
+    raw = el.get("raw")
+    if el.get("type") == "move" and el.get("service") == "variables" and isinstance(raw, dict)             and isinstance(raw.get("variables"), dict):
+        return el.get("src") or id(el)
+    return None
+
+
+def _variables_step(run):
+    """[ADDED v3.57.0] The blocks of one variables step become that step again: an untouched value keeps its
+    original text (the block shows it shortened), an edited one is written as drawn, a deleted one is gone."""
+    raw = run[0]["raw"]
+    given = raw["variables"]
+    values = {}
+    for el in run:
+        name = str(el.get("target") or "").strip()
+        if not name:
             continue
-        out.extend(_element_to_actions(span[0]))
+        value = el.get("source", "")
+        values[name] = given[name] if name in given and value == short(given[name], 60) else value
+    return {**raw, "variables": values}
+
+
+def _elements_to_actions(elements):
+    """[ADDED v3.57.0] Actions for consecutive elements; the blocks of one variables step are joined."""
+    out = []
+    i = 0
+    while i < len(elements):
+        el = elements[i]
+        key = _variables_src(el)
+        j = i + 1
+        if key is None:
+            out.extend(_element_to_actions(el))
+        else:
+            while j < len(elements) and _variables_src(elements[j]) == key and elements[j].get("raw") == el["raw"]:
+                j += 1
+            out.append(_variables_step(elements[i:j]))
+        i = j
     return out
 
 
+def _rung_actions(body):
+    out = []
+    plain = []
+    for key, span in _spans(body):
+        if not key:
+            plain.append(span[0])
+            continue
+        out.extend(_elements_to_actions(plain))
+        plain = []
+        root = span[0]
+        raw = root.get("raw")
+        if isinstance(raw, dict) and "wait_template" in raw and _group_untouched(span):
+            out.append(dict(raw))
+            continue
+        cond = _group_condition(span)
+        if cond:
+            if isinstance(raw, dict) and "wait_template" in raw:
+                out.append({"wait_template": cond.get("value_template", "")})
+            else:
+                out.append(cond)
+    out.extend(_elements_to_actions(plain))
+    return out
+
+
+_KEEP = object()  # [ADDED v3.72.0] the for of a trigger the importer drew no TON for: as it is
+FOR_TRIGGERS = ("state", "numeric_state", "template", "device")  # the trigger kinds that have a for
+
+
+def _trigger_for(el, nxt):
+    """[ADDED v3.72.0] The for that the TON right after a trigger says (forTimer: the importer drew it there): as
+    written while it is unchanged, its new time when edited, None when it was taken away. _KEEP without forTimer."""
+    if not el.get("forTimer"):
+        return _KEEP
+    return _timer_for(nxt) if nxt and _is_for_timer(nxt) else None
+
+
 def _collect_triggers(net):
-    """One entry per distinct trigger, in the order they appear."""
+    """One entry per distinct trigger, in the order they appear.
+    [CHANGED v3.72.0] With the for of the TON drawn right after it."""
     order = []
     seen = {}
+    held = {}
     for rung in net.get("rungs", []):
-        for el in _walk(rung.get("elements", [])):
+        for el, nxt in _walk_pairs(rung.get("elements", [])):
             if el.get("isTrigger"):
                 key = _trigger_key(el)
                 if key not in seen:
                     seen[key] = el
                     order.append(key)
+                    held[key] = _trigger_for(el, nxt)
     trig_ids = {}
     triggers = []
     for i, key in enumerate(order):
         el = seen[key]
         tid = el.get("trigId") or f"t{i + 1}"
         trig_ids[key] = tid
-        triggers.append(_element_to_trigger(el, tid))
+        out = _element_to_trigger(el, tid)
+        if held[key] is not _KEEP:
+            out = dict(out)
+            if held[key] and norm_kind(out) in FOR_TRIGGERS:
+                out["for"] = held[key]
+            else:
+                out.pop("for", None)  # taken away, or a kind of trigger with no for (a time, a sun)
+        triggers.append(out)
     return triggers, trig_ids
 
 
-def _walk(elements):
-    for el in elements:
-        yield el
+def _walk_pairs(elements):
+    """[CHANGED v3.72.0] Every element, with the one right after it in the same series (None at the end)."""
+    for i, el in enumerate(elements or []):
+        yield el, (elements[i + 1] if i + 1 < len(elements) else None)
         if el.get("type") == "parallel":
             for b in el.get("branches", []):
-                for x in _walk(b):
-                    yield x
+                yield from _walk_pairs(b)
         elif el.get("type") == "repeat":
-            for x in _walk(el.get("sequence", []) or []):
-                yield x
+            yield from _walk_pairs(el.get("sequence", []) or [])
 
 
 def _path_steps(path):
@@ -1146,12 +1360,55 @@ def _merge_pair(upper, lower, up_path, lo_path):
     return True
 
 
+def trigger_head(rung):
+    """[ADDED v3.71.0] The trigger block a rung starts with - a trigger, or an OR of triggers - or None."""
+    els = (rung or {}).get("elements") or []
+    first = els[0] if els else None
+    if not isinstance(first, dict):
+        return None
+    if first.get("isTrigger"):
+        return first
+    branches = first.get("branches") or [] if first.get("type") == "parallel" else []
+    return first if branches and all(b and isinstance(b[0], dict) and b[0].get("isTrigger") for b in branches) else None
+
+
+def hangs(rung):
+    """[ADDED v3.71.0] A rung drawn below the trigger of the rung above it: it has no trigger of its own."""
+    return bool((rung or {}).get("sharesHead")) and trigger_head(rung) is None
+
+
+def head_unit(rung):
+    """[ADDED v3.72.0] The blocks of a rung's trigger head: the trigger, and the TON of its for when one follows it.
+    [] when the rung starts with no trigger."""
+    if trigger_head(rung) is None:
+        return []
+    els = rung.get("elements") or []
+    return els[:2] if len(els) > 1 and _is_for_timer(els[1]) else els[:1]
+
+
+def expand_shared_heads(rungs):
+    """[ADDED v3.71.0] Every rung that hangs from a trigger, with that trigger - the one of the nearest rung above that
+    does not hang - drawn on it again, which is how each rung looked before the trigger was drawn once. A rung with
+    no trigger above it gets none; the panel marks it red. The rungs given are never changed.
+    [CHANGED v3.72.0] The whole head: the trigger and the TON of its for."""
+    out, head = [], []
+    for rung in rungs:
+        if hangs(rung):
+            if head:
+                rung = dict(rung, elements=copy.deepcopy(head) + list(rung.get("elements") or []))
+        else:
+            head = head_unit(rung)
+        out.append(rung)
+    return out
+
+
 def merge_linked_rungs(net):
     """Returns the rung list the compiler should read: every group of linked rungs collapsed into the
-    single circuit they draw. The stored net is never touched."""
+    single circuit they draw. The stored net is never touched.
+    [CHANGED v3.71.0] And every rung that hangs from the trigger above it given that trigger again."""
     links = net.get("links") or []
     if not links:
-        return net.get("rungs", []) or []
+        return expand_shared_heads(net.get("rungs", []) or [])
 
     rungs = copy.deepcopy(net.get("rungs", []) or [])
     by_id = {r.get("id"): r for r in rungs}
@@ -1174,7 +1431,7 @@ def merge_linked_rungs(net):
                 by_id[upper_id]["comment"] += ", or " + by_id[lower_id]["comment"]
             absorbed.add(lower_id)
 
-    return [r for r in rungs if r.get("id") not in absorbed or (r.get("elements") or [])]
+    return expand_shared_heads([r for r in rungs if r.get("id") not in absorbed or (r.get("elements") or [])])
 
 
 def _group_rungs(rungs):
@@ -1259,7 +1516,7 @@ def _rungs_to_actions(rungs, groups, trig_ids, skip_base=False):
             head, body = _split_rung(rung.get("elements", []))
             conds = _rung_conditions(head, trig_ids, use_trigger_refs=True, skip_base=skip_base)
             seq = _rung_actions(body)
-            only_triggers = all(el.get("isTrigger") or _all_triggers(el) for el in head) if head else True
+            only_triggers = all(el.get("isTrigger") or _all_triggers(el) or _is_for_timer(el) for el in head) if head else True
             covers_all = only_triggers and len(_head_trigger_keys(head)) >= len(trig_ids)
             if conds and not covers_all:
                 actions.append({"if": conds, "then": seq})
@@ -1493,6 +1750,13 @@ def _canon(node):
     if isinstance(node, (int, float)):
         return str(node)
     return node
+
+
+def same_config(a, b) -> bool:
+    """[ADDED v3.85.0] Two configs that mean the same, compared as the round trip compares them (_canon): trigger or
+    triggers, service or action, an empty key or none. Home Assistant's config API writes the current spelling of an
+    entry it saves, so what LIBI sent and what the file holds then are one entry spelled two ways."""
+    return _canon(a) == _canon(b)
 
 
 def verify_round_trip(hass, automation_dict):
