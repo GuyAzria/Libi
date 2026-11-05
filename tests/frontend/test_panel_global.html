@@ -1,0 +1,287 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-05] Purpose: LIBI Global, the tab next to Variables (the user's choice, 2026-11-05): the
+  recipients of messages, each the phones ticked for it. A MOVE NOTIFY / TTS block sends to a recipient picked in Send to
+  and shows its name; one that is gone is red. In the tab a recipient is made, its phones changed, and it is deleted - each
+  as SAVE & COMPILE saves: libi/global_plan, Home Assistant's config API, libi/global_done - and what Home Assistant
+  refused, or what did not change, is said. Names from the user's files are text, never HTML.
+  [ADDED v1.1.0 | 2026-11-05] Purpose: The tab is a table - name, type, device, id - and a row or New opens one editor;
+  a save closes it and the table says so, a refusal keeps it open with why; a Save that cannot be pressed looks it.
+  [ADDED v1.2.0 | 2026-11-05] Purpose: After a save, LIBI asks to replace the phone with it where a NET of the page still
+  sends straight to that phone (LIBI 3.89.0; the whole of it is test_panel_global_move.html).
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi global test</title></head>
+<body style="margin:0; width:1400px; height:860px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { makeHass, makePanel, sleep, S23, S25, IPHONE } from './global_fixture.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+window.alert = () => {};
+let confirmAnswer = false;
+const asked = [];
+window.confirm = (text) => { asked.push(text); return confirmAnswer; };
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+try {
+  const { hass, sent, api, state } = makeHass();
+  const panel = await makePanel(hass);
+  const sr = panel.shadowRoot, core = panel.core;
+  const el = (eid) => core.nets[0].rungs[0].elements.find(x => x.id === eid);
+  const block = (eid) => sr.querySelector(`.libi-el[data-nid="n1"][data-eid="${eid}"]`);
+  const tgt = (eid) => block(eid).querySelector('.pin-val[data-prop="target"]');
+  const red = (eid) => tgt(eid).classList.contains('has-error');
+  const inspect = (eid) => {
+    panel._inspectedEl = { netId: 'n1', rungId: 'r1', elId: eid };
+    panel._render();
+    const select = sr.getElementById('inp_target');
+    return { select, groups: [...select.querySelectorAll('optgroup')], text: (cls) => (sr.querySelector('.' + cls) || {}).textContent || '',
+             open: sr.getElementById('notifyOpenGlobal') };
+  };
+  const card = (key) => [...sr.querySelectorAll('.glob-card')].find(c => c.getAttribute('data-key') === key);
+  const row = (key) => [...sr.querySelectorAll('.glob-row')].find(r => r.getAttribute('data-key') === key);
+  const cells = (key) => [...row(key).children].map(td => td.textContent.trim());
+  const tableSaid = () => (sr.querySelector('.glob-view > .glob-said') || {}).textContent || '';
+  const looksOff = (b) => b.disabled && parseFloat(getComputedStyle(b).opacity) < 0.6;
+  const tick = (key, svc) => [...card(key).querySelectorAll('.glob-tick')].find(t => t.getAttribute('data-svc') === svc);
+  const btn = (key, cls) => card(key).querySelector('.' + cls);
+  const said = (key) => (card(key).querySelector('.glob-said') || {}).textContent || '';
+  const wait = async (cond, ms = 2000) => { for (let i = 0; i < ms / 20 && !cond(); i++) await sleep(20); return cond(); };
+  const after = (n) => sent.slice(n).map(m => m.type).filter(t => t.startsWith('libi/global'));
+
+  // ---- LIBI Global is read with the panel
+  check('LIBI Global is read when the panel starts', sent.some(m => m.type === 'libi/global') && core.recipients.length === 2,
+        JSON.stringify(core.recipients));
+  const tab = sr.getElementById('varsTabGlobal');
+  check('the bar has a Global tab next to Variables, with the number of recipients', !!tab
+        && tab.previousElementSibling && tab.previousElementSibling.id === 'varsTabSearch' && tab.querySelector('.n').textContent === '2',
+        tab && tab.outerHTML);
+
+  // ---- On the ladder: a recipient by its name; one that is gone is red
+  check('a block that sends to a recipient shows its name, not its script', tgt('e1').textContent === 'Guy' && !red('e1'), tgt('e1').outerHTML);
+  check('a recipient that is no longer there is red', red('e2'), tgt('e2').outerHTML);
+  check('a recipient with a phone gone is not red: it is said in the Inspector', !red('e3'));
+
+  // ---- Send to: the recipients first
+  let ui = inspect('e1');
+  check('Send to lists LIBI Global first', ui.groups[0] && ui.groups[0].label === 'Global'
+        && [...ui.groups[0].children].map(o => o.value).join('|') === 'script.libi_send_to_guy|script.libi_send_to_old',
+        ui.groups.map(g => g.label).join('|'));
+  check('a recipient says how many phones it sends to', ui.groups[0].children[0].textContent === 'Guy · 1 phone', ui.groups[0].children[0].textContent);
+  check('the recipient it sends to is chosen, with its script and its phones by name', ui.select.value === 'script.libi_send_to_guy'
+        && ui.text('notify-target-action') === 'Global recipient: script.libi_send_to_guy'
+        && ui.text('notify-target-phones') === 'Sends to S23 guy. Change its phones in Global.', ui.text('notify-target-phones'));
+  check('the recipient\'s name in the list is text', !ui.select.querySelector('img') && window.__x === undefined
+        && ui.groups[0].children[1].textContent.startsWith('"><img src=x'));
+  ui.select.value = S25; ui.select.dispatchEvent(new Event('change'));
+  check('a phone can still be chosen', el('e1').target === S25);
+  ui = inspect('e1');
+  ui.select.value = 'script.libi_send_to_old'; ui.select.dispatchEvent(new Event('change'));
+  ui = inspect('e1');
+  check('a recipient whose phone is gone says so', el('e1').target === 'script.libi_send_to_old'
+        && ui.text('notify-target-note').includes('notify.mobile_app_mi_9t_pro'), ui.text('notify-target-note'));
+  ui = inspect('e2');
+  check('the Inspector of a recipient that is gone says so', ui.text('notify-target-warn').startsWith('script.libi_send_to_gone is a recipient of LIBI Global that is no longer there'),
+        ui.text('notify-target-warn'));
+  el('e1').target = 'script.libi_send_to_guy';
+  ui = inspect('e1');
+  let n = sent.length;
+  ui.open.click();
+  await wait(() => sent.length > n);
+  await sleep(30);
+  check('Open Global reads it again and opens the editor of the one the block sends to', panel._varsTab === 'global' && panel._varsOpen
+        && after(n).join() === 'libi/global' && !!card('libi_send_to_guy') && sr.querySelectorAll('.glob-card').length === 1
+        && !sr.querySelector('.glob-table'), after(n).join());
+  btn('libi_send_to_guy', 'glob-cancel').click();
+  await sleep(20);
+  panel._inspectedEl = null; panel._render();
+
+  // ---- The tab is a table: name, type, device, id (the user's request, 2026-11-05)
+  check('the tab is a table, no editor open', !!sr.querySelector('.glob-table') && !sr.querySelector('.glob-card'));
+  check('its columns: name, type, device, id, used by', [...sr.querySelectorAll('.glob-table thead th')].map(th => th.textContent).join('|')
+        === 'Name|Type|Device|ID|Used by|', [...sr.querySelectorAll('.glob-table thead th')].map(th => th.textContent).join('|'));
+  check('a row each: the global variable, its type, its device by name and the device\'s id, who sends to it',
+        JSON.stringify(cells('libi_send_to_guy').slice(0, 5)) === JSON.stringify(['Guy', 'RECIPIENT', 'S23 guy', S23, '1']), JSON.stringify(cells('libi_send_to_guy')));
+  check('a name from the user\'s files is text, never HTML', !sr.querySelector('.glob-view img') && window.__x === undefined
+        && cells('libi_send_to_old')[0].startsWith('"><img src=x'), cells('libi_send_to_old')[0]);
+  check('one changed outside LIBI and one with a device gone are marked on their row', row('libi_send_to_old').querySelector('.glob-flag.warn')
+        && row('libi_send_to_old').querySelector('.glob-flag.err') && row('libi_send_to_old').querySelector('.glob-dev .gone'));
+
+  // ---- A row opens it
+  row('libi_send_to_guy').click();
+  await sleep(20);
+  check('a row opens its editor, alone', !!card('libi_send_to_guy') && !sr.querySelector('.glob-table') && panel._global.editing === 'libi_send_to_guy');
+  check('its phones are ticked; two phones sharing one action cannot be', tick('libi_send_to_guy', S23).checked && !tick('libi_send_to_guy', S25).checked
+        && [...card('libi_send_to_guy').querySelectorAll('.glob-tick[disabled]')].length === 2);
+  check('a phone that does not read aloud says so', [...card('libi_send_to_guy').querySelectorAll('.glob-phone')]
+        .find(c => c.textContent.includes('Guy iPhone')).textContent.includes('does not read aloud'));
+  check('who sends to it, and who still sends straight to its phone - the names as text', card('libi_send_to_guy').textContent.includes('Sent to by 1: Train reminder')
+        && [...card('libi_send_to_guy').querySelectorAll('.glob-uses b')].some(b => b.textContent === 'Smoke <b>alarm</b>'),
+        card('libi_send_to_guy').textContent);
+  check('nothing to save until something changes - and Save looks it', looksOff(btn('libi_send_to_guy', 'glob-save')),
+        getComputedStyle(btn('libi_send_to_guy', 'glob-save')).opacity);
+
+  // ---- Ticking and Cancel
+  tick('libi_send_to_guy', S25).click();
+  await sleep(20);
+  check('a phone ticked is a change to save', !btn('libi_send_to_guy', 'glob-save').disabled && card('libi_send_to_guy').classList.contains('dirty')
+        && tick('libi_send_to_guy', S25).checked && parseFloat(getComputedStyle(btn('libi_send_to_guy', 'glob-save')).opacity) === 1);
+  btn('libi_send_to_guy', 'glob-cancel').click();
+  await sleep(20);
+  check('Cancel closes it and drops the change', !!sr.querySelector('.glob-table') && !panel._global.drafts.libi_send_to_guy
+        && cells('libi_send_to_guy')[2] === 'S23 guy');
+
+  // ---- The user's case: Guy's phone is replaced
+  row('libi_send_to_guy').click(); await sleep(10);
+  tick('libi_send_to_guy', S25).click(); await sleep(10);
+  tick('libi_send_to_guy', S23).click(); await sleep(10);
+  n = sent.length;
+  const calls = api.length;
+  btn('libi_send_to_guy', 'glob-save').click();
+  await wait(() => after(n).length === 2 && !panel._global.busy);
+  await sleep(20);
+  const plan = sent.slice(n).find(m => m.type === 'libi/global_plan');
+  const done = sent.slice(n).find(m => m.type === 'libi/global_done');
+  check('saved as SAVE & COMPILE saves: plan, Home Assistant\'s config API, done', after(n).join() === 'libi/global_plan,libi/global_done'
+        && api.length === calls + 1 && api[calls].method === 'POST' && api[calls].path === 'config/script/config/libi_send_to_guy', JSON.stringify(api.slice(calls)));
+  check('the plan has the global variable, its name and only the phones ticked now', plan && plan.key === 'libi_send_to_guy' && plan.name === 'Guy'
+        && JSON.stringify(plan.phones) === JSON.stringify([S25]) && plan.remove === false, JSON.stringify(plan));
+  check('done names what was sent and when the save began', done && done.key === 'libi_send_to_guy' && done.op === 'upsert' && done.failure === null
+        && done.stamp === 'STAMP', JSON.stringify(done));
+  check('saved, the editor closes and the table says so, with the new device', !sr.querySelector('.glob-card') && !!sr.querySelector('.glob-table')
+        && tableSaid().startsWith('Saved.') && sr.querySelector('.glob-view > .glob-said.ok') && !panel._global.drafts.libi_send_to_guy
+        && JSON.stringify(cells('libi_send_to_guy').slice(2, 4)) === JSON.stringify(['SM-S938B', S25]), JSON.stringify(cells('libi_send_to_guy')));
+  const asks = () => [...sr.querySelectorAll('.gm-item:not(.off) .nm')].map(x => x.textContent).join();
+  check('then LIBI asks to replace the phone with Guy where a NET of the page sends straight to it', panel._modal === 'global_move'
+        && asks() === 'NET "Train" on this page', sr.querySelector('.gm-modal') ? sr.querySelector('.gm-modal').textContent : panel._modal);
+  n = sent.length;
+  sr.getElementById('gmCancel').click(); await sleep(20);
+  check('Not now closes it and changes nothing', !sr.querySelector('.gm-modal') && el('e4').target === S25 && sent.length === n
+        && api.length === calls + 1);
+
+  // ---- A name is needed
+  row('libi_send_to_guy').click(); await sleep(10);
+  check('opening another one clears what the table said', !tableSaid());
+  const name = card('libi_send_to_guy').querySelector('.glob-name');
+  name.value = '  '; name.dispatchEvent(new Event('input'));
+  check('no name, no save', btn('libi_send_to_guy', 'glob-save').disabled);
+  name.value = 'Guy S.'; name.dispatchEvent(new Event('input'));
+  check('a name typed is a change to save, and the box keeps its focus', !btn('libi_send_to_guy', 'glob-save').disabled
+        && card('libi_send_to_guy').querySelector('.glob-name') === name);
+
+  // ---- What does not hold is said, the editor stays open, and nothing is sent
+  state.plan = () => ({ ok: false, errors: ['There is already a recipient named Guy S..'], stamp: 'S' });
+  n = sent.length;
+  let before = api.length;
+  btn('libi_send_to_guy', 'glob-save').click();
+  await wait(() => !panel._global.busy && !!card('libi_send_to_guy') && said('libi_send_to_guy').startsWith('There is'));
+  check('a plan that does not hold is said in the editor, which stays open; nothing goes to Home Assistant', api.length === before
+        && after(n).join() === 'libi/global_plan' && card('libi_send_to_guy').querySelector('.glob-said.err')
+        && panel._global.drafts.libi_send_to_guy.name === 'Guy S.', said('libi_send_to_guy'));
+  state.plan = (m) => ({ ok: true, unchanged: true, key: m.key, stamp: 'S' });
+  btn('libi_send_to_guy', 'glob-save').click();
+  await wait(() => !panel._global.busy && tableSaid().startsWith('Nothing'));
+  check('nothing changed: nothing is sent, and the editor closes', api.length === before && !sr.querySelector('.glob-card')
+        && tableSaid() === 'Nothing changed, so nothing was sent.' && !panel._global.drafts.libi_send_to_guy, tableSaid());
+  check('and the replacement is offered again', panel._modal === 'global_move' && asks() === 'NET "Train" on this page');
+  sr.getElementById('gmCancel').click(); await sleep(20);
+  state.plan = null;
+  row('libi_send_to_guy').click(); await sleep(10);
+  card('libi_send_to_guy').querySelector('.glob-name').value = 'Guy S.';
+  card('libi_send_to_guy').querySelector('.glob-name').dispatchEvent(new Event('input'));
+  state.apiFails = { body: { message: 'Message malformed: refused' } };
+  n = sent.length;
+  btn('libi_send_to_guy', 'glob-save').click();
+  await wait(() => !panel._global.busy && !!card('libi_send_to_guy') && said('libi_send_to_guy').startsWith('Not saved'));
+  const refused = sent.slice(n).find(m => m.type === 'libi/global_done');
+  check('Home Assistant refusing it is said in the editor, and libi/global_done is told', refused && refused.failure
+        && refused.failure.message === 'Message malformed: refused'
+        && said('libi_send_to_guy') === 'Not saved: Home Assistant refused it: Message malformed: refused', said('libi_send_to_guy'));
+  btn('libi_send_to_guy', 'glob-cancel').click(); await sleep(20);
+
+  // ---- A new global variable
+  sr.getElementById('globAdd').click();
+  await sleep(20);
+  check('New opens an empty editor, its name box focused', !!card('+new') && !sr.querySelector('.glob-table')
+        && sr.activeElement === card('+new').querySelector('.glob-name') && !btn('+new', 'glob-del'));
+  const box = card('+new').querySelector('.glob-name');
+  box.value = 'Yulia'; box.dispatchEvent(new Event('input'));
+  check('a new one needs a phone', btn('+new', 'glob-save').disabled);
+  tick('+new', S25).click(); await sleep(10);
+  n = sent.length; before = api.length;
+  btn('+new', 'glob-save').click();
+  await wait(() => !panel._global.busy && !!sr.querySelector('.glob-table'));
+  const made = sent.slice(n).find(m => m.type === 'libi/global_plan');
+  check('a new one is planned with no key, saved under the key the plan gives, and is a row of the table', made && made.key === '' && made.name === 'Yulia'
+        && api[before] && api[before].path === 'config/script/config/libi_send_to_yulia' && !card('+new') && !!row('libi_send_to_yulia')
+        && tableSaid().startsWith('Saved.') && !panel._global.drafts['+new'], JSON.stringify(made));
+  check('Send to offers it at once', core.recipients.some(r => r.key === 'libi_send_to_yulia'));
+  check('a new one is asked about too: the NET sends straight to its phone', panel._modal === 'global_move' && asks() === 'NET "Train" on this page');
+  sr.getElementById('gmCancel').click(); await sleep(20);
+
+  // ---- Deleting
+  n = sent.length; before = api.length;
+  row('libi_send_to_guy').querySelector('.glob-row-del').click();
+  await sleep(20);
+  check('one a NET on this page sends to is not deleted, and nothing is asked or sent - said on the table', after(n).length === 0 && api.length === before
+        && asked.length === 0 && !!sr.querySelector('.glob-table') && tableSaid().includes('NET "Train" on this page sends to it'), tableSaid());
+  row('libi_send_to_old').click(); await sleep(10);
+  btn('libi_send_to_old', 'glob-del').click(); await sleep(20);
+  check('from its editor, the same is said in the editor', !!card('libi_send_to_old') && said('libi_send_to_old').includes('NET "Train" on this page sends to it')
+        && after(n).length === 0, said('libi_send_to_old'));
+  btn('libi_send_to_old', 'glob-cancel').click(); await sleep(10);
+  confirmAnswer = false;
+  row('libi_send_to_yulia').querySelector('.glob-row-del').click();
+  await sleep(20);
+  check('a delete is asked first; no is nothing', asked.length === 1 && asked[0].includes('Delete the global variable Yulia') && after(n).length === 0
+        && api.length === before, asked.join(' | '));
+  confirmAnswer = true;
+  row('libi_send_to_yulia').querySelector('.glob-row-del').click();
+  await wait(() => !panel._global.busy && !row('libi_send_to_yulia'));
+  const del = sent.slice(n).find(m => m.type === 'libi/global_plan');
+  check('yes deletes it through Home Assistant\'s config API', del && del.remove === true && del.key === 'libi_send_to_yulia'
+        && api[before] && api[before].method === 'DELETE' && api[before].path === 'config/script/config/libi_send_to_yulia', JSON.stringify(api.slice(before)));
+  check('and the table says so', tableSaid() === 'Deleted: Yulia.' && !!sr.querySelector('.glob-view > .glob-said.ok'), tableSaid());
+
+  // ---- Leaving the tab: a NET's title shows its variables (RULE 33a.1)
+  panel._selectNet('n1');
+  check('a NET chosen leaves Global for its variables', panel._varsTab === 'vars');
+
+  // ---- No recipient yet: Send to says what Global is for, with the way there
+  const all = state.recipients;
+  state.recipients = [];
+  await panel._loadGlobal();
+  ui = inspect('e4');
+  check('with no global variable yet, Send to says what Global is for and opens it', ui.text('notify-target-hint').startsWith('Global: make a global variable')
+        && !!ui.open && !ui.groups.some(g => g.label === 'Global'), ui.text('notify-target-hint'));
+  state.recipients = all;
+  await panel._loadGlobal();
+  ui = inspect('e4');
+  check('with recipients, a block that sends to a phone has no hint', !ui.text('notify-target-hint') && !ui.open);
+  panel._inspectedEl = null; panel._render();
+
+  // ---- LIBI Global not readable: nothing can be changed, and nothing is called gone
+  state.global = () => ({ ok: false, errors: ['scripts.yaml could not be read'], recipients: [], phones: [] });
+  await panel._openGlobal();
+  check('a scripts.yaml that cannot be read is said, and nothing can be added', sr.querySelector('.glob-view .glob-err').textContent.includes('scripts.yaml could not be read')
+        && sr.getElementById('globAdd').disabled && !sr.querySelector('.glob-card'));
+  check('then a recipient a block sends to is not called gone', !red('e2') && !red('e1'));
+  state.global = () => { const e = new Error('Unknown command.'); e.code = 'unknown_command'; throw e; };
+  await panel._openGlobal();
+  check('a Home Assistant still running the LIBI before says to restart it', sr.querySelector('.glob-view .glob-err').textContent.includes('Restart Home Assistant'));
+  state.global = null;
+  await panel._loadGlobal();
+  panel._render();
+  check('read again, all is back', core.recipients.length === 2 && panel._global.loaded && !red('e1'));
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

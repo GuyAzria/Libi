@@ -14,13 +14,13 @@
  */
 /**
  * LIBI Panel - AI chat
- * v3.85.0
+ * v3.87.0
  */
 //
-// [ADDED v3.84.0 | 2026-11-02] Purpose: The zone chosen on the dashboard card says what it is: a dropdown of the user's
-//   zones, "home" for the Home zone, and who must be there is in it when their state is the zone chosen.
 // [ADDED v3.85.0 | 2026-11-04] Purpose: Adding a NET says why it was not saved when the compile failed - SAVE & COMPILE
 //   compiles first and saves nothing then - and that Home Assistant wrote what was saved.
+// [ADDED v3.87.0 | 2026-11-04] Purpose: The lists show the name given in LIBI, as everywhere else in LIBI - a phone's too,
+//   given to either of its ids (_itemName).
 //
 // The AI chat under the Inspector: the user describes the logic, picks the devices from lists LIBI found
 // in Home Assistant (several per role), answers the questions, and gets a DRAFT net to add to the
@@ -432,13 +432,13 @@ export class LibiAiChat {
             if (!v.pick) select.appendChild(h('option', { value: '', text: 'Pick one' }));
             // The name and what it is, as a narrow phone shows them; the entity id of the one chosen is said under the list,
             // and that of a name two helpers share in the list itself.
-            const names = items.map(i => i.name || i.entity_id);
+            const names = items.map(i => this._itemName(i));
             for (const item of items) {
                 const elsewhere = this._pickedElsewhere(item.entity_id, role.id);
                 const tags = [item.named ? 'named' : '', item.exists ? 'free' : '', item.current ? 'current' : '',
                     item.created ? 'new' : '', item.on_canvas ? item.on_canvas.split(' · ')[0] : '',
                     elsewhere ? `chosen for ${elsewhere}` : ''].filter(Boolean);
-                const name = item.name || item.entity_id;
+                const name = this._itemName(item);
                 const twice = names.filter(n => n === name).length > 1;
                 select.appendChild(h('option', { value: item.entity_id, disabled: !!elsewhere,
                     text: `${name}${twice ? ` · ${item.entity_id}` : ''}${tags.length ? ` (${tags.join(', ')})` : ''}` }));
@@ -891,11 +891,19 @@ export class LibiAiChat {
         this._fillList(role, list, (this.filters[role.id] || '').toLowerCase());
     }
 
+    // [ADDED v3.87.0] The name given in LIBI, else Home Assistant's. Only the list shows it: the model gets Home
+    // Assistant's names, and the entity id is what is picked.
+    _itemName(item) {
+        const core = this.panel && this.panel.core;
+        const local = core && typeof core.localName === 'function' ? core.localName(item.entity_id) : '';
+        return local || item.name || item.entity_id;
+    }
+
     _fillList(role, list, filter) {
         const cand = this.candidates[role.id] || { items: [] };
         const sel = this.selections[role.id];
         for (const item of cand.items) {
-            const hay = `${item.name} ${item.entity_id} ${item.area}`.toLowerCase();
+            const hay = `${this._itemName(item)} ${item.name} ${item.entity_id} ${item.area}`.toLowerCase();
             if (filter && !hay.includes(filter)) continue;
             const cb = h('input', { type: 'checkbox', value: item.entity_id, checked: sel.has(item.entity_id),
                 onchange: e => {
@@ -904,7 +912,7 @@ export class LibiAiChat {
                 } });
             list.appendChild(h('label', { class: 'ai-item' }, cb,
                 h('span', { class: 'ai-item-text' },
-                    h('span', { class: 'ai-item-name', dir: 'auto' }, item.name || item.entity_id,
+                    h('span', { class: 'ai-item-name', dir: 'auto' }, this._itemName(item),
                         item.current ? h('span', { class: 'ai-current', text: 'current' }) : null,
                         item.exists ? h('span', { class: 'ai-current ai-on-canvas', text: 'exists', title: 'This helper already exists and nothing else uses it' }) : null,
                         // [ADDED v3.49.0] Used by a net on this page: "NET 1 · Valve garden".

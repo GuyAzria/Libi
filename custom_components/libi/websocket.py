@@ -11,13 +11,13 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.85.0 | 2026-11-04] Purpose: LIBI writes none of Home Assistant's files - the HACS review: SAVE & COMPILE is
-#   libi/compile_project (compile, check, plan; nothing written), the panel's calls to Home Assistant's config API, and
-#   libi/save_done (what reached Home Assistant is read back, recorded, and its reload waited for). An automation opened
-#   the first time is V1, the original as it was, and V2 its copy; deleting a NET asks what becomes of its entry.
-# [ADDED v3.86.0 | 2026-11-04] Purpose: Names in LIBI only (libi/local_names, libi/local_name_set): the name the user gives
-#   an entity in LIBI - one Home Assistant cannot rename, or by the user's choice - kept in config/libi/local_names.json
-#   and shown wherever LIBI shows the entity. Home Assistant is not changed.
+# [ADDED v3.88.0 | 2026-11-05] Purpose: LIBI Global (libi/global, libi/global_plan, libi/global_done): the recipients of
+#   messages, each a script that sends to the phones ticked for it, saved through Home Assistant's config API as a NET
+#   is. A phone replaced is changed there once, for every project. A NET cannot take a recipient's script key. A save's
+#   wait for the reload no longer takes the state Home Assistant writes between removing and adding an entity for failed.
+# [ADDED v3.89.0 | 2026-11-05] Purpose: libi/global_move_plan and libi/global_move_done - the automations and scripts that
+#   send straight to the phone of a recipient send through the recipient instead, those the user confirms, saved through
+#   Home Assistant's config API; one a NET of LIBI draws is not changed under its drawing.
 import asyncio
 import copy
 import json
@@ -33,14 +33,15 @@ import voluptuous as vol
 import yaml
 
 from homeassistant.components import websocket_api
-from homeassistant.const import STATE_UNAVAILABLE
+from homeassistant.const import ATTR_RESTORED, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util.file import write_utf8_file_atomic
 
-from . import ai
+from . import ai, recipients
+from .const import RECIPIENT_PREFIX
 from .libi_to_yaml import ast_to_yaml, verify_round_trip, net_level, same_config, slugify
-from .yaml_to_libi import yaml_to_ast
+from .yaml_to_libi import called_actions, yaml_to_ast
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -555,6 +556,11 @@ def _compile_nets(hass: HomeAssistant, nets: list) -> tuple[list[dict], list[str
             while key in scripts:
                 key, counter = f"{base}_{counter}", counter + 1
             scripts.add(key)
+            # [ADDED v3.88.0] The keys of LIBI Global's recipients are theirs: a NET saved there would replace one.
+            if key.startswith(RECIPIENT_PREFIX):
+                errors.append(f"{label}: as a script it would be {key}, a name kept for the recipients of LIBI Global - "
+                              "give the NET another name.")
+                continue
         else:
             key = str(compiled.get("id") or "")
             if not key:
@@ -874,6 +880,11 @@ async def _wait_for_reloads(hass: HomeAssistant, ops: list[dict], since: datetim
                     pending.discard(item)
                 continue
             state = hass.states.get(entity_id) if entity_id else None
+            # [CHANGED v3.88.0] Home Assistant removes a changed entry's entity and adds it again; in between, its
+            # registry entry writes "unavailable" with restored: true. That is the reload under way, not its failure:
+            # the second save of a recipient was reported as not accepted, though Home Assistant had saved it.
+            if state is not None and state.attributes.get(ATTR_RESTORED):
+                continue
             if state is not None and state.last_changed >= since:
                 pending.discard(item)
                 if state.state == STATE_UNAVAILABLE:
@@ -902,6 +913,8 @@ def async_register_websockets(hass: HomeAssistant) -> None:
         ws_handle_project_delete, ws_handle_preview_yaml, ws_handle_net_card,
         ws_handle_ai_status, ws_handle_ai_plan, ws_handle_ai_build,
         ws_handle_net_versions, ws_handle_net_helpers, ws_handle_local_names, ws_handle_local_name_set,
+        ws_handle_phones, ws_handle_global, ws_handle_global_plan, ws_handle_global_done,
+        ws_handle_global_move_plan, ws_handle_global_move_done,
     ):
         websocket_api.async_register_command(hass, handler)
     _LOGGER.debug("[libi] WebSocket commands registered")
@@ -951,6 +964,9 @@ async def ws_handle_compile_project(hass: HomeAssistant, connection: websocket_a
     await _originals_as_they_were(hass, slug, entries)
     plan = await hass.async_add_executor_job(_plan_save_sync, hass, slug, entries)
     for op in plan.get("upserts") or []:
+        # [ADDED v3.87.0] Home Assistant saves a notify action it does not have and fails only when it runs - the user's
+        # train reminder (2026-11-04). Checked on what is sent: an entry LIBI does not change is not stopped by one.
+        plan["errors"] += [f"{op['label']}: {p}" for p in ai.notify_action_problems(hass, op["domain"], op["config"])]
         problem = await ai.validate_with_home_assistant(hass, op["domain"], op["config"])
         if problem:
             plan["errors"].append(f"{op['label']}: Home Assistant does not accept it: {problem}")
@@ -1374,6 +1390,440 @@ async def ws_handle_local_name_set(hass: HomeAssistant, connection: websocket_ap
         connection.send_error(msg["id"], "read_failed", f"{LOCAL_NAMES_FILE} could not be read, so nothing was changed")
         return
     connection.send_result(msg["id"], {"names": names})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/phones",
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_phones(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.87.0] The phones the Companion app registered, each with the action that sends to it - the list the MOVE
+    NOTIFY / TTS block picks from (ai.phone_list). Home Assistant's memory only; nothing is written."""
+    connection.send_result(msg["id"], {"phones": ai.phone_list(hass)})
+
+
+# ---- [ADDED v3.88.0] LIBI Global: the recipients of messages (recipients.py) -----------------------------------------
+
+def _read_files_sync(hass: HomeAssistant) -> tuple[dict, list[str]]:
+    """[ADDED v3.88.0] automations.yaml, scripts.yaml and scenes.yaml as they are now, read under the lock."""
+    with _FILE_LOCK:
+        return _read_home_assistant_files(hass)
+
+
+def _owners_locked(hass: HomeAssistant) -> tuple[dict[tuple[str, str], dict], list[str]]:
+    """[ADDED v3.89.0] The project of LIBI's that saved each automation and script (its "owned"), and whether a NET of it
+    draws that entry: every one but an automation NET loaded from Home Assistant (ha_id), which is drawn again from its
+    automation each time the project opens. A drawn one is saved from its drawing, which would put a phone replaced in its
+    YAML back. With the projects that could not be read. Called with _FILE_LOCK held."""
+    out: dict[tuple[str, str], dict] = {}
+    unreadable: list[str] = []
+    directory = _get_projects_dir(hass)
+    # Not _list_projects_sync: it leaves out a project it cannot read, and here one is a reason to change nothing.
+    for fname in sorted(os.listdir(directory)) if os.path.isdir(directory) else []:
+        slug = fname[: -len(PROJECT_EXT)] if fname.endswith(PROJECT_EXT) else ""
+        if not valid_project_slug(slug):
+            continue
+        data = _read_project_sync(hass, slug)
+        if data is None:
+            unreadable.append(slug)
+            continue
+        linked = {str(n["ha_id"]) for n in data.get("nets") or []
+                  if isinstance(n, dict) and n.get("ha_id") and net_level(n) == "automation"}
+        owned = data.get("owned") if isinstance(data.get("owned"), dict) else {}
+        for domain, owned_key in _OWNED_KEYS.items():
+            for key in owned.get(owned_key) or []:
+                out[(domain, str(key))] = {"slug": slug, "name": str(data.get("name") or slug)[:60],
+                                           "drawn": not (domain == "automation" and str(key) in linked)}
+    return out, unreadable
+
+
+def _read_global_sync(hass: HomeAssistant) -> tuple[dict, list[str], dict, list[str]]:
+    """[ADDED v3.89.0] Home Assistant's files and who of LIBI's projects owns what in them, read together under the lock."""
+    with _FILE_LOCK:
+        files, errors = _read_home_assistant_files(hass)
+        owners, unreadable = _owners_locked(hass)
+    return files, errors, owners, unreadable
+
+
+def _entry_calls(files: dict) -> dict[str, list[dict]]:
+    """[ADDED v3.88.0] Who calls each action: every automation in automations.yaml and every script in scripts.yaml, by
+    the actions its steps call (called_actions), each named by its alias as the user knows it."""
+    out: dict[str, list[dict]] = {}
+
+    def add(domain: str, key: str, name: str, steps: Any) -> None:
+        for action in dict.fromkeys(called_actions(steps)):
+            out.setdefault(action, []).append({"domain": domain, "key": key, "name": name[:100]})
+
+    for item in files.get("automation") or []:
+        if isinstance(item, dict):
+            key = str(item.get("id") or "")
+            add("automation", key, str(item.get("alias") or key), item.get("actions", item.get("action")))
+    for key, item in (files.get("script") or {}).items():
+        if isinstance(item, dict):
+            add("script", str(key), str(item.get("alias") or key), item.get("sequence"))
+    return out
+
+
+def _projects_using_sync(hass: HomeAssistant, action: str) -> list[str]:
+    """[ADDED v3.88.0] The NETs of LIBI's projects that hold an action, saved to Home Assistant or not yet. The whole id:
+    script.libi_send_to_guy is not in a NET that sends to script.libi_send_to_guy_2."""
+    whole = re.compile(re.escape(action) + r"(?![a-z0-9_])")
+    found: list[str] = []
+    with _FILE_LOCK:
+        for entry in _list_projects_sync(hass):
+            data = _read_project_sync(hass, entry["slug"]) or {}
+            for net in data.get("nets") or []:
+                if isinstance(net, dict) and whole.search(json.dumps(net, ensure_ascii=False)):
+                    found.append(f'project {data.get("name") or entry["slug"]} ▸ NET "{str(net.get("name") or "")[:60]}"')
+    return found
+
+
+@callback
+def _move_why(hass: HomeAssistant, item: dict) -> str:
+    """[ADDED v3.89.0] Why nothing can be moved to a recipient, or '' when it can: it must send to one phone - an entry that
+    sends to one of several would send to all of them - exactly as LIBI writes it, and run in Home Assistant now."""
+    if item["edited"]:
+        return "it was changed outside LIBI - save it in LIBI Global first"
+    if item["missing"]:
+        return "its phone is no longer in Home Assistant"
+    if len(item["phones"]) != 1:
+        return (f"it sends to {len(item['phones'])} phones, and one that sends to one of them would then send to all of "
+                "them - change those by hand if that is what you want")
+    if not hass.services.has_service("script", item["key"]):
+        return "Home Assistant does not run its script yet - see Settings ▸ System ▸ Logs"
+    return ""
+
+
+@callback
+def _global_listing(hass: HomeAssistant, files: dict, owners: dict | None = None) -> dict:
+    """[ADDED v3.88.0] LIBI Global as it is now: each recipient in scripts.yaml with its phones - those Home Assistant no
+    longer has (missing) - the entries that send to it (used_by) and the ones that still send straight to one of its
+    phones (direct), to move to it; and the phones to tick (ai.phone_list).
+    [CHANGED v3.89.0] Each direct one with how many of its steps would move to the recipient (moves) and how many would
+    not (stays), the project of LIBI's that owns it (owner), and why it would not move (why); the recipient with why
+    nothing can move to it (move_why)."""
+    phones = ai.phone_list(hass)
+    calls = _entry_calls(files)
+    owners = owners or {}
+    out = []
+    for key, config in (files.get("script") or {}).items():
+        if not recipients.is_recipient_key(key) or not isinstance(config, dict):
+            continue
+        item = recipients.read_recipient(key, config)
+        item["missing"] = [s for s in item["phones"] if not hass.services.has_service("notify", s.split(".", 1)[1])]
+        item["used_by"] = [c for c in calls.get(item["action"], []) if c["key"] != key]
+        item["move_why"] = _move_why(hass, item)
+        direct: dict[tuple, dict] = {}
+        for service in item["phones"]:
+            for c in calls.get(service, []):
+                if c["domain"] == "script" and recipients.is_recipient_key(c["key"]):
+                    continue
+                direct.setdefault((c["domain"], c["key"]), dict(c, phones=[]))["phones"].append(service)
+        for d in direct.values():
+            d["owner"] = owners.get((d["domain"], d["key"]))
+            entry = _file_entry(files.get(d["domain"]), d["key"]) if d["key"] else None
+            d["moves"], d["stays"], d["why"] = 0, 0, item["move_why"]
+            if not item["move_why"] and isinstance(entry, dict):
+                _moved, d["moves"], d["stays"] = recipients.move_entry(d["domain"], entry, item["phones"][0],
+                                                                       item["action"])
+            if d["why"]:
+                continue
+            if not d["key"]:
+                d["why"] = "it has no id, so Home Assistant's editor cannot save it either"
+            elif d["owner"] and d["owner"]["drawn"]:
+                d["why"] = (f'a NET of LIBI project "{d["owner"]["name"]}" draws it: open that project, and replace it '
+                            "there")
+            elif not d["moves"]:
+                d["why"] = "it sends more to the phone than a message, a title and data - change it by hand"
+        item["direct"] = sorted(direct.values(), key=lambda c: (c["name"].lower(), c["key"]))
+        out.append(item)
+    out.sort(key=lambda r: (r["name"].casefold(), r["key"]))
+    return {"recipients": out, "phones": phones}
+
+
+async def _global_state(hass: HomeAssistant) -> dict:
+    """[ADDED v3.88.0] LIBI Global, or why it cannot be read: a file that cannot be read lists nothing, and then nothing
+    can be saved either (RULE 5)."""
+    files, errors, owners, _unreadable = await hass.async_add_executor_job(_read_global_sync, hass)
+    return _global_state_of(hass, files, errors, owners)
+
+
+@callback
+def _global_state_of(hass: HomeAssistant, files: dict, errors: list[str], owners: dict) -> dict:
+    """[ADDED v3.89.0] LIBI Global from the files as they were read."""
+    if errors:
+        return {"ok": False, "errors": errors, "recipients": [], "phones": ai.phone_list(hass)}
+    return {"ok": True, "errors": [], **_global_listing(hass, files, owners)}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "libi/global"})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_global(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.88.0] LIBI Global: the recipients as scripts.yaml holds them, and the phones. Nothing is written."""
+    connection.send_result(msg["id"], await _global_state(hass))
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/global_plan",
+    vol.Optional("key", default=""): str,
+    vol.Optional("name", default=""): str,
+    vol.Optional("phones", default=[]): [str],
+    vol.Optional("remove", default=False): bool,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_global_plan(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.88.0] LIBI Global, step 1 of a save, as in SAVE & COMPILE: the recipient's script, built from its name
+    and phones that are phones of this Home Assistant now, and checked with Home Assistant's own validator - or, to delete
+    it, that nothing sends to it, saved or not. Nothing is written: the answer is what to send to Home Assistant's config
+    API, nothing when it would not change, or why not."""
+    stamp = datetime.now(timezone.utc).isoformat()
+
+    def refuse(*errors: str) -> None:
+        connection.send_result(msg["id"], {"ok": False, "errors": list(errors), "stamp": stamp})
+
+    files, errors = await hass.async_add_executor_job(_read_files_sync, hass)
+    if errors:
+        refuse(*errors, "nothing was changed")
+        return
+    listing = _global_listing(hass, files)
+    key = msg["key"].strip()
+    current = next((r for r in listing["recipients"] if r["key"] == key), None) if key else None
+    if key and current is None:
+        refuse("This recipient is no longer in scripts.yaml. Open LIBI ▸ Global again.")
+        return
+    if msg["remove"]:
+        if current is None:
+            refuse("No recipient was named, so nothing was deleted.")
+            return
+        users = [f'{c["domain"]} "{c["name"]}"' for c in current["used_by"]]
+        users += await hass.async_add_executor_job(_projects_using_sync, hass, current["action"])
+        if users:
+            refuse(f'{current["name"]} is not deleted: it is still sent to by {"; ".join(dict.fromkeys(users))[:600]}. '
+                   "Send those to another recipient or a phone first.")
+            return
+        connection.send_result(msg["id"], {"ok": True, "unchanged": False, "key": key, "stamp": stamp, "op": {
+            "domain": "script", "key": key, "op": "remove", "label": current["name"]}})
+        return
+    name = recipients.clean_name(msg["name"])
+    if not name:
+        refuse("A recipient needs a name.")
+        return
+    if any(r["name"].casefold() == name.casefold() for r in listing["recipients"] if r["key"] != key):
+        refuse(f"There is already a recipient named {name}.")
+        return
+    phones = {p["service"]: p for p in listing["phones"] if not p["shared"]}
+    picked = list(dict.fromkeys(s.strip() for s in msg["phones"]))
+    gone = [s for s in picked if s not in phones]
+    if gone:
+        refuse(f"{', '.join(gone)[:300]}: not a phone of this Home Assistant now - removed from the Companion app, or "
+               "sharing its name with another phone there? Untick it.")
+        return
+    if not picked:
+        refuse("Tick at least one phone.")
+        return
+    if len(picked) > recipients.MAX_PHONES:
+        refuse(f"A recipient sends to {recipients.MAX_PHONES} phones at most.")
+        return
+    # In the order of the list, so the same phones make the same script whichever was ticked first.
+    chosen = [(p["service"], bool(p["speaks"])) for p in listing["phones"] if p["service"] in picked and not p["shared"]]
+    config = recipients.recipient_config(name, chosen)
+    if not key:
+        taken = {str(k) for k in files["script"]} | {state.object_id for state in hass.states.async_all("script")}
+        key = recipients.new_key(name, taken)
+    existing = files["script"].get(key)
+    if isinstance(existing, dict) and same_config(existing, config):
+        connection.send_result(msg["id"], {"ok": True, "unchanged": True, "key": key, "stamp": stamp})
+        return
+    problem = await ai.validate_with_home_assistant(hass, "script", config)
+    if problem:
+        refuse(f"Home Assistant does not accept it: {problem}")
+        return
+    connection.send_result(msg["id"], {"ok": True, "unchanged": False, "key": key, "stamp": stamp, "op": {
+        "domain": "script", "key": key, "op": "upsert", "config": config, "label": name}})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/global_done",
+    vol.Required("key"): str,
+    vol.Required("op"): vol.In(["upsert", "remove"]),
+    vol.Optional("label", default=""): str,
+    vol.Optional("failure"): vol.Any(None, dict),
+    vol.Optional("stamp", default=""): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_global_done(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.88.0] LIBI Global, step 3, after the panel sent the recipient to Home Assistant's config API:
+    scripts.yaml is read back - the browser's word is not taken for it - and LIBI waits for the reload. Saved only when
+    the file holds it as LIBI writes it (or, deleted, no longer holds it); a reload that fails is said next to it, never
+    hidden behind saved (RULE 10). The answer carries LIBI Global as it is now."""
+    key = msg["key"]
+    if not recipients.is_recipient_key(key):
+        connection.send_error(msg["id"], "invalid_key", "Not a recipient of LIBI Global")
+        return
+    errors: list[str] = []
+    failure = msg.get("failure") if isinstance(msg.get("failure"), dict) else None
+    reloaded = False
+    if failure:
+        errors.append(f"Home Assistant refused it: {str(failure.get('message') or 'no reason given')[:300]}")
+    else:
+        bad, reload_errors = await _wait_for_reloads(hass, [{"domain": "script", "key": key, "op": msg["op"]}],
+                                                     _since(msg["stamp"]))
+        errors += reload_errors
+        reloaded = not bad
+    state = await _global_state(hass)
+    errors += state["errors"]
+    there = next((r for r in state["recipients"] if r["key"] == key), None)
+    name = there["name"] if there else (recipients.clean_name(msg["label"]) or key)
+    saved = False
+    if state["ok"] and not failure:
+        if msg["op"] == "upsert":
+            saved = there is not None and not there["edited"]
+            if not saved:
+                errors.append("scripts.yaml does not hold it as LIBI wrote it: Home Assistant did not save it.")
+        else:
+            saved = there is None
+            if not saved:
+                errors.append("It is still in scripts.yaml: Home Assistant did not delete it.")
+    if saved and not errors:
+        message = (f"Saved. Every NET that sends to {name} sends to these phones from now on." if msg["op"] == "upsert"
+                   else f"Deleted: {name}.")
+    elif saved:
+        message = f"{'Saved to' if msg['op'] == 'upsert' else 'Deleted from'} scripts.yaml, but: " + "; ".join(errors[:5])
+    else:
+        message = "Not saved: " + "; ".join(errors[:5])
+    connection.send_result(msg["id"], {**state, "status": "error" if errors else "ok", "saved": saved,
+                                       "reloaded": saved and reloaded, "message": message, "errors": errors,
+                                       "key": key})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/global_move_plan",
+    vol.Required("key"): str,
+    vol.Optional("slug", default=""): str,
+    vol.Optional("entries", default=[]): [dict],
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_global_move_plan(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
+                                     msg: dict[str, Any]) -> None:
+    """[ADDED v3.89.0] A phone replaced with its recipient, step 1 - the user's request (2026-11-05): in each automation
+    and script the user ticked that sends straight to the one phone of a recipient, the steps that send to it call the
+    recipient instead, nothing else changed (recipients.move_entry), and each is checked with Home Assistant's own
+    validator. Only entries libi/global lists as movable now: not one a NET of LIBI draws - its next save would put the
+    phone back; the NETs of the open project (slug) are changed on its page - and not when a project cannot be read, as
+    then LIBI cannot tell. Anything ticked that does not hold refuses the whole of it. Nothing is written: the answer is
+    what to send to Home Assistant's config API, or why not."""
+    stamp = datetime.now(timezone.utc).isoformat()
+
+    def refuse(*errors: str) -> None:
+        connection.send_result(msg["id"], {"ok": False, "errors": list(errors), "stamp": stamp})
+
+    key = msg["key"]
+    if not recipients.is_recipient_key(key):
+        connection.send_error(msg["id"], "invalid_key", "Not a recipient of LIBI Global")
+        return
+    files, errors, owners, unreadable = await hass.async_add_executor_job(_read_global_sync, hass)
+    if errors or unreadable:
+        refuse(*errors, *[f"project {slug} could not be read, so LIBI cannot tell whether a NET draws them"
+                          for slug in unreadable], "nothing was changed")
+        return
+    current = next((r for r in _global_listing(hass, files, owners)["recipients"] if r["key"] == key), None)
+    if current is None:
+        refuse("This recipient is no longer in scripts.yaml. Open LIBI ▸ Global again.")
+        return
+    if current["move_why"]:
+        refuse(f'Nothing can be sent through {current["name"]}: {current["move_why"]}.')
+        return
+    wanted = list(dict.fromkeys((str(e.get("domain") or ""), str(e.get("key") or "")) for e in msg["entries"]))
+    if not wanted:
+        refuse("Nothing was ticked, so nothing was changed.")
+        return
+    direct = {(d["domain"], d["key"]): d for d in current["direct"]}
+    ops: list[dict] = []
+    problems: list[str] = []
+    for domain, entry_key in wanted:
+        d = direct.get((domain, entry_key))
+        if d is None:
+            problems.append(f"{domain} {entry_key[:60]} no longer sends straight to {current['name']}'s phone")
+        elif d["why"] or not d["moves"]:
+            problems.append(f'{d["name"]}: {d["why"] or "nothing in it can be moved"}')
+        elif d["owner"] and d["owner"]["slug"] == msg["slug"]:
+            problems.append(f'{d["name"]}: a NET of the project open on this page - it is changed on the page')
+        else:
+            config, _moves, _stays = recipients.move_entry(domain, _file_entry(files[domain], entry_key),
+                                                           current["phones"][0], current["action"])
+            problem = await ai.validate_with_home_assistant(hass, domain, config)
+            if problem:
+                problems.append(f'{d["name"]}: Home Assistant does not accept it: {problem}')
+                continue
+            ops.append({"domain": domain, "key": entry_key, "op": "upsert", "config": config, "label": d["name"]})
+    if problems:
+        refuse(*problems[:10], "Nothing was changed. Open LIBI ▸ Global again.")
+        return
+    connection.send_result(msg["id"], {"ok": True, "key": key, "ops": ops, "stamp": stamp})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/global_move_done",
+    vol.Required("key"): str,
+    vol.Optional("done", default=[]): [dict],
+    vol.Optional("failure"): vol.Any(None, dict),
+    vol.Optional("stamp", default=""): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_global_move_done(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
+                                     msg: dict[str, Any]) -> None:
+    """[ADDED v3.89.0] A phone replaced with its recipient, step 3, after the panel sent each entry to Home Assistant's
+    config API, which stops at the first one refused: LIBI waits for each reload and reads the files back - the browser's
+    word is not taken for it. An entry is moved only when its file calls the recipient and no step that could move still
+    sends straight to the phone; a reload that fails is said, never hidden (RULE 10). The answer carries LIBI Global as
+    it is now."""
+    key = msg["key"]
+    if not recipients.is_recipient_key(key):
+        connection.send_error(msg["id"], "invalid_key", "Not a recipient of LIBI Global")
+        return
+    done = [op for op in (_an_op(x) for x in msg["done"])
+            if op and op["op"] == "upsert" and op["domain"] in ("automation", "script")]
+    errors: list[str] = []
+    failure = msg.get("failure") if isinstance(msg.get("failure"), dict) else None
+    if failure:
+        errors.append(f"{str(failure.get('label') or failure.get('key') or '')[:100]}: Home Assistant refused it: "
+                      f"{str(failure.get('message') or 'no reason given')[:300]}")
+        not_sent = failure.get("not_sent")
+        if isinstance(not_sent, int) and not_sent > 0:
+            errors.append(f"{not_sent} more were not sent.")
+    bad, reload_errors = await _wait_for_reloads(hass, done, _since(msg["stamp"]))
+    errors += reload_errors
+    files, read_errors, owners, _unreadable = await hass.async_add_executor_job(_read_global_sync, hass)
+    state = _global_state_of(hass, files, read_errors, owners)
+    errors += state["errors"]
+    there = next((r for r in state["recipients"] if r["key"] == key), None)
+    name = there["name"] if there else key
+    moved: list[str] = []
+    for op in done if state["ok"] else []:
+        entry = _file_entry(files[op["domain"]], op["key"])
+        label = str((entry or {}).get("alias") or op["key"])[:100]
+        left = (recipients.move_entry(op["domain"], entry, there["phones"][0], there["action"])[1]
+                if there and len(there["phones"]) == 1 and isinstance(entry, dict) else 0)
+        if (isinstance(entry, dict) and there and left == 0
+                and there["action"] in called_actions(entry.get(recipients.steps_key(op["domain"], entry)))):
+            moved.append(label)
+        else:
+            errors.append(f"{label}: its file does not show the change - Home Assistant did not save it.")
+    if moved and not errors:
+        message = f"Replaced in {len(moved)}: {', '.join(moved)}. They send through {name} from now on."
+    elif moved:
+        message = f"Replaced in {len(moved)}: {', '.join(moved)}. But: " + "; ".join(errors[:5])
+    else:
+        message = "Nothing was replaced: " + ("; ".join(errors[:5]) or "nothing was sent.")
+    connection.send_result(msg["id"], {**state, "status": "error" if errors else "ok", "moved": moved,
+                                       "reloaded": bool(done) and not bad, "message": message, "errors": errors,
+                                       "key": key})
 
 
 @websocket_api.websocket_command({

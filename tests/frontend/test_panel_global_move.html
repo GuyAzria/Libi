@@ -1,0 +1,197 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-05] Purpose: The phone replaced with a global variable (LIBI 3.89.0) - the user's request: after
+  the save, replace the device with the global variable in every automation that sends straight to it, once they confirm.
+  The question opens after a save and from the line over the table; it lists those to tick and those not replaced, with
+  why; the ones ticked go through libi/global_move_plan, Home Assistant's config API and libi/global_move_done, a NET of
+  the page is changed on the page and saved with SAVE & COMPILE. What Home Assistant refuses is said and the question
+  stays. The message over the table does not push the table down (the user: "the table is down instead of up").
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi global move test</title></head>
+<body style="margin:0; width:1400px; height:860px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { makeHass, makePanel, sleep, S23, S25 } from './global_fixture.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+window.alert = () => {};
+window.confirm = () => false;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const GM = 'script.libi_send_to_guy_my_phone';
+// The user's case: made in Home Assistant's editor, they send straight to S23; one is drawn in another project of LIBI's,
+// one by this project, one sends more than a message. A name tries to be HTML.
+const gm = () => ({ key: 'libi_send_to_guy_my_phone', action: GM, name: 'Guy My Phone', phones: [S23], edited: false, missing: [],
+  used_by: [], move_why: '', direct: [
+    { domain: 'automation', key: 'smoke', name: 'Alarm Smoke Sensor', phones: [S23], moves: 1, stays: 0, why: '', owner: null },
+    { domain: 'automation', key: 'dish', name: '<img src=x onerror="window.__y=1">Dishwasher', phones: [S23], moves: 2, stays: 1, why: '', owner: null },
+    { domain: 'script', key: 'announce', name: 'Announce', phones: [S23], moves: 1, stays: 0, why: '', owner: null },
+    { domain: 'automation', key: 'garden', name: 'Garden valve', phones: [S23], moves: 1, stays: 0,
+      why: 'a NET of LIBI project "Garden" draws it: open that project, and replace it there', owner: { slug: 'garden', name: 'Garden', drawn: true } },
+    { domain: 'automation', key: 'n7', name: 'Drawn here', phones: [S23], moves: 1, stays: 0, why: '', owner: { slug: 'p', name: 'P', drawn: true } },
+    { domain: 'automation', key: 'shop', name: 'Shopping list', phones: [S23], moves: 0, stays: 2,
+      why: 'it sends more to the phone than a message, a title and data - change it by hand', owner: null }] });
+const both = () => ({ key: 'libi_send_to_both', action: 'script.libi_send_to_both', name: 'Both', phones: [S23, S25], edited: false,
+  missing: [], used_by: [], direct: [{ domain: 'automation', key: 'smoke', name: 'Alarm Smoke Sensor', phones: [S23], moves: 0, stays: 0,
+    why: 'it sends to 2 phones, and one that sends to one of them would then send to all of them - change those by hand if that is what you want', owner: null }],
+  move_why: 'it sends to 2 phones, and one that sends to one of them would then send to all of them - change those by hand if that is what you want' });
+
+try {
+  const { hass, sent, api, state } = makeHass();
+  state.recipients = [gm()];
+  const panel = await makePanel(hass);
+  const sr = panel.shadowRoot, core = panel.core;
+  // A NET of the page that sends straight to S23 twice, once in a parallel branch.
+  core.nets = [{ id: 'n1', name: 'Train', level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r1', comment: '', elements: [
+    { id: 'e0', type: 'contact_no', isTrigger: true, label: 'binary_sensor.door' },
+    { id: 'e1', type: 'move', mode: 'tts', tts: 'Time to go', stream: 'alarm_stream', target: S23 },
+    { id: 'p1', type: 'parallel', closed: false, branches: [[{ id: 'e2', type: 'move', mode: 'notify', source: 'Hi', target: S23 }],
+      [{ id: 'e3', type: 'move', mode: 'notify', source: 'Yulia', target: S25 }]] }] }] }];
+  core.syncCounters(); core.repairAST(); core.validateAST();
+  panel._markSaved();
+  await panel._loadGlobal();
+  const els = () => { const out = {}; panel._eachElement(core.nets[0], e => { out[e.id] = e; }); return out; };
+  const wait = async (cond, ms = 2000) => { for (let i = 0; i < ms / 20 && !cond(); i++) await sleep(20); return cond(); };
+  const types = (n) => sent.slice(n).map(m => m.type).filter(t => t !== 'libi/ai_status');
+  const modal = () => sr.querySelector('.gm-modal');
+  const ticks = () => [...sr.querySelectorAll('.gm-tick')];
+  const rowsOn = () => [...sr.querySelectorAll('.gm-item:not(.off) .nm')].map(x => x.textContent);
+  const rowsOff = () => [...sr.querySelectorAll('.gm-item.off')].map(x => `${x.querySelector('.nm').textContent} - ${x.querySelector('.why').textContent}`);
+  const go = () => sr.getElementById('gmGo');
+  const tableSaid = () => (sr.querySelector('.glob-view > .glob-said') || {}).textContent || '';
+
+  // ---- The line over the table
+  await panel._openGlobal();
+  const line = sr.querySelector('.glob-moves');
+  check('over the table, a line says how many still send straight to the phone, not through it', !!line
+        && line.textContent.includes('4 automations and scripts still send straight to S23 guy, not through Guy My Phone.')
+        && !!line.querySelector('.glob-move-open'), line ? line.textContent : 'no line');
+
+  // ---- The question
+  line.querySelector('.glob-move-open').click();
+  await sleep(30);
+  check('Replace… asks first, named after the global variable', !!modal() && panel._modal === 'global_move'
+        && modal().querySelector('.modal-title').textContent === 'Send through Guy My Phone?');
+  check('it says what changes: the phone, by its name, for the global variable', modal().querySelector('.gm-text').textContent
+        .startsWith('These still send straight to S23 guy, not through Guy My Phone. Replace S23 guy with Guy My Phone in the ones ticked?'));
+  check('those to replace are ticked, the NET of this page first', JSON.stringify(rowsOn()) === JSON.stringify(['NET "Train" on this page',
+        'Alarm Smoke Sensor', '<img src=x onerror="window.__y=1">Dishwasher', 'Announce']) && ticks().every(t => t.checked), JSON.stringify(rowsOn()));
+  check('a name from the user\'s files is text, never HTML', !modal().querySelector('img') && window.__y === undefined);
+  check('each says how many of its steps change, and those that stay', modal().textContent.includes('NET · 2 steps')
+        && modal().textContent.includes('automation · 2 steps · 1 step stay as they are') && modal().textContent.includes('script · 1 step'),
+        modal().textContent);
+  check('and those not replaced, each with why: drawn in another project, drawn in this one, more than a message', JSON.stringify(rowsOff()) === JSON.stringify([
+        'Garden valve - a NET of LIBI project "Garden" draws it: open that project, and replace it there',
+        'Drawn here - a NET of this project draws it - pick Guy My Phone in Send to of its MOVE block',
+        'Shopping list - it sends more to the phone than a message, a title and data - change it by hand']), JSON.stringify(rowsOff()));
+  check('Replace in 4', go().textContent === 'Replace in 4' && !go().disabled);
+  ticks()[2].click();
+  await sleep(10);
+  check('a tick taken off is not replaced: Replace in 3', go().textContent === 'Replace in 3' && !!modal());
+  let n = sent.length;
+  let calls = api.length;
+  sr.getElementById('gmCancel').click();
+  await sleep(20);
+  check('Not now closes it, and nothing is sent', !modal() && panel._modal === null && types(n).length === 0 && api.length === calls);
+
+  // ---- A page with changes not saved: its NET cannot be replaced now
+  els().e0.label = 'binary_sensor.window';
+  panel._openGlobalMove('libi_send_to_guy_my_phone');
+  check('with changes on the page not saved, its NET is not ticked and says why', !rowsOn().includes('NET "Train" on this page')
+        && rowsOff().some(t => t.startsWith('NET "Train" on this page - this page has changes that are not saved')), JSON.stringify(rowsOff()));
+  sr.getElementById('gmCancel').click();
+  els().e0.label = 'binary_sensor.door';
+  await sleep(10);
+
+  // ---- What Home Assistant refuses is said, and the question stays
+  state.move = () => ({ ok: false, errors: ['Announce: Home Assistant does not accept it: bad', 'Nothing was changed. Open LIBI ▸ Global again.'], stamp: 'S' });
+  panel._openGlobalMove('libi_send_to_guy_my_phone');
+  n = sent.length; calls = api.length;
+  go().click();
+  await wait(() => !panel._globalMove.busy && !!sr.querySelector('.gm-said'));
+  check('a plan that does not hold is said in the question, which stays; nothing reaches Home Assistant, the page is not changed',
+        !!modal() && sr.querySelector('.gm-said.err').textContent.startsWith('Announce: Home Assistant does not accept it')
+        && api.length === calls && JSON.stringify(types(n)) === '["libi/global_move_plan"]' && els().e1.target === S23,
+        JSON.stringify(types(n)));
+  state.move = null;
+  state.apiFails = { body: { message: 'Message malformed: refused' } };
+  n = sent.length; calls = api.length;
+  go().click();
+  await wait(() => !panel._globalMove.busy && sr.querySelector('.gm-said') && sr.querySelector('.gm-said').textContent.startsWith('Nothing'));
+  const refused = sent.slice(n).find(m => m.type === 'libi/global_move_done');
+  check('the config API refusing the first one stops the rest, libi/global_move_done is told, and it is said', refused && refused.done.length === 0
+        && refused.failure && refused.failure.label === 'Alarm Smoke Sensor' && refused.failure.not_sent === 2 && api.length === calls + 1
+        && sr.querySelector('.gm-said.err').textContent === 'Nothing was replaced: Alarm Smoke Sensor: Home Assistant refused it: Message malformed: refused'
+        && els().e1.target === S23 && !types(n).includes('libi/compile_project'), JSON.stringify(refused));
+
+  // ---- Replaced
+  n = sent.length; calls = api.length;
+  go().click();
+  await wait(() => !panel._globalMove && !panel._global.busy, 4000);
+  await sleep(20);
+  const plan = sent.slice(n).find(m => m.type === 'libi/global_move_plan');
+  const done = sent.slice(n).find(m => m.type === 'libi/global_move_done');
+  check('the ones ticked go to libi/global_move_plan, with the project open on the page', plan && plan.key === 'libi_send_to_guy_my_phone' && plan.slug === 'p'
+        && JSON.stringify(plan.entries) === JSON.stringify([{ domain: 'automation', key: 'smoke' }, { domain: 'automation', key: 'dish' },
+          { domain: 'script', key: 'announce' }]), JSON.stringify(plan));
+  check('each is saved through Home Assistant\'s config API, as the plan has it', JSON.stringify(api.slice(calls, calls + 3).map(a => [a.method, a.path]))
+        === JSON.stringify([['POST', 'config/automation/config/smoke'], ['POST', 'config/automation/config/dish'], ['POST', 'config/script/config/announce']])
+        && api[calls].body.moved_to === GM, JSON.stringify(api.slice(calls)));
+  check('libi/global_move_done is told what was sent and when the plan was made', done && done.failure === null && done.stamp === 'MOVE'
+        && JSON.stringify(done.done) === JSON.stringify([{ domain: 'automation', key: 'smoke', op: 'upsert' }, { domain: 'automation', key: 'dish', op: 'upsert' },
+          { domain: 'script', key: 'announce', op: 'upsert' }]), JSON.stringify(done));
+  check('then the NET of the page sends to the global variable, its other block left alone, and it is saved with SAVE & COMPILE',
+        els().e1.target === GM && els().e2.target === GM && els().e3.target === S25
+        && JSON.stringify(types(n)) === JSON.stringify(['libi/global_move_plan', 'libi/global_move_done', 'libi/compile_project', 'libi/save_done', 'libi/global'])
+        && !panel._hasUnsavedChanges(), JSON.stringify(types(n)));
+  check('done, the question closes and the table says what changed', !modal() && panel._modal === null
+        && tableSaid().startsWith('Replaced in 3: Alarm Smoke Sensor, <img src=x onerror="window.__y=1">Dishwasher, Announce. They send through Guy My Phone from now on.')
+        && tableSaid().endsWith('This page is saved: NET "Train" on this page sends through Guy My Phone now.') && !sr.querySelector('.glob-view img'), tableSaid());
+  check('nothing is left to replace, so the line over the table is gone', !sr.querySelector('.glob-moves'));
+
+  // ---- The message over the table does not push the table down (the user, 2026-11-05)
+  const view = sr.querySelector('.glob-view').getBoundingClientRect();
+  const msg = sr.querySelector('.glob-view > .glob-said').getBoundingClientRect();
+  const table = sr.querySelector('.glob-scroll').getBoundingClientRect();
+  check('the message is one line, and the table right under it', msg.height < 40 && table.top - msg.bottom < 16 && table.top - view.top < 120,
+        JSON.stringify({ msg: msg.height, gap: table.top - msg.bottom, top: table.top - view.top }));
+
+  // ---- After a save, it is asked
+  state.recipients = [gm()];
+  await panel._loadGlobal();
+  panel._render();
+  sr.querySelector('.glob-row[data-key="libi_send_to_guy_my_phone"]').click();
+  await sleep(10);
+  check('the editor offers Replace… next to those still sending straight to its phone', !!sr.querySelector('.glob-card .glob-uses .glob-move-open'));
+  const box = sr.querySelector('.glob-card .glob-name');
+  box.value = 'Guy\'s phone'; box.dispatchEvent(new Event('input'));
+  sr.querySelector('.glob-card .glob-save').click();
+  await wait(() => panel._modal === 'global_move');
+  check('saved, the question opens by itself, over the table', panel._modal === 'global_move' && !sr.querySelector('.glob-card') && !!sr.querySelector('.glob-table')
+        && JSON.stringify(rowsOn()) === JSON.stringify(['Alarm Smoke Sensor', '<img src=x onerror="window.__y=1">Dishwasher', 'Announce']),
+        JSON.stringify(rowsOn()));
+  sr.getElementById('gmCancel').click();
+  await sleep(10);
+
+  // ---- A global variable of two phones takes over nothing
+  state.recipients = [both()];
+  await panel._loadGlobal();
+  panel._render();
+  check('a global variable of two phones has no line over the table', !sr.querySelector('.glob-moves'));
+  panel._openGlobalMove('libi_send_to_both');
+  check('asked anyway, it says why nothing can be sent through it, and has no Replace', modal().querySelector('.gm-text').textContent
+        .startsWith('Nothing can be sent through Both: it sends to 2 phones') && !go() && rowsOn().length === 0, modal().textContent);
+  sr.getElementById('gmCancel').click();
+  check('Not now closes that one too', !modal());
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

@@ -13,13 +13,11 @@
 # more details. <https://www.gnu.org/licenses/>.
 """The AI chat: an LLM drafts, Home Assistant decides.
 
-[ADDED v3.84.0 | 2026-11-02] Purpose: The zone chosen on the card - the user's train reminder, "if I am at a zone I choose
-from the UI", got a text helper for the zone, in which no zone can be chosen, and one list of people, trackers and zones
-for who and where at once. The zone a card chooses is a dropdown of the user's zones as a person's state names them, and
-who must be there is in it when their state is the one chosen - one CMP EQ (zone_choices); one role for who and where is
-the two (presence_roles).
-[ADDED v3.85.0 | 2026-11-04] Purpose: Home Assistant's own validator is public here (validate_with_home_assistant), and
-checks a scene as well: SAVE & COMPILE checks every entry it is about to send to Home Assistant's config API with it.
+[ADDED v3.87.0 | 2026-11-04] Purpose: The phones for the panel's MOVE NOTIFY / TTS block, each with the action that sends to
+it (phone_list), and the notify actions an entry calls that Home Assistant does not have (notify_action_problems): the
+user's train reminder had a phone's notify entity as its action, was saved, and said nothing at its time.
+[ADDED v3.88.0 | 2026-11-05] Purpose: notify_action_problems also stops an entry that sends to a recipient of LIBI Global
+no longer in Home Assistant; the walk over an entry's steps is yaml_to_libi.called_actions, shared with LIBI Global.
 
 [ADDED v3.36.0 | 2026-10-26] Purpose: Turn a request written in any language into a ladder net.
 
@@ -62,7 +60,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import slugify
 
 from .libi_to_yaml import ast_to_yaml, net_level
-from .yaml_to_libi import DAY_BITS_DOMAINS, day_bits_entity, day_bits_template
+from .yaml_to_libi import DAY_BITS_DOMAINS, called_actions, day_bits_entity, day_bits_template, is_recipient_action
 from .const import (
     AI_MODE_CLOUD,
     AI_MODE_LOCAL,
@@ -3178,6 +3176,76 @@ def phones_that_speak(hass: HomeAssistant) -> set[str]:
         if str((config_entry.data if config_entry else {}).get("os_name") or "").lower().startswith("android"):
             out.add(service)
     return out
+
+
+@callback
+def phone_list(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """[ADDED v3.87.0] The phones for the panel's MOVE NOTIFY / TTS block: each phone's notify entity, the action that
+    sends to it, its name in Home Assistant, whose it is and what it is (phone_owners), and whether it reads a message
+    aloud. Picking a phone writes its action. The entity picker the block had listed each phone by its notify entity,
+    which went into the automation as its action, and Home Assistant could not call it: the user's train reminder said
+    nothing at its time (2026-11-04). Two phones the Companion app registered under one device name share one action,
+    and it reaches only one of them: both are marked shared, and the panel picks neither. Read from the app's config
+    entries in memory, as phone_owners reads them - never a webhook id or a secret."""
+    services = phone_services(hass)
+    owners = phone_owners(hass)
+    speak = phones_that_speak(hass)
+    uses: dict[str, int] = {}
+    for service in services.values():
+        uses[service] = uses.get(service, 0) + 1
+    out: list[dict[str, Any]] = []
+    for eid, service in services.items():
+        state = hass.states.get(eid)
+        owner = owners.get(eid, {})
+        out.append({"entity_id": eid, "service": service, "name": str(state.name if state else eid)[:100],
+                    "owner": owner.get("owner", ""), "device": owner.get("device", ""),
+                    "speaks": service in speak, "shared": uses[service] > 1})
+    return sorted(out, key=lambda p: (p["name"].lower(), p["entity_id"]))
+
+
+_NOTIFY_ACTION_RE = re.compile(r"notify\.([a-z0-9_]+)")
+
+
+@callback
+def notify_action_problems(hass: HomeAssistant, domain: str, config: dict) -> list[str]:
+    """[ADDED v3.87.0] The notify actions of an automation or a script that Home Assistant does not have. Home Assistant
+    saves such an action and fails only when it runs: the user's train reminder had a phone's notify entity
+    (notify.sm_s918b) as its action, was saved without a word, and said nothing at its time (2026-11-04). SAVE & COMPILE
+    sends no entry that has one. Only notify: a phone's notify entity and its action share that domain, and a phone that
+    leaves the Companion app takes its action with it.
+    [CHANGED v3.88.0] And a recipient of LIBI Global that is not in Home Assistant: deleted, or not loaded."""
+    if domain == "automation":
+        steps = config.get("actions", config.get("action"))
+    elif domain == "script":
+        steps = config.get("sequence")
+    else:
+        return []
+    found = called_actions(steps)
+    phones = phone_services(hass)
+    problems: list[str] = []
+    for name in dict.fromkeys(found):
+        if is_recipient_action(name):
+            if not hass.services.has_service("script", name.split(".", 1)[1]):
+                problems.append(f"{name} is a recipient of LIBI Global that Home Assistant does not have: nothing would "
+                                "be sent. Pick another one in the MOVE block, or make it again in LIBI ▸ Global.")
+            continue
+        m = _NOTIFY_ACTION_RE.fullmatch(name)
+        if not m or hass.services.has_service("notify", m.group(1)):
+            continue
+        service = phones.get(name)
+        if service and list(phones.values()).count(service) == 1:
+            state = hass.states.get(name)
+            problems.append(f"{name} is the notify entity of the phone {state.name if state else name}, not an action: "
+                            f"Home Assistant cannot send with it. The phone's action is {service} - pick the phone "
+                            "again in the MOVE block.")
+        elif service:
+            problems.append(f"{name} is the notify entity of a phone, not an action, and another phone is registered "
+                            f"under the same name in the Companion app: their one action, {service}, reaches only one "
+                            "of them. Give one of the phones another name in the app.")
+        else:
+            problems.append(f"{name} is not an action in this Home Assistant - a phone no longer registered in the "
+                            "Companion app? Nothing would be sent.")
+    return problems
 
 
 @callback

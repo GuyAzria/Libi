@@ -23,8 +23,9 @@ import yaml
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 
+from custom_components.libi import ai
 from custom_components.libi import websocket as ws
 from custom_components.libi.const import AI_MODE_NONE, CONF_AI_MODE, DOMAIN
 from custom_components.libi.libi_to_yaml import same_config
@@ -85,6 +86,14 @@ async def test_non_admin_is_rejected(hass, libi, hass_ws_client, hass_read_only_
                 {"type": "libi/net_helpers", "net": {}},
                 {"type": "libi/local_names"},
                 {"type": "libi/local_name_set", "entity_id": "light.x", "name": "Mine"},
+                {"type": "libi/phones"},
+                {"type": "libi/global"},
+                {"type": "libi/global_plan", "name": "Guy", "phones": ["notify.mobile_app_x"]},
+                {"type": "libi/global_done", "key": "libi_send_to_guy", "op": "remove"},
+                {"type": "libi/global_move_plan", "key": "libi_send_to_guy",
+                 "entries": [{"domain": "automation", "key": "a1"}]},
+                {"type": "libi/global_move_done", "key": "libi_send_to_guy",
+                 "done": [{"domain": "automation", "key": "a1", "op": "upsert"}]},
                 {"type": "libi/project_list"}):
         await client.send_json_auto_id(msg)
         res = await client.receive_json()
@@ -671,3 +680,162 @@ async def test_a_local_name_for_no_entity_or_too_long_is_refused(hass, libi, wri
     res = await send(client, {"type": "libi/local_name_set", "entity_id": entity_id, "name": name})
     assert res["success"] is False and res["error"]["code"] == code
     assert writes == []
+
+
+# [ADDED 2026-11-04, v3.87.0] The phones and the action that reaches each. The user's train reminder had a phone's notify
+# entity (notify.sm_s918b) as its action: the MOVE TTS block's entity picker listed the phone by that entity, LIBI saved
+# it, Home Assistant accepted it, and at its time it failed with "unknown action" - nothing was said.
+def _phones(hass):
+    """The phones as the Companion app registers them: a config entry with the device's name, a notify entity, and a
+    notify action of that name. Two of them were registered under one name, so they share one action."""
+    reg = er.async_get(hass)
+    hass.states.async_set("person.guy", "home", {"friendly_name": "Guy", "user_id": "u_guy"})
+    hass.states.async_set("person.yulia", "home", {"friendly_name": "Yulia", "user_id": "u_yulia"})
+    for device, object_id, user, model, system in (
+            ("SM-S918B", "sm_s918b", "u_guy", "SM-S918B", "Android"),
+            ("SM-S938B", "sm_s938b", "u_yulia", "SM-S938B", "Android"),
+            ("Guy iPhone", "guy_iphone", "u_guy", "iPhone 15", "iOS"),
+            ("SM-N985F", "sm_n985f", "u_guy", "SM-N985F", "Android"),
+            ("SM-N985F", "sm_n985f_2", "u_guy", "SM-N985F", "Android")):
+        entry = MockConfigEntry(domain="mobile_app", data={
+            "device_name": device, "webhook_id": f"hook-{object_id}", "user_id": user, "manufacturer": "samsung",
+            "model": model, "os_name": system, "secret": f"do-not-show-{object_id}"})
+        entry.add_to_hass(hass)
+        reg.async_get_or_create("notify", "mobile_app", object_id, suggested_object_id=object_id, config_entry=entry)
+        hass.states.async_set(f"notify.{object_id}", "unknown", {"friendly_name": device})
+    for service in ("mobile_app_sm_s918b", "mobile_app_sm_s938b", "mobile_app_guy_iphone", "mobile_app_sm_n985f",
+                    "persistent_notification", "send_message"):
+        async_mock_service(hass, "notify", service)
+
+
+def _reminder(action, key="train", alias="Train reminder"):
+    return {"id": key, "alias": alias, "description": "", "mode": "single",
+            "triggers": [{"trigger": "state", "entity_id": "input_boolean.train_time", "to": "on"}], "conditions": [],
+            "actions": [{"action": action, "data": {"message": "TTS", "data": {
+                "tts_text": "Time to go to the train", "media_stream": "alarm_stream"}}}]}
+
+
+async def test_the_phones_and_the_action_that_reaches_each(hass, libi, hass_ws_client):
+    _phones(hass)
+    client = await hass_ws_client(hass)
+    res = await send(client, {"type": "libi/phones"})
+    assert res["success"], res
+    phones = res["result"]["phones"]
+    assert [p["entity_id"] for p in phones] == ["notify.guy_iphone", "notify.sm_n985f", "notify.sm_n985f_2",
+                                                "notify.sm_s918b", "notify.sm_s938b"]
+    by_id = {p["entity_id"]: p for p in phones}
+    assert by_id["notify.sm_s938b"] == {"entity_id": "notify.sm_s938b", "service": "notify.mobile_app_sm_s938b",
+                                        "name": "SM-S938B", "owner": "Yulia", "device": "samsung SM-S938B",
+                                        "speaks": True, "shared": False}
+    assert by_id["notify.sm_s918b"]["service"] == "notify.mobile_app_sm_s918b" and by_id["notify.sm_s918b"]["owner"] == "Guy"
+    # An iPhone shows the word TTS: it does not read a message aloud.
+    assert by_id["notify.guy_iphone"]["speaks"] is False
+    # Two phones under one name have one action, which reaches only one of them.
+    assert by_id["notify.sm_n985f"]["shared"] is True and by_id["notify.sm_n985f_2"]["shared"] is True
+    assert by_id["notify.sm_n985f"]["service"] == by_id["notify.sm_n985f_2"]["service"] == "notify.mobile_app_sm_n985f"
+    # Never a webhook id or a secret of the app.
+    assert "hook-" not in json.dumps(res) and "do-not-show" not in json.dumps(res)
+
+
+async def test_no_phones_is_an_empty_list(hass, libi, hass_ws_client):
+    client = await hass_ws_client(hass)
+    res = await send(client, {"type": "libi/phones"})
+    assert res["success"] and res["result"] == {"phones": []}
+
+
+@pytest.mark.parametrize(("action", "said"), [
+    ("notify.sm_s918b", "notify.sm_s918b is the notify entity of the phone SM-S918B, not an action: Home Assistant cannot "
+                        "send with it. The phone's action is notify.mobile_app_sm_s918b - pick the phone again in the "
+                        "MOVE block."),
+    ("notify.sm_n985f_2", "notify.sm_n985f_2 is the notify entity of a phone, not an action, and another phone is "
+                          "registered under the same name in the Companion app: their one action, "
+                          "notify.mobile_app_sm_n985f, reaches only one of them. Give one of the phones another name in "
+                          "the app."),
+    ("notify.mobile_app_mi_9t_pro", "notify.mobile_app_mi_9t_pro is not an action in this Home Assistant - a phone no "
+                                    "longer registered in the Companion app? Nothing would be sent."),
+])
+async def test_a_notify_action_home_assistant_does_not_have_is_not_saved(hass, libi, writes, hass_ws_client,
+                                                                         hass_client, action, said):
+    """Home Assistant's own validator accepts it - it does not check that an action exists - so LIBI does."""
+    _phones(hass)
+    calls = await home_assistant_files(hass, libi)
+    before = (libi / "automations.yaml").read_text(encoding="utf-8")
+    assert await ai.validate_with_home_assistant(hass, "automation", _reminder(action)) is None
+    client, http = await hass_ws_client(hass), await hass_client()
+    plan, done = await save(client, http, [_net(hass, _reminder(action))])
+    assert done is None and plan["ok"] is False
+    assert plan["errors"] == [f'NET 1 "Train reminder": {said}']
+    assert (libi / "automations.yaml").read_text(encoding="utf-8") == before
+    assert calls["automation"] == 0 and writes == []
+
+
+async def test_the_phones_action_is_saved(hass, libi, hass_ws_client, hass_client):
+    _phones(hass)
+    await home_assistant_files(hass, libi)
+    client, http = await hass_ws_client(hass), await hass_client()
+    plan, done = await save(client, http, [_net(hass, _reminder("notify.mobile_app_sm_s918b"))])
+    assert plan["ok"] is True and done["saved"] is True and done["status"] == "ok", (plan, done)
+    data = yaml.safe_load((libi / "automations.yaml").read_text(encoding="utf-8"))
+    assert [a["actions"][0]["action"] for a in data] == ["notify.mobile_app_sm_s918b"]
+
+
+async def test_an_automation_not_changed_is_not_stopped_by_its_own_notify_action(hass, libi, hass_ws_client, hass_client):
+    """An automation that already sends to a phone no longer in the Companion app is not sent again, so it does not stop
+    a save of another NET - it is the user's, as it is."""
+    _phones(hass)
+    old = _reminder("notify.mobile_app_mi_9t_pro", key="old", alias="Old phone")
+    await home_assistant_files(hass, libi, automations=[old])
+    client, http = await hass_ws_client(hass), await hass_client()
+    plan, done = await save(client, http, [_net(hass, old), _net(hass)])
+    assert plan["ok"] is True, plan
+    assert [op["key"] for op in plan["upserts"]] == ["a1"]
+    assert done["saved"] is True and done["status"] == "ok", done
+    data = yaml.safe_load((libi / "automations.yaml").read_text(encoding="utf-8"))
+    assert [a for a in data if a["id"] == "old"][0]["actions"][0]["action"] == "notify.mobile_app_mi_9t_pro"
+
+
+async def test_every_notify_action_of_an_entry_is_checked_the_nested_ones_too(hass, libi):
+    _phones(hass)
+    script = {"sequence": [
+        {"if": [{"condition": "state", "entity_id": "person.guy", "state": "home"}],
+         "then": [{"repeat": {"count": 2, "sequence": [{"parallel": [{"action": "notify.gone_one"}]}]}}],
+         "else": [{"choose": [{"conditions": [], "sequence": [{"service": "notify.gone_two"}]}],
+                   "default": [{"sequence": [{"action": "notify.sm_s938b"}]}]}]},
+        # A notification's own buttons are "actions" too: they are not actions of the script.
+        {"action": "notify.mobile_app_sm_s938b", "data": {"message": "Open?", "data": {
+            "actions": [{"action": "notify.not_a_step", "title": "Open"}]}}},
+        {"action": "light.turn_on", "target": {"entity_id": "light.x"}},
+        {"action": "notify.gone_one"}]}
+    problems = ai.notify_action_problems(hass, "script", script)
+    assert [p.split(" ")[0] for p in problems] == ["notify.gone_one", "notify.gone_two", "notify.sm_s938b"]
+    assert ai.notify_action_problems(hass, "automation", {"action": [{"action": "notify.gone_one"}]})[0].startswith(
+        "notify.gone_one is not an action")
+    assert ai.notify_action_problems(hass, "scene", {"entities": {"light.x": "on"}}) == []
+    assert ai.notify_action_problems(hass, "automation", _reminder("notify.persistent_notification")) == []
+
+
+# [ADDED 2026-11-05, v3.88.0] Home Assistant removes a changed entry's entity and adds it again. In between, the entity
+# registry writes "unavailable" with restored: true - a second save of a LIBI Global recipient was reported as not
+# accepted by Home Assistant, though it was saved and reloaded. Set here by hand, so it does not depend on timing.
+async def test_the_state_written_between_removing_and_adding_is_not_a_failed_reload(hass):
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+
+    entry = er.async_get(hass).async_get_or_create("script", "script", "libi_send_to_guy",
+                                                     suggested_object_id="libi_send_to_guy")
+    op = [{"domain": "script", "key": "libi_send_to_guy", "op": "upsert"}]
+    since = datetime.now(timezone.utc) - timedelta(seconds=1)
+    hass.states.async_set(entry.entity_id, "unavailable", {"restored": True})
+
+    async def reloaded():
+        await asyncio.sleep(0.6)
+        hass.states.async_set(entry.entity_id, "off", {"friendly_name": "LIBI Global: Guy"})
+
+    task = hass.async_create_task(reloaded())
+    assert await ws._wait_for_reloads(hass, op, since) == (set(), [])
+    await task
+    # An entity Home Assistant set up as unavailable - it did not accept the entry - is still a failure.
+    since = datetime.now(timezone.utc) - timedelta(seconds=1)
+    hass.states.async_set(entry.entity_id, "unavailable", {"friendly_name": "LIBI Global: Guy"})
+    bad, errors = await ws._wait_for_reloads(hass, op, since)
+    assert bad == {"script"} and errors[0].startswith("script.libi_send_to_guy is unavailable")

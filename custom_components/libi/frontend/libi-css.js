@@ -14,12 +14,12 @@
  */
 /**
  * LIBI Panel - Styles
- * v3.86.0
+ * v3.89.0
  */
-// [ADDED v3.85.0 | 2026-11-04] Purpose: The panel's question with answers of its own (leaving with changes not saved,
-//   deleting a NET) and the Original tag of the versions list.
-// [ADDED v3.86.0 | 2026-11-04] Purpose: The NET chosen for the variables bar is outlined, the project's name is marked
-//   while the bar lists every NET, and the arrow that folds a NET has a target of its own.
+// [ADDED v3.88.1 | 2026-11-05] Purpose: LIBI Global as a table (.glob-table) and one editor at a time (.glob-edit); a
+//   button that cannot be pressed looks it (the user pressed a Save that was off and saw nothing happen).
+// [ADDED v3.89.0 | 2026-11-05] Purpose: The message over the Global table no longer takes 200px and pushes the table
+//   down (the user, after a save); the line that offers Replace…, and its dialog (.gm-*).
 export const getStyles = () => `
 :host { display: block; height: 100vh; overflow-y: hidden; background: var(--primary-background-color, #f5f5f5); color: var(--primary-text-color, #212121); font-family: var(--primary-font-family, sans-serif); box-sizing: border-box; direction: ltr !important; text-align: left; }
 /* [ADDED v3.35.0] Colour tokens. The light values are the colours the panel always used; the
@@ -454,6 +454,77 @@ export const getStyles = () => `
 .vars-new .name { flex: 1; min-width: 170px; }
 .vars-new .note { font-size: 11px; color: var(--secondary-text-color, #9e9e9e); flex-basis: 100%; }
 
+/* [ADDED v3.88.0] LIBI Global: the recipients of messages, a card each, the phones as chips to tick. */
+.glob-view { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.glob-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; flex: 0 0 auto; }
+.glob-title { font-weight: 800; font-size: 13px; }
+.glob-note { font-size: 12px; color: var(--secondary-text-color, #757575); }
+.glob-scroll, .glob-edit { flex: 1; min-height: 0; overflow: auto; }
+.glob-edit .glob-card { max-width: 760px; }
+.glob-table { table-layout: fixed; }
+.glob-table .c-name { max-width: none; }
+.glob-table tbody tr { cursor: pointer; }
+.glob-table tbody tr:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -2px; }
+.glob-table td { vertical-align: top; }
+.glob-table .glob-dev div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.glob-table .glob-dev div.gone { color: var(--error-color, #db4437); }
+.glob-table .glob-used { text-align: center; font-weight: 700; }
+.glob-table .glob-row-del { min-width: 36px; min-height: 36px; }
+.glob-flag { display: inline-block; margin-inline-start: 6px; font-size: 10px; font-weight: 800; padding: 1px 6px; border-radius: 8px; vertical-align: middle; }
+.glob-flag.warn { background: var(--libi-notice-bg); color: var(--libi-notice-head); }
+.glob-flag.err { background: var(--libi-err-bg); color: var(--error-color, #db4437); }
+.type-RCPT { background: var(--libi-link-bg); color: var(--libi-link-fg); }
+.glob-view .btn[disabled] { opacity: .45; cursor: default; }
+.glob-card { border: 1px solid var(--divider-color, #e0e0e0); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; background: var(--card-background-color, #fff); min-width: 0; }
+.glob-card.dirty { border-color: var(--primary-color, #03a9f4); }
+.glob-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.glob-name { flex: 1 1 160px; min-width: 0; font-weight: 700; min-height: 36px; padding-inline: 8px; }
+.glob-id { font-family: monospace; font-size: 11px; color: var(--secondary-text-color, #9e9e9e); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.glob-phones { display: flex; flex-wrap: wrap; gap: 6px; }
+.glob-phone { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--divider-color, #ddd); border-radius: 16px; padding-block: 4px; padding-inline: 8px 12px; font-size: 12px; cursor: pointer; min-height: 36px; max-width: 100%; min-width: 0; }
+.glob-phone .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+.glob-phone .who { color: var(--secondary-text-color, #9e9e9e); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; }
+.glob-phone.on { border-color: var(--primary-color, #03a9f4); background: var(--libi-pin-bg); }
+.glob-phone.off { opacity: .55; cursor: not-allowed; }
+.glob-phone.gone, .glob-phone.gone .who { border-color: var(--error-color, #db4437); color: var(--error-color, #db4437); }
+.glob-warn { font-size: 12px; color: var(--warning-color, #b26a00); overflow-wrap: anywhere; }
+.glob-err { font-size: 12px; color: var(--error-color, #db4437); overflow-wrap: anywhere; }
+.glob-uses { font-size: 12px; color: var(--secondary-text-color, #757575); overflow-wrap: anywhere; }
+.glob-uses b { color: var(--primary-text-color, #212121); font-weight: 600; }
+.glob-foot, .glob-new { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; }
+.glob-foot .btn, .glob-new .btn { min-height: 36px; }
+.glob-foot .glob-del { color: var(--error-color, #db4437); }
+.glob-said { font-size: 12px; overflow-wrap: anywhere; flex: 1 1 200px; min-width: 0; }
+.glob-said.ok { color: var(--libi-ok); }
+.glob-said.err { color: var(--error-color, #db4437); }
+/* [FIXED v3.89.0] In the table's column the message is a line of its own: flex 1 1 200px, made for the editor's row of
+   buttons, made it 200px high there and the table moved down after every save (the user, 2026-11-05). */
+.glob-view > .glob-said, .glob-view > .glob-moves { flex: 0 0 auto; }
+/* [ADDED v3.89.0] Automations that still send straight to a global variable's phone, and the question to replace it. */
+.glob-moves { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; padding: 6px 10px; border-radius: 8px; background: var(--libi-notice-bg); color: var(--primary-text-color, #212121); overflow-wrap: anywhere; }
+.glob-moves > span { flex: 1 1 220px; min-width: 0; }
+.glob-move-open { min-height: 36px; }
+.glob-uses .glob-move-open { margin-inline-start: 6px; }
+.gm-modal { width: 560px; max-width: calc(100vw - 32px); box-sizing: border-box; }
+.gm-text { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+.gm-list { display: flex; flex-direction: column; gap: 4px; overflow: auto; min-height: 0; max-height: 46vh; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 8px; padding: 6px; }
+.gm-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 36px; padding-inline: 6px; border-radius: 6px; font-size: 13px; cursor: pointer; min-width: 0; }
+.gm-item:hover { background: var(--libi-hover); }
+.gm-item input { width: 18px; height: 18px; flex: 0 0 auto; }
+.gm-item .nm { font-weight: 600; flex: 1 1 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-item .what, .gm-item .why { font-size: 11px; color: var(--secondary-text-color, #757575); overflow-wrap: anywhere; min-width: 0; }
+.gm-item.off { cursor: default; opacity: .8; }
+.gm-item.off:hover { background: none; }
+.gm-item.off .why { flex: 1 1 100%; padding-bottom: 4px; }
+.gm-sec { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .3px; color: var(--secondary-text-color, #9e9e9e); padding: 8px 6px 2px; }
+.gm-said { font-size: 12px; overflow-wrap: anywhere; }
+.gm-said.ok { color: var(--libi-ok); }
+.gm-said.err { color: var(--error-color, #db4437); }
+.gm-modal .modal-actions { flex-wrap: wrap; }
+.gm-modal .btn { min-height: 40px; }
+.gm-modal .btn[disabled] { opacity: .45; cursor: default; }
+@media (pointer: coarse) { .glob-phone, .glob-foot .btn, .glob-new .btn, .glob-name, .glob-table .glob-row-del, .glob-move-open, .gm-item { min-height: 40px; } .glob-table td { height: 40px; } .glob-phone input { width: 20px; height: 20px; } }
+
 /* An element that a variable is being dragged over. */
 .libi-el.var-drop, .pin-val.var-drop { outline: 2px dashed var(--primary-color, #03a9f4); outline-offset: 2px; background: rgba(3,169,244,.10); }
 
@@ -461,6 +532,8 @@ export const getStyles = () => `
     .vars-bar { max-height: 70vh; }
     .vars-title { display: none; }
     .vars-table .c-eid { display: none; }
+    .glob-table .glob-used { display: none; }
+    .glob-phone .nm, .glob-phone .who { max-width: 40vw; }
 }
 
 .libi-el.live-on .el-ico { background: var(--libi-ok-bg); border-color: var(--libi-ok); box-shadow: 0 0 0 2px rgba(46,125,50,.18); }

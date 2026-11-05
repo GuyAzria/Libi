@@ -12,14 +12,18 @@
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
 """Constants for the LIBI integration."""
-# v3.36.0
-# [ADDED v3.3.0 | 2026-08-20] Purpose: Updated domain and panel URL constants for libi rebranding.
+# v3.88.0
 # [ADDED v3.36.0 | 2026-10-26] Purpose: Cloud provider, base URL and local API key for the AI chat.
+# [ADDED v3.88.0 | 2026-11-05] Purpose: RECIPIENT_PREFIX - the scripts of LIBI Global's recipients (recipients.py).
 
 DOMAIN = "libi"
 PANEL_URL = "libi"
 PANEL_TITLE = "LIBI"
 PANEL_ICON = "mdi:ladder"
+
+# [ADDED v3.88.0] LIBI Global: a recipient of messages ("Guy", "Everyone") is the script scripts.yaml holds under this
+# prefix, script.libi_send_to_<name>. A NET sends to it; the phones it reaches are kept in that script only.
+RECIPIENT_PREFIX = "libi_send_to_"
 
 CONF_AI_MODE = "ai_mode"
 AI_MODE_NONE = "No AI"

@@ -1,0 +1,284 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-04] Purpose: Where a MOVE NOTIFY / TTS block sends. The user's train reminder had the phone's
+  notify entity (notify.sm_s918b) as its action - the entity picker listed the phone by that entity - and Home Assistant
+  could not call it: nothing was said at its time. Here the block picks a phone by name from LIBI's own list and gets the
+  action that reaches it; a target Home Assistant cannot call is red and said, with the phone's action one click away; the
+  entity chooser of the right-click menu writes the action too; a phone has one name in LIBI, whichever of its two ids a
+  pin holds; and a Home Assistant without libi/phones still offers its notify actions by id.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi phone target test</title></head>
+<body style="margin:0; width:1400px; height:860px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+window.alert = () => {};
+window.confirm = () => false;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const states = {};
+const st = (id, name) => { states[id] = { entity_id: id, state: 'unknown', attributes: { friendly_name: name } }; };
+st('binary_sensor.door', 'Door');
+st('notify.sm_s918b', 'SM-S918B'); st('notify.sm_s938b', 'SM-S938B'); st('notify.sm_n985f', 'SM-N985F'); st('notify.sm_n985f_2', 'SM-N985F');
+st('notify.guy_iphone', '<img src=x onerror="window.__x=1">');
+// What libi/phones answers: the backend reads it from the Companion app's config entries.
+const PHONES = [
+  { entity_id: 'notify.guy_iphone', service: 'notify.mobile_app_guy_iphone', name: 'Guy iPhone', owner: 'Guy', device: 'Apple iPhone 15', speaks: false, shared: false },
+  { entity_id: 'notify.sm_n985f', service: 'notify.mobile_app_sm_n985f', name: 'SM-N985F', owner: 'Guy', device: 'samsung SM-N985F', speaks: true, shared: true },
+  { entity_id: 'notify.sm_n985f_2', service: 'notify.mobile_app_sm_n985f', name: 'SM-N985F', owner: 'Guy', device: 'samsung SM-N985F', speaks: true, shared: true },
+  { entity_id: 'notify.sm_s918b', service: 'notify.mobile_app_sm_s918b', name: 'SM-S918B', owner: 'Guy', device: 'samsung SM-S918B', speaks: true, shared: false },
+  { entity_id: 'notify.sm_s938b', service: 'notify.mobile_app_sm_s938b', name: 'SM-S938B', owner: 'Yulia', device: 'samsung SM-S938B', speaks: true, shared: false },
+];
+const services = { notify: { mobile_app_sm_s918b: {}, mobile_app_sm_s938b: {}, mobile_app_guy_iphone: {}, mobile_app_sm_n985f: {},
+                             persistent_notification: {}, send_message: {} } };
+// The name the user gave Yulia's phone in another project.
+let stored = { 'notify.mobile_app_sm_s938b': 's25 yulia' };
+let phonesAnswer = async () => ({ phones: PHONES });
+const sent = [];
+const NET = () => ({ id: 'n1', name: 'Train', level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r1', comment: '', elements: [
+  { id: 'e0', type: 'contact_no', isTrigger: true, label: 'binary_sensor.door' },
+  { id: 'e1', type: 'move', mode: 'tts', tts: 'Time to go', stream: 'alarm_stream', target: 'notify.sm_s918b' },
+  { id: 'e2', type: 'move', mode: 'notify', source: 'Hi', target: 'notify.mobile_app_sm_s938b' },
+  { id: 'e3', type: 'move', mode: 'tts', tts: 'Go', target: 'notify.mobile_app_mi_9t_pro' },
+  { id: 'e4', type: 'notify', source: 'Old', target: 'notify.sm_s938b' },
+  { id: 'e5', type: 'move', mode: 'notify', source: 'Saved', target: 'notify.persistent_notification' },
+  { id: 'e6', type: 'move', mode: 'tts', tts: 'Hello', target: 'notify.sm_n985f_2' }] }] });
+const hass = {
+  states, services, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en', user: { is_admin: true },
+  localize: (k) => k, callService: async () => {}, callApi: async () => ({}),
+  connection: {
+    sendMessagePromise: async (m) => {
+      sent.push(JSON.parse(JSON.stringify(m)));
+      if (m.type === 'libi/ai_status') return { configured: false };
+      if (m.type === 'libi/project_list') return { projects: [] };
+      if (m.type === 'libi/project_open') return { slug: 'p', name: 'P', nets: [NET()], versions: {}, stats: {} };
+      if (m.type === 'libi/phones') return phonesAnswer();
+      if (m.type === 'libi/local_names') return { names: { ...stored } };
+      if (m.type === 'libi/local_name_set') {
+        stored = { ...stored };
+        if (m.name) stored[m.entity_id] = m.name; else delete stored[m.entity_id];
+        return { names: { ...stored } };
+      }
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+
+try {
+  localStorage.clear();
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '860px';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await sleep(300);
+  const sr = panel.shadowRoot, core = panel.core;
+  core.nets = [NET()];
+  core.syncCounters(); core.repairAST(); core.validateAST();
+  panel._project = { slug: 'p', name: 'P' };
+  panel._markSaved();
+  // The AI chat opens in the sidebar by default, over the Inspector: closed, as the layout pages close it.
+  panel.aiChat.setOpen(false);
+  panel._render();
+  await sleep(30);
+
+  const el = (eid) => core.nets[0].rungs[0].elements.find(x => x.id === eid);
+  const block = (eid) => sr.querySelector(`.libi-el[data-nid="n1"][data-eid="${eid}"]`);
+  const tgt = (eid) => block(eid).querySelector('.pin-val[data-prop="target"]');
+  const red = (eid) => tgt(eid).classList.contains('has-error');
+  const inspect = (eid) => {
+    panel._inspectedEl = { netId: 'n1', rungId: 'r1', elId: eid };
+    panel._render();
+    const field = sr.querySelector('.notify-target');
+    const select = sr.getElementById('inp_target');
+    const opts = select ? [...select.options] : [];
+    return { field, select, opts, warn: sr.querySelector('.notify-target-warn'), note: sr.querySelector('.notify-target-note'),
+             action: sr.querySelector('.notify-target-action'), fix: sr.getElementById('notifyTargetFix'),
+             byValue: (v) => opts.find(o => o.value === v), group: (label) => [...select.querySelectorAll('optgroup')].find(g => g.label === label) };
+  };
+  const choose = (ui, value) => { ui.select.value = value; ui.select.dispatchEvent(new Event('change')); };
+
+  // ---- The phones come with the panel
+  check('the phones are read when the panel starts', sent.some(m => m.type === 'libi/phones') && core.phones.length === 5, JSON.stringify(core.phones));
+
+  // ---- On the ladder: what Home Assistant cannot call is red; a phone shows the name given in LIBI
+  check('a phone\'s notify entity as the target is red', red('e1'), tgt('e1').outerHTML);
+  check('a phone\'s action is not red, and shows the name given in LIBI (in another project)', !red('e2') && tgt('e2').textContent === 's25 yulia'
+        && tgt('e2').title === 'notify.mobile_app_sm_s938b', tgt('e2').outerHTML);
+  check('a notify action Home Assistant does not have is red', red('e3'), tgt('e3').outerHTML);
+  // The old notify block has no pins: its target is its label, and the whole block is red.
+  check('the old notify block with a phone\'s entity is red', block('e4').classList.contains('has-error'), block('e4').outerHTML.slice(0, 300));
+  check('another notify action is not red', !red('e5'));
+  check('the entity of a phone that shares its action is red', red('e6'));
+
+  // ---- The Inspector of a block that sends to a phone: the phones by name, and the other notify actions
+  let ui = inspect('e2');
+  check('the Inspector has LIBI\'s list, not the entity picker', !!ui.select && ui.select.tagName === 'SELECT'
+        && !ui.field.querySelector('ha-entity-picker') && sr.getElementById('lbl_target').textContent === 'Send to');
+  check('the phone it sends to is chosen, by the name given in LIBI', ui.select.value === 'notify.mobile_app_sm_s938b'
+        && ui.select.selectedOptions[0].textContent === 's25 yulia', ui.select.selectedOptions[0] && ui.select.selectedOptions[0].textContent);
+  const phones = ui.group('Phones');
+  check('every phone is in the list, each by the action that reaches it', phones && [...phones.children].map(o => o.value).join('|')
+        === 'notify.mobile_app_guy_iphone|-shared-notify.sm_n985f|-shared-notify.sm_n985f_2|notify.mobile_app_sm_s918b|notify.mobile_app_sm_s938b',
+        phones && [...phones.children].map(o => o.value).join('|'));
+  check('a phone shows whose it is', ui.byValue('notify.mobile_app_sm_s918b').textContent === 'SM-S918B · Guy', ui.byValue('notify.mobile_app_sm_s918b').textContent);
+  check('two phones that share one action cannot be chosen', [...phones.children].filter(o => o.disabled).length === 2
+        && ui.byValue('-shared-notify.sm_n985f').textContent.includes('shares its name with another phone'));
+  const others = ui.group('Other notify actions');
+  check('the other notify actions are listed by id, not the phones\' again and not send_message',
+        others && [...others.children].map(o => o.value).join('|') === 'notify.persistent_notification',
+        others && [...others.children].map(o => o.value).join('|'));
+  check('no option is a notify entity', !ui.opts.some(o => /^notify\.(sm_|guy_)/.test(o.value)), ui.opts.map(o => o.value).join('|'));
+  check('it says the action Home Assistant is asked to call, and nothing is wrong', ui.action && ui.action.textContent === 'Home Assistant action: notify.mobile_app_sm_s938b'
+        && !ui.warn && !ui.fix);
+  check('in a MOVE NOTIFY nobody is told a phone does not read aloud', !ui.opts.some(o => o.textContent.includes('does not read aloud')));
+
+  // ---- The user's broken reminder: the phone's entity, said, and the phone's action one click away
+  ui = inspect('e1');
+  check('the entity it holds stays chosen until another is, and says it is not an action', ui.select.value === 'notify.sm_s918b'
+        && ui.select.selectedOptions[0].textContent === 'notify.sm_s918b - not an action', ui.select.selectedOptions[0] && ui.select.selectedOptions[0].textContent);
+  check('the Inspector says why nothing is sent, and the phone\'s action', ui.warn && ui.warn.textContent.includes('notify.sm_s918b is the notify entity of the phone SM-S918B, not an action')
+        && ui.warn.textContent.includes('notify.mobile_app_sm_s918b'), ui.warn && ui.warn.textContent);
+  check('a button sends with the phone\'s action, a touch target of 40px', ui.fix && ui.fix.textContent === 'Send with notify.mobile_app_sm_s918b'
+        && ui.fix.getBoundingClientRect().height >= 40, ui.fix && ui.fix.getBoundingClientRect().height);
+  check('in a MOVE TTS a phone that does not read aloud says so', ui.byValue('notify.mobile_app_guy_iphone').textContent.includes('does not read aloud'));
+  const histBefore = core.historyIdx;
+  ui.fix.click(); await sleep(20);
+  check('one click puts the phone\'s action on the block, as a step that can be undone', el('e1').target === 'notify.mobile_app_sm_s918b'
+        && core.historyIdx === histBefore + 1, JSON.stringify([el('e1').target, histBefore, core.historyIdx]));
+  ui = inspect('e1');
+  check('then the phone is chosen and nothing is said', ui.select.value === 'notify.mobile_app_sm_s918b' && !ui.warn && !ui.fix && !red('e1'));
+
+  // ---- A phone no longer in the Companion app: said, and another phone chosen from the list
+  ui = inspect('e3');
+  check('a notify action that does not exist is said', ui.select.selectedOptions[0].textContent === 'notify.mobile_app_mi_9t_pro - not an action'
+        && ui.warn && ui.warn.textContent.includes('is not an action in this Home Assistant') && !ui.fix, ui.warn && ui.warn.textContent);
+  choose(ui, 'notify.mobile_app_sm_s938b'); await sleep(20);
+  check('choosing a phone writes the action that reaches it', el('e3').target === 'notify.mobile_app_sm_s938b' && !red('e3')
+        && tgt('e3').textContent === 's25 yulia', JSON.stringify([el('e3').target, tgt('e3').textContent]));
+
+  // ---- Two phones under one name: said, never guessed
+  ui = inspect('e6');
+  check('a phone that shares its action is said, with no button', ui.warn && ui.warn.textContent.includes('Two phones are registered as SM-N985F')
+        && ui.warn.textContent.includes('notify.mobile_app_sm_n985f') && !ui.fix, ui.warn && ui.warn.textContent);
+
+  // ---- The old notify block has the same list
+  ui = inspect('e4');
+  check('the old notify block picks from the same list', ui.select && ui.select.value === 'notify.sm_s938b' && ui.fix
+        && ui.fix.textContent === 'Send with notify.mobile_app_sm_s938b', ui.select && ui.select.value);
+
+  // ---- Another notify action, and back to a phone
+  ui = inspect('e5');
+  check('another notify action is chosen as it is', ui.select.value === 'notify.persistent_notification' && !ui.warn
+        && ui.action.textContent === 'Home Assistant action: notify.persistent_notification');
+
+  // ---- The right-click menu's entity chooser: a phone chosen by its entity sends with the phone's action
+  panel._inspectedEl = null; panel._render();
+  panel._openEntityPicker('n1', 'r1', 'e5', 'target');
+  panel._applyPickedEntity('notify.sm_s918b'); await sleep(20);
+  check('the entity chooser writes the phone\'s action, not its entity', el('e5').target === 'notify.mobile_app_sm_s918b'
+        && el('e5').targetSpec === undefined, JSON.stringify(el('e5')));
+  panel._openEntityPicker('n1', 'r1', 'e5', 'target');
+  panel._applyPickedEntity('notify.sm_n985f_2'); await sleep(20);
+  check('a phone that shares its action is written as chosen, and red', el('e5').target === 'notify.sm_n985f_2' && red('e5'));
+  panel._openEntityPicker('n1', 'r1', 'e0', 'label');
+  panel._applyPickedEntity('notify.sm_s918b'); await sleep(20);
+  check('a contact chosen the same way is not changed into an action', el('e0').label === 'notify.sm_s918b'
+        && JSON.stringify(el('e0').targetSpec) === '{"entity_id":["notify.sm_s918b"]}', JSON.stringify(el('e0')));
+  el('e0').label = 'binary_sensor.door'; el('e0').targetSpec = undefined; el('e5').target = 'notify.persistent_notification';
+  panel._render(); await sleep(20);
+
+  // ---- A phone has one name in LIBI, whichever of its ids it was given to
+  const rightClick = async (node) => {
+    const r = node.getBoundingClientRect();
+    node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, composed: true,
+      clientX: Math.round(r.left + 5), clientY: Math.round(r.top + 5), button: 2 }));
+    await sleep(20);
+  };
+  const renameLocal = async (node, text) => {
+    await rightClick(node);
+    sr.getElementById('ctxRename').click(); await sleep(20);
+    const box = sr.getElementById('renameInput');
+    box.value = text; box.dispatchEvent(new Event('input'));
+    sr.getElementById('renameLocal').click(); await sleep(40);
+  };
+  const nameSets = () => sent.filter(m => m.type === 'libi/local_name_set');
+  sent.length = 0;
+  await renameLocal(block('e4').querySelector('.el-lbl'), 'Yulia S25');
+  check('a name given on the phone\'s entity is kept under the phone\'s action', JSON.stringify(nameSets().map(m => [m.entity_id, m.name]))
+        === '[["notify.mobile_app_sm_s938b","Yulia S25"]]', JSON.stringify(nameSets()));
+  check('and every pin of that phone shows it', tgt('e2').textContent === 'Yulia S25' && tgt('e3').textContent === 'Yulia S25',
+        [tgt('e2'), tgt('e3')].map(p => p.textContent).join('|'));
+  // A name kept under a phone's entity before this version is the phone's name; renamed, it moves to the action.
+  stored = { ...stored, 'notify.sm_s918b': 'Old guy name' };
+  core.localNames = { ...stored }; panel._render(); await sleep(20);
+  check('a name kept under the phone\'s entity shows on its action', tgt('e1').textContent === 'Old guy name', tgt('e1').textContent);
+  sent.length = 0;
+  await renameLocal(tgt('e1'), 'Guy S23');
+  check('renamed, the phone keeps one name: under its action, the old one gone', JSON.stringify(nameSets().map(m => [m.entity_id, m.name]))
+        === '[["notify.mobile_app_sm_s918b","Guy S23"],["notify.sm_s918b",""]]' && stored['notify.mobile_app_sm_s918b'] === 'Guy S23'
+        && !('notify.sm_s918b' in stored) && tgt('e1').textContent === 'Guy S23', JSON.stringify([nameSets(), stored]));
+  ui = inspect('e1');
+  // Whose it is is left out when the name says it already.
+  check('the list shows the phone by its name in LIBI', ui.byValue('notify.mobile_app_sm_s918b').textContent === 'Guy S23'
+        && ui.byValue('notify.mobile_app_sm_s938b').textContent === 'Yulia S25', ui.byValue('notify.mobile_app_sm_s918b').textContent);
+  check('a phone\'s action shows the phone\'s name where Home Assistant has none for it', core.friendlyName('notify.mobile_app_guy_iphone', hass)
+        === states['notify.guy_iphone'].attributes.friendly_name);
+
+  // ---- Names from Home Assistant are text
+  check('a phone\'s name with markup is text in the list', ui.byValue('notify.mobile_app_guy_iphone').textContent.startsWith('<img')
+        && !sr.querySelector('.notify-target img') && window.__x === undefined, ui.byValue('notify.mobile_app_guy_iphone').textContent);
+
+  // ---- It fits: the field is no wider than the Inspector
+  const box = ui.field.getBoundingClientRect(), side = ui.field.parentElement.getBoundingClientRect();
+  check('the field fits the Inspector', box.right <= side.right + 1 && ui.field.scrollWidth <= ui.field.clientWidth + 1
+        && ui.select.getBoundingClientRect().right <= box.right + 1, JSON.stringify([box, side]));
+
+  // ---- Opening a project reads the names and the phones again: a name given on another page shows
+  panel._inspectedEl = null; panel._markSaved();
+  stored = { ...stored, 'notify.mobile_app_sm_s938b': 'Given elsewhere' };
+  sent.length = 0;
+  await panel._projectOpen('p'); await sleep(30);
+  check('opening a project reads the names given in LIBI and the phones again', sent.some(m => m.type === 'libi/local_names')
+        && sent.some(m => m.type === 'libi/phones') && tgt('e2').textContent === 'Given elsewhere', JSON.stringify(sent.map(m => m.type)));
+
+  // ---- A Home Assistant still running an older LIBI: no libi/phones
+  phonesAnswer = async () => { throw { code: 'unknown_command', message: 'Unknown command.' }; };
+  await panel._loadPhones();
+  panel._render(); await sleep(20);
+  ui = inspect('e2');
+  check('without libi/phones the phones are not guessed: no phone list', core.phones.length === 0 && !ui.group('Phones'));
+  check('Home Assistant\'s notify actions are offered by id, the phones\' too', ui.select.value === 'notify.mobile_app_sm_s938b'
+        && [...ui.group('Other notify actions').children].map(o => o.value).join('|')
+        === 'notify.mobile_app_guy_iphone|notify.mobile_app_sm_n985f|notify.mobile_app_sm_s918b|notify.mobile_app_sm_s938b|notify.persistent_notification',
+        [...ui.group('Other notify actions').children].map(o => o.value).join('|'));
+  ui = inspect('e4');
+  check('a phone\'s entity is still said, with no action guessed', ui.warn && ui.warn.textContent.includes('notify.sm_s938b is not an action in this Home Assistant')
+        && !ui.fix && block('e4').classList.contains('has-error'), ui.warn && ui.warn.textContent);
+
+  // ---- At a phone's width the field still fits
+  phonesAnswer = async () => ({ phones: PHONES });
+  await panel._loadPhones();
+  panel.style.width = '390px';
+  ui = inspect('e1');
+  await sleep(30);
+  const fr = ui.field.getBoundingClientRect();
+  check('at 390px the field fits the screen', fr.left >= 0 && fr.right <= 391 && ui.field.scrollWidth <= ui.field.clientWidth + 1
+        && (!ui.fix || ui.fix.getBoundingClientRect().right <= 391), JSON.stringify(fr));
+  panel.style.width = '';
+  panel._inspectedEl = null; panel._render();
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

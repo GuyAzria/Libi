@@ -11,10 +11,10 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.76.0 | 2026-10-31] Purpose: CMP DAY is written by _day_condition: its days as a time condition, or the days
-#   an 8-bit helper holds as DAY_BITS_TEMPLATE. An edited CMP DAY no longer gets the entity_id "weekday" patched in.
 # [ADDED v3.85.0 | 2026-11-04] Purpose: same_config - two configs that mean the same, compared as the round trip
 #   compares them: Home Assistant's config API writes the current spelling of what it saves (trigger is triggers).
+# [ADDED v3.88.0 | 2026-11-05] Purpose: A MOVE TTS to a recipient of LIBI Global is written as to a phone - the data the
+#   phone's app reads, which the recipient's script passes to each of its phones - not as tts.speak on a speaker.
 # [ADDED v1.69.0] Output perfectly formed logic for standard triggers, retrieving native YAML dictionary if present via raw_trigger.
 # [ADDED v3.5.0 | 2026-08-24] Purpose: A net now carries a level. automation compiles to the
 #   automation schema exactly as before, script compiles to alias plus sequence, and scene
@@ -35,7 +35,7 @@ from .yaml_to_libi import (
     COMPARED_DOMAINS, norm_entity,
     norm_service, norm_kind, domain_of, short,
     element_sig, EVENT_TRIGGER_KEYS, target_spec,
-    hms_to_seconds, yaml_to_ast, repeat_loop, for_to_hms, duration_label, wait_parts,
+    hms_to_seconds, yaml_to_ast, repeat_loop, for_to_hms, duration_label, wait_parts, is_recipient_action,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -565,7 +565,8 @@ def _notify_actions(el):
         return {"action": target, "data": data}
 
     def tts_node():
-        if str(target).startswith("notify."):
+        # [CHANGED v3.88.0] A recipient of LIBI Global passes it to its phones as it is (recipients.py).
+        if str(target).startswith("notify.") or is_recipient_action(target):
             return {"action": target, "data": {"message": "TTS", "data": {"tts_text": tts, "media_stream": stream}}}
         return {"action": "tts.speak", "target": {"entity_id": target}, "data": {"message": tts}}
 

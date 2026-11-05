@@ -14,12 +14,12 @@
  */
 /**
  * LIBI Panel - Core Engine
- * v3.86.0
+ * v3.88.0
  */
-// [ADDED v3.79.1 | 2026-11-01] Purpose: English only in the comments (CLAUDE.md RULE 17, the user's request): the
-//   examples of names an entity has in the user's language are written in English.
-// [ADDED v3.86.0 | 2026-11-04] Purpose: A name in LIBI only (localNames, from libi/local_names) wins wherever the panel
-//   shows an entity's name; haName is Home Assistant's own, for what goes to Home Assistant.
+// [ADDED v3.87.0 | 2026-11-04] Purpose: A phone has one name in LIBI, whichever of its two ids - its notify entity or the
+//   action that sends to it - a pin holds (phones, phoneOf, nameKey); a phone's action shows the phone's name.
+// [ADDED v3.88.0 | 2026-11-05] Purpose: A recipient of LIBI Global (script.libi_send_to_<name>) shows its name in LIBI
+//   Global, not its script's alias (recipients, recipientOf).
 export class LibiCore {
     constructor() {
         this.nets = [];
@@ -389,14 +389,50 @@ export class LibiCore {
             return this.nameOverrides[id];
         }
         // [ADDED v3.86.0] Then the name the user gave it in LIBI only (the user's request, 2026-11-04).
-        return this.localName(id) || this.haName(id, h);
+        // [CHANGED v3.87.0] A phone's action has no name in Home Assistant: the phone's is shown.
+        const phone = this.phoneOf(id);
+        // [CHANGED v3.88.0] A recipient of LIBI Global by its own name: its script's alias is "LIBI Global: <name>".
+        const recipient = this.recipientOf(id);
+        return this.localName(id) || (recipient ? recipient.name : '') || this.haName(id, h)
+            || (phone && phone.entity_id !== id ? this.haName(phone.entity_id, h) : '');
     }
 
     // [ADDED v3.86.0] The name the user gave an entity in LIBI only, or ''. Home Assistant does not know it.
+    // [CHANGED v3.87.0] A phone's name, whichever of its two ids it was given to (phoneOf).
     localName(entityId) {
         const id = String(entityId || '').replace(/\s*\+\d+$/, '').trim();
         const names = this.localNames || {};
-        return Object.prototype.hasOwnProperty.call(names, id) ? String(names[id] || '') : '';
+        const phone = this.phoneOf(id);
+        for (const key of phone ? [phone.service, phone.entity_id] : [id]) {
+            if (Object.prototype.hasOwnProperty.call(names, key) && names[key]) return String(names[key]);
+        }
+        return '';
+    }
+
+    // [ADDED v3.87.0] A phone has two ids in Home Assistant: its notify entity (notify.sm_s938b), which Home Assistant
+    // cannot call as an action, and the action that sends to it (notify.mobile_app_sm_s938b) - phones, from libi/phones.
+    // The phone with either id, or null. Two phones the Companion app registered under one name share one action, and
+    // neither is the phone of it.
+    phoneOf(entityId) {
+        const id = String(entityId || '').replace(/\s*\+\d+$/, '').trim();
+        if (!id) return null;
+        return (this.phones || []).find(p => p && !p.shared && (p.service === id || p.entity_id === id)) || null;
+    }
+
+    // [ADDED v3.88.0] A recipient of LIBI Global, by the action that sends to it (script.libi_send_to_<name>), or null -
+    // recipients, from libi/global.
+    recipientOf(entityId) {
+        const id = String(entityId || '').replace(/\s*\+\d+$/, '').trim();
+        if (!id.startsWith('script.libi_send_to_')) return null;
+        return (this.recipients || []).find(r => r && r.action === id) || null;
+    }
+
+    // [ADDED v3.87.0] The id a name in LIBI is kept under: a phone's action, for either of its ids, so the phone has one
+    // name whichever id a pin holds - in every project, as every name in LIBI.
+    nameKey(entityId) {
+        const id = String(entityId || '').replace(/\s*\+\d+$/, '').trim();
+        const phone = this.phoneOf(id);
+        return phone ? phone.service : id;
     }
 
     // [ADDED v3.86.0] Home Assistant's own name for an entity, whatever LIBI shows - for what is sent to Home Assistant.

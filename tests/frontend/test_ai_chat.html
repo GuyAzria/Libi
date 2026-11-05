@@ -347,6 +347,8 @@ try {
       { entity_id: 'notify.guy_phone', name: 'guy_phone', named: true, owner: 'Guy', device: 'samsung SM-N985F' },
       { entity_id: 'notify.sm_s938b', name: 'SM-S938B', owner: XSS, device: 'samsung SM-S938B' }] } },
     preselect: { phones_to_notify: ['notify.guy_phone'] } };
+  // [v3.87.0] The name given in LIBI is the one the list shows - a phone's, whichever of its two ids it was given to.
+  panel.core.localName = (id) => (id === 'notify.sm_s938b' ? 's25 yulia' : '');
   chat.draft = 'notify.mobile_app_guy_phone and notify.mobile_app_mi_9t_pro'; await chat.send();
   const phonesRole = [...chat.root.querySelectorAll('.ai-role')].find(r => r.querySelector('.ai-list[data-role="phones_to_notify"]'));
   check('the phones list says why some are ticked', !!phonesRole && phonesRole.textContent.includes('The phones your message names are ticked'));
@@ -364,6 +366,10 @@ try {
   phonesRole.querySelector('input[value="notify.sm_s938b"]').click();
   check('another phone can be ticked in place of the missing one', chat.selections.phones_to_notify.has('notify.sm_s938b')
     && chat.root.querySelector('.ai-build').disabled === false);
+  const itemNames = [...phonesRole.querySelectorAll('.ai-item-name')].map(n => n.childNodes[0] && n.childNodes[0].textContent);
+  check('a phone is listed by the name given in LIBI, one without by Home Assistant\'s', JSON.stringify(itemNames) === '["guy_phone","s25 yulia"]',
+    JSON.stringify(itemNames));
+  delete panel.core.localName;
 
 
   // [v3.67.0] What saving after adding says when it does not go well, and what is not saved without asking.

@@ -11,11 +11,11 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.72.0 | 2026-10-29] Purpose: A trigger that has to hold for a while ("for") starts its rung with the TON of
-#   that for right after it (_trigger_unit), the way a ladder says "on for 30 minutes"; the rung's sentence says
-#   "for" there instead of "then wait".
-# [ADDED v3.76.0 | 2026-10-31] Purpose: CMP DAY can read the days from an 8-bit helper (bit 1 Sunday ... bit 7
-#   Saturday): the template DAY_BITS_TEMPLATE is drawn as CMP DAY = that helper (day_bits_entity).
+# [ADDED v3.88.0 | 2026-11-05] Purpose: A call to a recipient of LIBI Global (script.libi_send_to_<name>) is drawn as the
+#   MOVE NOTIFY / TTS block it is, sending to that recipient (is_recipient_action). called_actions, every action a list
+#   of steps calls, moved here from ai.py so the recipients and the save check share it.
+# [ADDED v3.89.0 | 2026-11-05] Purpose: iter_steps, the one walk over nested steps: called_actions reads with it, and
+#   LIBI Global replaces a phone with its recipient with it.
 # [ADDED v1.69.0] Backend parser updated to correctly map native device/state triggers into isTrigger=True Contacts and CMPs without using proprietary blocks.
 # [ADDED v3.6.0 | 2026-08-24] Purpose: Three rules that the import now keeps without exception.
 #   1. No pin is ever left empty and no registry id is ever shown. Every target is resolved through
@@ -42,7 +42,43 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.helpers import label_registry as lr
 
+from .const import RECIPIENT_PREFIX
 from .tpl_part import parse_template, label_of, text_of, CMP_OPS, MATH_OPS as TPL_MATH_OPS
+
+# [ADDED v3.88.0] The action of a recipient of LIBI Global: script.libi_send_to_<name> (recipients.py).
+_RECIPIENT_ACTION_RE = re.compile(r"script\." + re.escape(RECIPIENT_PREFIX) + r"[a-z0-9_]+")
+
+
+def is_recipient_action(action) -> bool:
+    """[ADDED v3.88.0] A recipient of LIBI Global's script, called as an action. It takes the data a phone's notify action
+    takes, so its MOVE NOTIFY / TTS block is the one of a phone."""
+    return isinstance(action, str) and _RECIPIENT_ACTION_RE.fullmatch(action.strip()) is not None
+
+
+# [ADDED v3.87.0] The keys of a step that hold more steps. A notification's own data (its buttons are "actions" too) and
+# the event data of a trigger are never walked.
+_NESTED_STEPS = frozenset(("sequence", "then", "else", "default", "choose", "parallel", "repeat"))
+
+
+def iter_steps(node):
+    """[ADDED v3.89.0] Every step of a list of steps, the nested ones too, in the order they are written - each the dict
+    the list holds, so a step changed is changed in the list. called_actions reads with it; LIBI Global replaces a phone
+    with its recipient with it (recipients.move_steps)."""
+    if isinstance(node, list):
+        for one in node:
+            yield from iter_steps(one)
+    elif isinstance(node, dict):
+        yield node
+        for key, value in node.items():
+            if key in _NESTED_STEPS:
+                yield from iter_steps(value)
+
+
+def called_actions(node) -> list[str]:
+    """[ADDED v3.87.0] Every action a list of steps calls, the nested ones too, in the order they are written.
+    [CHANGED v3.88.0] Here, from ai.py: LIBI Global reads with it which entries send to a recipient or to a phone."""
+    return [step[key].strip() for step in iter_steps(node) for key in ("action", "service")
+            if isinstance(step.get(key), str)]
 
 # [ADDED v3.76.0] The days of the week an 8-bit helper holds - the user's design (2026-10-31): bit 1 (1) is Sunday, bit 2
 # (2) Monday ... bit 7 (64) Saturday. A CMP DAY that reads a helper is this one template, written exactly so; the card
@@ -1307,7 +1343,8 @@ def _action_to_elements(a, ids, trig_map, src):
             target_kind = "entity"
         data = a.get("data") if isinstance(a.get("data"), dict) else {}
 
-        if domain == "notify" or svc.startswith("notify."):
+        # [CHANGED v3.88.0] A recipient of LIBI Global takes what a phone takes: the same block, sending to it.
+        if domain == "notify" or svc.startswith("notify.") or is_recipient_action(svc):
             message, title, tts, stream, is_tts, _d = _notify_payload(a)
             mode = "tts" if is_tts else "notify"
             el = _el(ids, "move", mode=mode, target=svc,
@@ -1476,7 +1513,10 @@ def friendly(value):
     text = str(value or "").strip()
     if not text:
         return "it"
-    if "." in text and " " not in text:
+    # [ADDED v3.88.0] A recipient of LIBI Global is said by its name: script.libi_send_to_guy is guy.
+    if is_recipient_action(text):
+        text = text.split(".", 1)[1][len(RECIPIENT_PREFIX):]
+    elif "." in text and " " not in text:
         text = text.split(".", 1)[1]
     return text.replace("_", " ").strip() or "it"
 

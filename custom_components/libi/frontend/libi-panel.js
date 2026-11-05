@@ -14,24 +14,22 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.86.1
+ * v3.89.0
  */
-// [ADDED v3.86.0 | 2026-11-04] Purpose: The ladder keeps its place across a redraw - a click on an element threw the
-//   canvas back to the top, and the right-click menu opened where the block had been. The title of a NET chooses it:
-//   the variables bar lists that NET's variables only; the project's name lists the variables of every NET. A name in
-//   LIBI only: Rename offers it (and falls back to it when Home Assistant cannot rename), a pin's entity has the
-//   right-click menu too, and the name is shown wherever LIBI shows the entity.
-// [ADDED v3.86.1 | 2026-11-04] Purpose: Imports at 3.86.1 - the browser kept the libi-core.js of the earlier 3.86.0 next to
-//   this panel, and the panel stayed blank. A page that cannot be drawn now says so on the screen (_renderFailed).
-import { LibiCore } from './libi-core.js?v=3.86.1';
-import { getStyles } from './libi-css.js?v=3.86.1';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.86.1';
-import { LibiOnline } from './libi-online.js?v=3.86.1';
-import { LibiAiChat } from './libi-ai.js?v=3.86.1';
+// [ADDED v3.88.1 | 2026-11-05] Purpose: The Global tab is a table of the global variables - name, type, device, id - and
+//   a row or New opens one editor; a save closes it (the user's request: the Save that stayed showed nothing happening).
+// [ADDED v3.89.0 | 2026-11-05] Purpose: After a save, LIBI asks to replace the phone with the global variable wherever an
+//   automation still sends straight to it (the user's request), and does it for those ticked (_globalMoveRun); the
+//   message under the table no longer pushes the table down. One send to the config API for every save (_configApiSend).
+import { LibiCore } from './libi-core.js?v=3.89.0';
+import { getStyles } from './libi-css.js?v=3.89.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.89.0';
+import { LibiOnline } from './libi-online.js?v=3.89.0';
+import { LibiAiChat } from './libi-ai.js?v=3.89.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.86.1';
+export const LIBI_BUILD = '3.89.0';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -119,7 +117,13 @@ class LibiPanel extends HTMLElement {
         this._varsH = this._readNum('libi_vars_h', 280, 120, 900);
         // [CHANGED v3.20.0] Helper comes first and is what the bar opens on. It is the helpers page
         // of Home Assistant itself, frame and all, so its own Create helper button is right there.
-        this._varsTab = 'helper';      // helper | vars | search
+        this._varsTab = 'helper';      // helper | vars | search | global
+        // [ADDED v3.88.0] LIBI Global: whether its list was read (loaded - only then is a recipient not in it gone), why
+        // not, the changes not saved yet per recipient key ('+new' for a new one), the one being saved, and what to say.
+        // [ADDED v3.88.1] editing: the one open in the editor ('' - the table); said['+table']: what the table says.
+        this._global = { loaded: false, ok: true, errors: [], drafts: {}, busy: '', said: {}, editing: '' };
+        // [ADDED v3.89.0] The question to replace a phone with a global variable: { key, picked, busy, said }, while it is open.
+        this._globalMove = null;
         this._helperQuery = '';
         this._ctx = null;              // the right click menu on a block name
         this._ep = null;               // the entity chooser: what it is picking for
@@ -234,6 +238,10 @@ class LibiPanel extends HTMLElement {
         try { remembered = JSON.parse(localStorage.getItem('libi_project') || 'null'); } catch (err) { remembered = null; }
         // [ADDED v3.86.0] The names given in LIBI only, before anything is drawn with a name.
         await this._loadLocalNames();
+        // [ADDED v3.87.0] And the phones, whose two ids share one name.
+        await this._loadPhones();
+        // [ADDED v3.88.0] And LIBI Global's recipients, which a MOVE NOTIFY / TTS block shows by name.
+        await this._loadGlobal();
         await this._projectRefreshList();
         if (remembered && (this._projectList || []).some(p => p.slug === remembered.slug)) {
             try {
@@ -335,22 +343,8 @@ class LibiPanel extends HTMLElement {
             return { saved: false, failed: said(err) };
         }
         if (!plan.ok) return { saved: false, compileErrors: (plan.errors || []).length ? plan.errors : ['the compile did not finish'] };
-        const ops = [...(plan.upserts || []).map(op => ({ ...op, op: 'upsert' })),
-            ...(plan.removals || []).map(op => ({ ...op, op: 'remove' }))];
-        const done = [];
-        let failure = null;
-        for (const [index, op] of ops.entries()) {
-            const path = `config/${op.domain}/config/${encodeURIComponent(op.key)}`;
-            try {
-                if (op.op === 'upsert') await this._hass.callApi('POST', path, op.config);
-                else await this._hass.callApi('DELETE', path);
-                done.push({ domain: op.domain, key: op.key, op: op.op });
-            } catch (err) {
-                failure = { domain: op.domain, key: op.key, op: op.op, label: op.label || '', message: this._apiError(err),
-                    not_sent: ops.length - index - 1 };
-                break;
-            }
-        }
+        const { done, failure } = await this._configApiSend([...(plan.upserts || []).map(op => ({ ...op, op: 'upsert' })),
+            ...(plan.removals || []).map(op => ({ ...op, op: 'remove' }))]);
         let r;
         try {
             r = (await ws({ type: 'libi/save_done', slug, name, nets, done, failure, stamp: plan.stamp || '' })) || {};
@@ -370,6 +364,27 @@ class LibiPanel extends HTMLElement {
         }
         this._render();
         return r;
+    }
+
+    /** [ADDED v3.89.0] Each change to Home Assistant's config API, as its own editors send it - POST to save, DELETE to
+     *  remove - stopping at the first one it refuses. SAVE & COMPILE, LIBI Global and the phone replaced with a global
+     *  variable all send with it. Returns what was sent ({ domain, key, op }) and the refusal, if any. */
+    async _configApiSend(ops) {
+        const done = [];
+        let failure = null;
+        for (const [index, op] of ops.entries()) {
+            const path = `config/${op.domain}/config/${encodeURIComponent(op.key)}`;
+            try {
+                if (op.op === 'upsert') await this._hass.callApi('POST', path, op.config);
+                else await this._hass.callApi('DELETE', path);
+                done.push({ domain: op.domain, key: op.key, op: op.op });
+            } catch (err) {
+                failure = { domain: op.domain, key: op.key, op: op.op, label: op.label || '', message: this._apiError(err),
+                    not_sent: ops.length - index - 1 };
+                break;
+            }
+        }
+        return { done, failure };
     }
 
     /** [ADDED v3.85.0] A panel newer than the LIBI Home Assistant runs - copied in, Home Assistant not restarted (the
@@ -801,6 +816,8 @@ class LibiPanel extends HTMLElement {
             modalHtml = this._versionsDialogHtml();
         } else if (this._modal === 'ask') {
             modalHtml = this._askDialogHtml();
+        } else if (this._modal === 'global_move') {
+            modalHtml = this._globalMoveDialogHtml();
         } else if (this._modal === 'entity_picker') {
             modalHtml = this._epDialogHtml();
         } else if (this._modal === 'rename_entity') {
@@ -1388,8 +1405,12 @@ class LibiPanel extends HTMLElement {
         if (!p) return;
         const el = this.core.findEl(p.netId, p.rungId, p.elId);
         if (el) {
-            el[p.prop] = entityId;
-            if (p.prop === 'label' || p.prop === 'target') {
+            // [CHANGED v3.87.0] A message's target is an action: a phone chosen by its notify entity sends with the
+            // phone's action, as in the Inspector (_notifyTargetField). A message has no target spec.
+            const message = p.prop === 'target' && this._sendsMessage(el);
+            const phone = message ? this.core.phoneOf(entityId) : null;
+            el[p.prop] = phone ? phone.service : entityId;
+            if (!message && (p.prop === 'label' || p.prop === 'target')) {
                 el.targetSpec = { entity_id: [entityId] };
                 el.targetKind = 'entity';
                 el.targetLabel = entityId;
@@ -1705,9 +1726,16 @@ class LibiPanel extends HTMLElement {
     }
 
     // [ADDED v3.86.0] Gives an entity a name in LIBI only, or takes it away (''). True when LIBI kept it.
+    // [CHANGED v3.87.0] A phone's name is kept under its action (core.nameKey), whichever of its two ids was renamed, and
+    // one kept under its notify entity goes: the phone has one name.
     async _setLocalName(entityId, name) {
+        const key = this.core.nameKey(entityId);
+        const phone = this.core.phoneOf(entityId);
+        const other = phone && phone.entity_id !== key
+            && Object.prototype.hasOwnProperty.call(this.core.localNames || {}, phone.entity_id) ? phone.entity_id : '';
         try {
-            const res = await this._hass.connection.sendMessagePromise({ type: 'libi/local_name_set', entity_id: entityId, name });
+            let res = await this._hass.connection.sendMessagePromise({ type: 'libi/local_name_set', entity_id: key, name });
+            if (other) res = await this._hass.connection.sendMessagePromise({ type: 'libi/local_name_set', entity_id: other, name: '' });
             const names = res && res.names;
             this.core.localNames = names && typeof names === 'object' && !Array.isArray(names) ? names : {};
             return true;
@@ -1715,6 +1743,463 @@ class LibiPanel extends HTMLElement {
             alert('Could not keep the name in LIBI: ' + (this._staleBackend(err) || (err && err.message ? err.message : err)));
             return false;
         }
+    }
+
+    // [ADDED v3.87.0] The phones the Companion app registered and the action that sends to each (libi/phones), for the
+    // MOVE NOTIFY / TTS block and for the phones' names. Without them - a Home Assistant still running an older LIBI, an
+    // error - the block offers Home Assistant's notify actions by their ids, as they are.
+    async _loadPhones() {
+        try {
+            const res = await this._hass.connection.sendMessagePromise({ type: 'libi/phones' });
+            const phones = res && Array.isArray(res.phones) ? res.phones : [];
+            this.core.phones = phones.filter(p => p && typeof p.entity_id === 'string' && typeof p.service === 'string');
+        } catch (err) {
+            console.warn('LIBI could not read the phones', err);
+            this.core.phones = [];
+        }
+    }
+
+    // [ADDED v3.88.0] LIBI Global: the recipients of messages, each a script of Home Assistant's that sends to the phones
+    // ticked for it (libi/global), with the phones. Not read - an error, a Home Assistant still running an older LIBI -
+    // and a MOVE NOTIFY / TTS block lists no recipient and says nothing of one it sends to.
+    async _loadGlobal() {
+        try {
+            this._applyGlobal(await this._hass.connection.sendMessagePromise({ type: 'libi/global' }));
+        } catch (err) {
+            console.warn('LIBI could not read LIBI Global', err);
+            this.core.recipients = [];
+            Object.assign(this._global, { loaded: false, ok: false,
+                errors: [this._staleBackend(err) || (err && err.message ? err.message : String(err))] });
+        }
+    }
+
+    // [ADDED v3.88.0] What libi/global (and libi/global_done) answered. A file that cannot be read lists nothing: ok false,
+    // and why.
+    _applyGlobal(res) {
+        const ok = !!(res && res.ok);
+        const list = res && Array.isArray(res.recipients) ? res.recipients : [];
+        this.core.recipients = list.filter(r => r && typeof r.key === 'string' && typeof r.action === 'string'
+            && typeof r.name === 'string' && Array.isArray(r.phones));
+        if (res && Array.isArray(res.phones)) {
+            this.core.phones = res.phones.filter(p => p && typeof p.entity_id === 'string' && typeof p.service === 'string');
+        }
+        Object.assign(this._global, { loaded: ok, ok,
+            errors: !ok && res && Array.isArray(res.errors) ? res.errors.map(String) : [] });
+    }
+
+    // [ADDED v3.88.0] A recipient as it is being changed: its draft, else as Home Assistant holds it.
+    _globalDraft(key) {
+        const d = this._global.drafts[key];
+        if (d) return d;
+        const r = (this.core.recipients || []).find(x => x.key === key);
+        return r ? { name: r.name, phones: [...r.phones] } : { name: '', phones: [] };
+    }
+
+    // [ADDED v3.88.0] The Global tab, read again as it opens: another page, or Home Assistant's script editor, may have
+    // changed it since. [CHANGED v3.88.1] key: straight to that global variable's editor (Open Global in Send to).
+    async _openGlobal(key = '') {
+        this._varsTab = 'global';
+        this._varsOpen = true;
+        if (key) Object.assign(this._global, { editing: key, said: {} });
+        this._saveVars();
+        this._render();
+        await this._loadGlobal();
+        this._render();
+    }
+
+    // [ADDED v3.88.0] Whether a recipient can be saved now: a name, a phone, and something to save - a change, a new one,
+    // or one changed outside LIBI, written again.
+    _globalCanSave(key) {
+        if (this._global.busy || !this._global.ok) return false;
+        const d = this._globalDraft(key);
+        const r = (this.core.recipients || []).find(x => x.key === key);
+        return !!d.name.trim() && d.phones.length > 0 && (!r || r.edited || this._globalDirty(key));
+    }
+
+    // [ADDED v3.88.0] Whether a recipient has a change not saved yet.
+    _globalDirty(key) {
+        const d = this._global.drafts[key];
+        if (!d) return false;
+        const r = (this.core.recipients || []).find(x => x.key === key);
+        if (!r) return true;
+        return d.name.trim() !== r.name || [...d.phones].sort().join('|') !== [...r.phones].sort().join('|');
+    }
+
+    // [ADDED v3.88.0] A change to LIBI Global, made as SAVE & COMPILE makes one: libi/global_plan builds and checks the
+    // recipient's script and writes nothing; Home Assistant's config API saves it (POST) or deletes it (DELETE), as its own
+    // script editor does; libi/global_done reads scripts.yaml back and waits for the reload. The page gets LIBI Global as
+    // it is then. Returns { ok, text, key }: saved and reloaded, or why not.
+    async _globalRun(msg) {
+        const ws = (m) => this._hass.connection.sendMessagePromise(m);
+        const said = (err) => this._staleBackend(err) || (err && err.message ? err.message : String(err));
+        let plan;
+        try {
+            plan = (await ws({ type: 'libi/global_plan', ...msg })) || {};
+        } catch (err) {
+            return { ok: false, text: 'Not saved: ' + said(err) };
+        }
+        if (!plan.ok) return { ok: false, text: (plan.errors || []).join(' ') || 'Not saved.' };
+        if (plan.unchanged) return { ok: true, text: 'Nothing changed, so nothing was sent.', key: plan.key };
+        const op = plan.op || {};
+        const { failure } = await this._configApiSend([{ ...op, domain: 'script' }]);
+        let done;
+        try {
+            done = (await ws({ type: 'libi/global_done', key: op.key, op: op.op, label: op.label || '', failure,
+                stamp: plan.stamp || '' })) || {};
+        } catch (err) {
+            return { ok: false, text: 'Sent to Home Assistant, but LIBI could not read it back: ' + said(err), key: op.key };
+        }
+        this._applyGlobal(done);
+        return { ok: done.status === 'ok' && !!done.saved, text: done.message || 'Not saved.', key: op.key };
+    }
+
+    // [CHANGED v3.88.1] Saved, the editor closes and the table says so - the user, 2026-11-05: "I expect the window to
+    // disappear" and the table to show. Not saved, it stays open and says why.
+    async _globalSave(key) {
+        const g = this._global;
+        if (g.busy) return;
+        const known = (this.core.recipients || []).some(x => x.key === key);
+        const d = this._globalDraft(key);
+        g.busy = key;
+        g.said = { [key]: { ok: true, text: 'Saving…' } };
+        this._render();
+        const res = await this._globalRun({ key: known ? key : '', name: d.name, phones: d.phones, remove: false });
+        g.busy = '';
+        if (res.ok) {
+            delete g.drafts[key];
+            g.editing = '';
+            g.said = { '+table': { ok: true, text: res.text } };
+            // [ADDED v3.89.0] The user (2026-11-05): after the save, ask to replace the phone with it wherever an
+            // automation still sends straight to that phone.
+            if (this._globalMoveItems(res.key).some(i => i.can)) {
+                this._openGlobalMove(res.key);
+                return;
+            }
+        } else {
+            g.said = { [key]: { ok: false, text: res.text } };
+        }
+        this._render();
+    }
+
+    // [ADDED v3.89.0] The name of a device a global variable sends to: its name in LIBI, else in Home Assistant, else the
+    // phone's own; the action when it is no phone of the list.
+    _globalDeviceName(service) {
+        const p = (this.core.phones || []).find(x => !x.shared && x.service === service);
+        return this.core.localName(service) || (p ? (this.core.haName(p.entity_id, this._hass) || p.name) : '') || service;
+    }
+
+    // [ADDED v3.89.0] Every element of a NET, those in parallel branches and in a repeat too.
+    _eachElement(net, fn) {
+        const walk = (els) => (els || []).forEach(el => {
+            fn(el);
+            if (el.type === 'parallel') (el.branches || []).forEach(walk);
+            if (el.type === 'repeat') walk(el.sequence);
+        });
+        ((net && net.rungs) || []).forEach(r => walk(r.elements));
+    }
+
+    // [ADDED v3.89.0] Where a global variable can take over from its phone - the user's request (2026-11-05): replace the
+    // phone with it in every automation that still sends straight to it, once they confirm. Each item: a NET on this page
+    // (changed on the page, then SAVE & COMPILE), or an automation or script of Home Assistant's (libi/global_move_plan),
+    // with how many steps change (moves) and stay (stays); can: it can be ticked, else why not. Only a global variable of
+    // one phone takes over: an automation that sends to one of several phones would then send to all of them.
+    _globalMoveItems(key) {
+        const r = (this.core.recipients || []).find(x => x.key === key);
+        if (!r) return [];
+        const phone = !r.move_why && r.phones.length === 1 ? r.phones[0] : '';
+        const slug = this._project ? this._project.slug : 'default';
+        const dirty = this._hasUnsavedChanges();
+        const items = [];
+        const onPage = new Set();
+        for (const net of (phone ? this.core.nets || [] : [])) {
+            let moves = 0;
+            this._eachElement(net, el => { if (this._sendsMessage(el) && el.target === phone) moves += 1; });
+            if (!moves) continue;
+            onPage.add(String(net.ha_id || net.id));
+            const why = dirty ? 'this page has changes that are not saved - save them (SAVE & COMPILE) or undo them first' : '';
+            items.push({ id: `net:${net.id}`, kind: 'page', net: net.id, name: `NET "${net.name}" on this page`, what: 'NET',
+                moves, stays: 0, why, can: !why });
+        }
+        for (const d of r.direct || []) {
+            // One of this project's is changed on its NET above. A script's key is its NET's name as a slug, which is
+            // only the backend's to make: a script of this project is left to its NET.
+            const mine = d.owner && d.owner.slug === slug;
+            if (mine && (onPage.has(String(d.key)) || d.domain !== 'automation')) continue;
+            const why = mine ? `a NET of this project draws it - pick ${r.name} in Send to of its MOVE block` : (d.why || '');
+            items.push({ id: `${d.domain}:${d.key}`, kind: 'ha', domain: d.domain, key: d.key, name: d.name, what: d.domain,
+                moves: d.moves || 0, stays: d.stays || 0, why, can: !why && (d.moves || 0) > 0 });
+        }
+        return items;
+    }
+
+    _openGlobalMove(key) {
+        this._globalMove = { key, picked: this._globalMoveItems(key).filter(i => i.can).map(i => i.id), busy: false, said: null };
+        this._modal = 'global_move';
+        this._render();
+    }
+
+    _closeGlobalMove() {
+        if (this._globalMove && this._globalMove.busy) return;
+        this._globalMove = null;
+        this._modal = null;
+        this._render();
+    }
+
+    // [ADDED v3.89.0] The ones ticked, replaced: Home Assistant's first - libi/global_move_plan changes only the steps that
+    // send to the phone and writes nothing, its config API saves each, libi/global_move_done reads them back and waits for
+    // each reload - then the NETs on this page, their MOVE blocks sending to the global variable, saved with SAVE &
+    // COMPILE. Done, the dialog closes and the table says what changed; otherwise it stays open and says why.
+    async _globalMoveRun() {
+        const m = this._globalMove;
+        if (!m || m.busy) return;
+        const r = (this.core.recipients || []).find(x => x.key === m.key);
+        const items = this._globalMoveItems(m.key).filter(i => i.can && m.picked.includes(i.id));
+        if (!r || !items.length) return;
+        const page = items.filter(i => i.kind === 'page');
+        const ha = items.filter(i => i.kind === 'ha');
+        if (page.length && this._hasUnsavedChanges(true)) {
+            m.said = { ok: false, text: 'This page has changes that are not saved: save them (SAVE & COMPILE) or undo them first. Nothing was replaced.' };
+            this._render();
+            return;
+        }
+        const phone = r.phones[0];
+        m.busy = true;
+        m.said = { ok: true, text: 'Replacing…' };
+        this._render();
+        const texts = [];
+        let ok = true;
+        if (ha.length) {
+            const res = await this._globalMoveSend(m.key, ha);
+            texts.push(res.text);
+            ok = res.ok;
+        }
+        if (ok && page.length) {
+            for (const i of page) {
+                this._eachElement(this.core.nets.find(n => n.id === i.net), el => {
+                    if (this._sendsMessage(el) && el.target === phone) el.target = r.action;
+                });
+            }
+            this.core.pushHistory();
+            const s = await this._saveProject();
+            ok = !!s.complete && s.status === 'ok';
+            texts.push(ok ? `This page is saved: ${page.map(i => i.name).join(', ')} send${page.length === 1 ? 's' : ''} through ${r.name} now.`
+                : `${page.map(i => i.name).join(', ')} send${page.length === 1 ? 's' : ''} to ${r.name} on this page, but: ${this._saveResultText(s)}`);
+            await this._loadGlobal();
+        }
+        m.busy = false;
+        if (ok) {
+            this._globalMove = null;
+            this._modal = null;
+            this._global.said = { '+table': { ok: true, text: texts.join(' ') } };
+        } else {
+            m.said = { ok: false, text: texts.join(' ') };
+            m.picked = m.picked.filter(id => this._globalMoveItems(m.key).some(i => i.can && i.id === id));
+        }
+        this._render();
+    }
+
+    // [ADDED v3.89.0] The automations and scripts of Home Assistant's: plan, config API, done. Returns { ok, text }.
+    async _globalMoveSend(key, items) {
+        const ws = (msg) => this._hass.connection.sendMessagePromise(msg);
+        const said = (err) => this._staleBackend(err) || (err && err.message ? err.message : String(err));
+        const slug = this._project ? this._project.slug : 'default';
+        let plan;
+        try {
+            plan = (await ws({ type: 'libi/global_move_plan', key, slug, entries: items.map(i => ({ domain: i.domain, key: i.key })) })) || {};
+        } catch (err) {
+            return { ok: false, text: 'Nothing was replaced: ' + said(err) };
+        }
+        if (!plan.ok) return { ok: false, text: (plan.errors || []).join(' ') || 'Nothing was replaced.' };
+        const { done, failure } = await this._configApiSend(plan.ops || []);
+        let res;
+        try {
+            res = (await ws({ type: 'libi/global_move_done', key, done, failure, stamp: plan.stamp || '' })) || {};
+        } catch (err) {
+            return { ok: false, text: 'Sent to Home Assistant, but LIBI could not read it back: ' + said(err) };
+        }
+        this._applyGlobal(res);
+        return { ok: res.status === 'ok', text: res.message || 'Nothing was replaced.' };
+    }
+
+    // [ADDED v3.89.0] The question, asked after a save and from the table: the ones that send straight to the phone, each to
+    // tick, and those that are not replaced, with why. Every name from the user's files is escaped.
+    _globalMoveDialogHtml() {
+        const m = this._globalMove;
+        const r = m && (this.core.recipients || []).find(x => x.key === m.key);
+        if (!r) return '';
+        const esc = (v) => this._esc(v === undefined || v === null ? '' : v);
+        const items = this._globalMoveItems(m.key);
+        const can = items.filter(i => i.can);
+        const stay = items.filter(i => !i.can);
+        const picked = can.filter(i => m.picked.includes(i.id)).length;
+        const phone = r.phones.length === 1 ? this._globalDeviceName(r.phones[0]) : r.phones.map(s => this._globalDeviceName(s)).join(', ');
+        const steps = (n) => `${n} step${n === 1 ? '' : 's'}`;
+        const row = (i) => `<label class="gm-item">
+                <input type="checkbox" class="gm-tick" data-id="${esc(i.id)}" ${m.picked.includes(i.id) ? 'checked' : ''} ${m.busy ? 'disabled' : ''} />
+                <span class="nm" dir="auto">${esc(i.name)}</span>
+                <span class="what">${esc(i.what)} · ${steps(i.moves)}${i.stays ? ` · ${steps(i.stays)} stay as they are` : ''}</span></label>`;
+        const off = (i) => `<div class="gm-item off"><span class="nm" dir="auto">${esc(i.name)}</span><span class="why" dir="auto">${esc(i.why || 'nothing in it can be replaced')}</span></div>`;
+        const intro = r.move_why
+            ? `Nothing can be sent through ${esc(r.name)}: ${esc(r.move_why)}.`
+            : can.length
+                ? `These still send straight to ${esc(phone)}, not through ${esc(r.name)}. Replace ${esc(phone)} with ${esc(r.name)} in the ones ticked? Only that changes in them, and Home Assistant saves each one. From then on, a phone replaced in ${esc(r.name)} reaches them too.`
+                : `Nothing sends straight to ${esc(phone)} that can be replaced now.`;
+        return `<div class="modal-overlay" id="modalOverlay"><div class="modal gm-modal">
+            <h2 class="modal-title" dir="auto">Send through ${esc(r.name)}?</h2>
+            <p class="gm-text" dir="auto">${intro}</p>
+            ${can.length || stay.length ? `<div class="gm-list">${can.map(row).join('')}
+                ${stay.length ? `<div class="gm-sec">Not replaced</div>${stay.map(off).join('')}` : ''}</div>` : ''}
+            ${m.said ? `<div class="gm-said ${m.said.ok ? 'ok' : 'err'}" dir="auto">${esc(m.said.text)}</div>` : ''}
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="gmCancel" ${m.busy ? 'disabled' : ''}>Not now</button>
+                ${can.length ? `<button class="btn btn-primary" id="gmGo" ${picked && !m.busy ? '' : 'disabled'}>Replace in ${picked}</button>` : ''}
+            </div>
+        </div></div>`;
+    }
+
+    async _globalDelete(key) {
+        const g = this._global;
+        const r = (this.core.recipients || []).find(x => x.key === key);
+        if (!r || g.busy) return;
+        // [CHANGED v3.88.1] What it says goes where the user is: the editor of it, or the table.
+        const where = g.editing === key ? key : '+table';
+        // The backend checks Home Assistant's files and every project as saved; the NETs on this page may hold more.
+        const whole = new RegExp(r.action.replace(/\./g, '\\.') + '(?![a-z0-9_])');
+        const here = (this.core.nets || []).filter(n => whole.test(JSON.stringify(n))).map(n => `NET "${n.name}"`);
+        if (here.length) {
+            g.said = { [where]: { ok: false, text: `${r.name} is not deleted: ${here.join(', ')} on this page sends to it. Send it to another recipient or a phone first.` } };
+            this._render();
+            return;
+        }
+        if (!window.confirm(`Delete the global variable ${r.name}? Its script, ${r.action}, is deleted from Home Assistant.`)) return;
+        g.busy = key;
+        g.said = { [where]: { ok: true, text: 'Deleting…' } };
+        this._render();
+        const res = await this._globalRun({ key, remove: true });
+        g.busy = '';
+        const gone = !(this.core.recipients || []).some(x => x.key === key);
+        if (gone) {
+            delete g.drafts[key];
+            if (g.editing === key) g.editing = '';
+        }
+        g.said = { [gone ? '+table' : where]: { ok: res.ok, text: res.text } };
+        this._render();
+    }
+
+    // [ADDED v3.88.0] The Global tab of the bar. [CHANGED v3.88.1] The user's request (2026-11-05): a table of the global
+    // variables, as the Variables tab is one, and the editor of one of them only while it is being made or changed - a
+    // save closes it. Every value from the user's files and Home Assistant is escaped.
+    _globalViewHtml() {
+        const g = this._global;
+        const list = this.core.recipients || [];
+        const r = list.find(x => x.key === g.editing) || null;
+        if (r || (g.editing === '+new' && g.drafts['+new'])) return this._globalEditorHtml(g.editing, r);
+        return this._globalTableHtml();
+    }
+
+    // [ADDED v3.88.1] Each global variable on a row: its name, its type, the devices it sends to by name and their ids,
+    // and how many automations and scripts send to it. A row opens it; 🗑 deletes it.
+    _globalTableHtml() {
+        const g = this._global;
+        const esc = (v) => this._esc(v === undefined || v === null ? '' : v);
+        const deviceName = (service) => this._globalDeviceName(service);
+        // [ADDED v3.89.0] A line for each one that automations still pass by, sending straight to its phone.
+        const moves = (this.core.recipients || []).map(r => {
+            const n = this._globalMoveItems(r.key).filter(i => i.can).length;
+            return n ? `<div class="glob-moves"><span dir="auto">${n} ${n === 1 ? 'automation or script still sends' : 'automations and scripts still send'} straight to ${esc(deviceName(r.phones[0]))}, not through <b>${esc(r.name)}</b>.</span>
+                <button class="btn glob-move-open" data-key="${esc(r.key)}" ${g.busy || !g.ok ? 'disabled' : ''}>Replace…</button></div>` : '';
+        }).join('');
+        const rows = (this.core.recipients || []).map(r => {
+            const missing = r.missing || [];
+            const lines = (text) => r.phones.map(s => `<div class="${missing.includes(s) ? 'gone' : ''}" title="${esc(s)}">${esc(text(s))}</div>`).join('') || '—';
+            const flags = (r.edited ? '<span class="glob-flag warn" title="Changed outside LIBI, in Home Assistant">edited</span>' : '')
+                + (missing.length ? '<span class="glob-flag err" title="A device it sends to is no longer in Home Assistant: nothing reaches it">device gone</span>' : '');
+            return `<tr class="glob-row" data-key="${esc(r.key)}" tabindex="0" title="${esc(r.action)} - click to change it">
+                <td class="c-name" dir="auto">${esc(r.name)}${flags}</td>
+                <td><span class="type-tag type-RCPT" title="A recipient: the phones a MOVE NOTIFY / TTS message goes to">RECIPIENT</span></td>
+                <td class="glob-dev" dir="auto">${lines(deviceName)}</td>
+                <td class="c-eid glob-dev">${lines(s => s)}</td>
+                <td class="glob-used" title="How many automations and scripts send to it">${(r.used_by || []).length}</td>
+                <td class="c-act"><button class="vars-del glob-row-del" data-key="${esc(r.key)}" title="Delete ${esc(r.name)}" ${g.busy || !g.ok ? 'disabled' : ''}>🗑</button></td>
+            </tr>`;
+        }).join('');
+        const said = g.said['+table'];
+        return `<div class="glob-view">
+            <div class="glob-top">
+                <span class="glob-title">Global variables</span>
+                <span class="glob-note">One place for every project. A RECIPIENT is the phones a MOVE NOTIFY / TTS message goes to: pick it in the block's Send to, and when a phone is replaced, change it here once. Click a row to change it.</span>
+            </div>
+            ${g.ok ? '' : `<div class="glob-err">LIBI Global could not be read, so nothing can be changed here: ${esc(g.errors.join('; '))}</div>`}
+            ${said ? `<div class="glob-said ${said.ok ? 'ok' : 'err'}" dir="auto">${esc(said.text)}</div>` : ''}
+            ${moves}
+            <div class="glob-scroll">${rows ? `<table class="vars-table glob-table"><thead><tr>
+                    <th>Name</th><th style="width:100px;">Type</th><th>Device</th><th class="c-eid">ID</th>
+                    <th class="glob-used" style="width:70px;" title="How many automations and scripts send to it">Used by</th><th style="width:48px;"></th>
+                </tr></thead><tbody>${rows}</tbody></table>` : (g.ok ? '<div class="vars-empty">No global variable yet.</div>' : '')}</div>
+            <div class="glob-new"><button class="btn" id="globAdd" ${g.ok && !g.busy ? '' : 'disabled'}>＋ New global variable</button></div>
+        </div>`;
+    }
+
+    // [ADDED v3.88.1] One global variable being made or changed: its name, the phones to tick, who sends to it and who
+    // still sends straight to its phones. Save, Cancel or Delete closes it. (The card of v3.88.0, one at a time.)
+    _globalEditorHtml(key, r) {
+        const g = this._global;
+        const esc = (v) => this._esc(v === undefined || v === null ? '' : v);
+        const phones = this.core.phones || [];
+        const names = (list) => list.map(u => `<b dir="auto">${esc(u.name)}</b>`).join(', ');
+        const d = this._globalDraft(key);
+        const busy = g.busy === key;
+        const ticked = new Set(d.phones);
+        const missing = new Set((r && r.missing) || []);
+        const listed = new Set(phones.filter(p => !p.shared).map(p => p.service));
+        const chips = phones.map(p => {
+            const on = !p.shared && ticked.has(p.service);
+            const who = [p.owner, p.shared ? 'shares its name with another phone' : '', p.speaks ? '' : 'does not read aloud']
+                .filter(Boolean).join(' · ');
+            return `<label class="glob-phone${on ? ' on' : ''}${p.shared ? ' off' : ''}" title="${esc(p.shared ? 'Two phones are registered under this name in the Companion app: their one action reaches only one of them. Give one another name in the app.' : p.service)}">
+                <input type="checkbox" class="glob-tick" data-key="${esc(key)}" data-svc="${esc(p.shared ? '' : p.service)}" ${on ? 'checked' : ''} ${p.shared || busy ? 'disabled' : ''} />
+                <span class="nm" dir="auto">${esc(this.core.localName(p.service) || this.core.haName(p.entity_id, this._hass) || p.name)}</span>${who ? `<span class="who" dir="auto">${esc(who)}</span>` : ''}</label>`;
+        }).join('');
+        // A phone it sends to that is not in the list: gone from the Companion app, or ticked in Home Assistant.
+        const gone = d.phones.filter(s => !listed.has(s)).map(s => `<label class="glob-phone on gone" title="${esc(s)}">
+                <input type="checkbox" class="glob-tick" data-key="${esc(key)}" data-svc="${esc(s)}" checked ${busy ? 'disabled' : ''} />
+                <span class="nm">${esc(s)}</span><span class="who">${missing.has(s) ? 'no longer in Home Assistant' : 'not a phone of the Companion app'}</span></label>`).join('');
+        const notes = [];
+        if (r && r.edited) notes.push('<div class="glob-warn">Changed outside LIBI, in Home Assistant. Save writes it again as LIBI writes it, with the phones ticked here.</div>');
+        if (missing.size) notes.push('<div class="glob-err">A phone it sends to is no longer in Home Assistant: nothing reaches it. Untick it, tick the new phone, Save.</div>');
+        const uses = !r ? '' : ((r.used_by || []).length
+            ? `<div class="glob-uses">Sent to by ${(r.used_by || []).length}: ${names(r.used_by)}</div>`
+            : '<div class="glob-uses">Nothing sends to it yet: pick it in Send to of a MOVE NOTIFY / TTS block.</div>');
+        // [CHANGED v3.89.0] With Replace…, when the phone can be replaced with it in them now (the question after a save).
+        const movable = r && !this._globalDirty(key) && this._globalMoveItems(key).some(i => i.can);
+        const direct = r && (r.direct || []).length
+            ? `<div class="glob-uses">Still sending straight to its phones, not through ${esc(r.name)}: ${names(r.direct)}. ${movable
+                ? `<button class="btn glob-move-open" data-key="${esc(key)}" ${busy ? 'disabled' : ''}>Replace…</button>`
+                : `Pick ${esc(r.name)} in their Send to, and a phone replaced here reaches them too.`}</div>` : '';
+        const said = g.said[key];
+        return `<div class="glob-view">
+            <div class="glob-top">
+                <span class="glob-title">Global variables ▸ <span dir="auto">${r ? esc(r.name) : 'New'}</span></span>
+            </div>
+            ${g.ok ? '' : `<div class="glob-err">LIBI Global could not be read, so nothing can be changed here: ${esc(g.errors.join('; '))}</div>`}
+            <div class="glob-edit">
+                <div class="glob-card${this._globalDirty(key) || !r ? ' dirty' : ''}" data-key="${esc(key)}">
+                    <div class="glob-head">
+                        <input type="text" class="glob-name" data-key="${esc(key)}" value="${esc(d.name)}" placeholder="Name, for example Guy or Everyone" maxlength="60" dir="auto" ${busy ? 'disabled' : ''} />
+                        ${r ? `<span class="glob-id" title="The script in Home Assistant that sends to these phones">${esc(r.action)}</span>` : '<span class="glob-id">new - not saved yet</span>'}
+                    </div>
+                    ${notes.join('')}
+                    <div class="glob-phones">${chips}${gone}${phones.length ? '' : '<span class="glob-note">No phone with the Home Assistant Companion app is registered.</span>'}</div>
+                    ${uses}${direct}
+                    <div class="glob-foot">
+                        <button class="btn btn-primary glob-save" data-key="${esc(key)}" ${this._globalCanSave(key) ? '' : 'disabled'}>Save</button>
+                        <button class="btn btn-ghost glob-cancel" data-key="${esc(key)}" ${busy ? 'disabled' : ''}>Cancel</button>
+                        ${r ? `<button class="btn btn-ghost glob-del" data-key="${esc(key)}" ${busy ? 'disabled' : ''}>Delete</button>` : ''}
+                        ${said ? `<span class="glob-said ${said.ok ? 'ok' : 'err'}" dir="auto">${esc(said.text)}</span>` : ''}
+                    </div>
+                </div>
+            </div>
+        </div>`;
     }
 
     async _doRenameLocal() {
@@ -1796,6 +2281,173 @@ class LibiPanel extends HTMLElement {
         return wrap;
     }
 
+    // [ADDED v3.87.0] A block whose target is where a message goes: MOVE NOTIFY, TTS or both, and the old notify block.
+    _sendsMessage(el) {
+        return !!el && (el.type === 'notify' || (el.type === 'move' && (el.mode || 'value') !== 'value'));
+    }
+
+    // [ADDED v3.87.0] Home Assistant's notify actions other than the phones' - those are listed by phone - and other than
+    // notify.send_message, which needs the notify entity it sends with: the block does not write one.
+    _notifyActions() {
+        const services = this._hass && this._hass.services && this._hass.services.notify;
+        if (!services || typeof services !== 'object') return [];
+        const phones = new Set((this.core.phones || []).map(p => p.service));
+        return Object.keys(services).map(s => `notify.${s}`)
+            .filter(a => a !== 'notify.send_message' && !phones.has(a)).sort();
+    }
+
+    // [ADDED v3.87.0] What a MOVE NOTIFY / TTS target is: one of the choices of _notifyTargetField (listed), and when Home
+    // Assistant cannot call it, why (problem) and the action that reaches the same phone (fix). A target outside the
+    // notify domain - a speaker, for tts.speak - is neither; without Home Assistant's list of actions nothing is said.
+    _notifyTarget(target) {
+        const t = String(target || '').trim();
+        const out = { listed: false, phone: null, recipient: null, problem: '', note: '', fix: '' };
+        // [ADDED v3.88.0] A recipient of LIBI Global. One not in the list read from Home Assistant is gone - said only when
+        // that list was read.
+        out.recipient = this.core.recipientOf(t);
+        if (out.recipient) {
+            out.listed = true;
+            if ((out.recipient.missing || []).length) out.note = `${out.recipient.name} sends to a phone Home Assistant no longer has (${out.recipient.missing.join(', ')}): nothing reaches it. Tick the new phone in Global.`;
+            return out;
+        }
+        if (/^script\.libi_send_to_[a-z0-9_]+$/.test(t)) {
+            if (this._global.loaded) out.problem = `${t} is a recipient of LIBI Global that is no longer there: nothing is sent to it. Pick another one.`;
+            return out;
+        }
+        const phones = this.core.phones || [];
+        out.phone = phones.find(p => !p.shared && p.service === t) || null;
+        if (out.phone || this._notifyActions().includes(t)) { out.listed = true; return out; }
+        const services = this._hass && this._hass.services && this._hass.services.notify;
+        const m = t.match(/^notify\.([a-z0-9_]+)$/);
+        if (!m || !services || typeof services !== 'object') return out;
+        const exists = Object.prototype.hasOwnProperty.call(services, m[1]);
+        const shared = phones.find(p => p.shared && (p.service === t || p.entity_id === t));
+        const entityOf = phones.find(p => !p.shared && p.entity_id === t);
+        if (shared) {
+            const both = `Two phones are registered as ${shared.name} in the Companion app, so Home Assistant has one action for both, ${shared.service}, and it reaches only one of them. Give one of the phones another name in the app, then pick it here.`;
+            if (exists) out.note = both;
+            else out.problem = `${t} is the notify entity of a phone, not an action: Home Assistant cannot send with it. ${both}`;
+        } else if (entityOf) {
+            const name = this.core.localName(t) || this.core.haName(t, this._hass) || entityOf.name || t;
+            out.problem = `${t} is the notify entity of the phone ${name}, not an action: Home Assistant cannot send with it, so nothing reaches the phone. The phone's action is ${entityOf.service}.`;
+            out.fix = entityOf.service;
+        } else if (!exists) {
+            out.problem = `${t} is not an action in this Home Assistant - a phone no longer registered in the Companion app? Nothing is sent to it. Pick another one.`;
+        }
+        return out;
+    }
+
+    // [ADDED v3.87.0] Where a MOVE NOTIFY / TTS block sends: the user's phones by name - the name given in LIBI, in any
+    // project, else Home Assistant's - and Home Assistant's other notify actions. Every choice is an action Home
+    // Assistant can call. The entity picker this replaces listed each phone by its notify entity (notify.sm_s938b), and
+    // that went into the automation as its action: Home Assistant could not call it, and the user's train reminder said
+    // nothing at its time (2026-11-04). A target that is none of these is kept until another one is chosen, and is
+    // said. Built with DOM calls and textContent: the names come from the user's Home Assistant and from LIBI.
+    _notifyTargetField(el, mode) {
+        const target = String(el.target || '').trim();
+        const info = this._notifyTarget(target);
+        const wrap = document.createElement('div');
+        wrap.className = 'fgrp notify-target';
+        const label = document.createElement('label');
+        label.id = 'lbl_target';
+        label.textContent = 'Send to';
+        const select = document.createElement('select');
+        select.id = 'inp_target';
+        select.setAttribute('dir', 'auto');
+        const option = (parent, value, text, disabled = false) => {
+            const o = document.createElement('option');
+            o.value = value;
+            o.textContent = text;
+            o.disabled = disabled;
+            parent.appendChild(o);
+        };
+        if (!target) option(select, '', 'Pick a phone or a notify action');
+        else if (!info.listed) option(select, target, info.problem ? `${target} - not an action` : target);
+        // [ADDED v3.88.0] LIBI Global's recipients first: their phones are changed in one place, for every project.
+        const recipients = this.core.recipients || [];
+        if (recipients.length) {
+            const group = document.createElement('optgroup');
+            group.label = 'Global';
+            for (const r of recipients) {
+                const n = r.phones.length;
+                option(group, r.action, `${r.name} · ${n} phone${n === 1 ? '' : 's'}`);
+            }
+            select.appendChild(group);
+        }
+        const phones = this.core.phones || [];
+        if (phones.length) {
+            const group = document.createElement('optgroup');
+            group.label = 'Phones';
+            for (const p of phones) {
+                const name = this.core.localName(p.service) || this.core.haName(p.entity_id, this._hass) || p.name || p.entity_id;
+                const owner = String(p.owner || '');
+                const what = [owner && !name.toLowerCase().includes(owner.toLowerCase()) ? owner : '',
+                    p.shared ? 'shares its name with another phone' : '',
+                    mode !== 'notify' && !p.shared && !p.speaks ? 'does not read aloud' : ''].filter(Boolean);
+                option(group, p.shared ? `-shared-${p.entity_id}` : p.service, what.length ? `${name} · ${what.join(' · ')}` : name, !!p.shared);
+            }
+            select.appendChild(group);
+        }
+        const actions = this._notifyActions();
+        if (actions.length) {
+            const group = document.createElement('optgroup');
+            group.label = 'Other notify actions';
+            for (const a of actions) {
+                const local = this.core.localName(a);
+                option(group, a, local ? `${local} · ${a}` : a);
+            }
+            select.appendChild(group);
+        }
+        select.value = target;
+        select.addEventListener('change', () => {
+            el.target = select.value;
+            this.core.pushHistory();
+            this._render();
+        });
+        wrap.append(label, select);
+        const say = (cls, text, color) => {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.setAttribute('dir', 'auto');
+            d.style.cssText = `font-size:12px; color:${color}; overflow-wrap:anywhere;`;
+            d.textContent = text;
+            wrap.appendChild(d);
+        };
+        if (info.recipient) {
+            const to = info.recipient.phones.map(s => this.core.friendlyName(s, this._hass) || s).join(', ');
+            say('notify-target-action', `Global recipient: ${target}`, 'var(--secondary-text-color, #616161); font-family:monospace');
+            say('notify-target-phones', `Sends to ${to || 'no phone'}. Change its phones in Global.`, 'var(--secondary-text-color, #616161)');
+        } else if (info.listed) say('notify-target-action', `Home Assistant action: ${target}`, 'var(--secondary-text-color, #616161); font-family:monospace');
+        if (info.note) say('notify-target-note', info.note, 'var(--warning-color, #b26a00)');
+        if (info.problem) say('notify-target-warn', info.problem, 'var(--error-color, #db4437)');
+        if (info.fix) {
+            const btn = document.createElement('button');
+            btn.id = 'notifyTargetFix';
+            btn.className = 'btn';
+            btn.style.cssText = 'min-height:40px; align-self:flex-start; max-width:100%; overflow-wrap:anywhere;';
+            btn.textContent = `Send with ${info.fix}`;
+            btn.addEventListener('click', () => {
+                el.target = info.fix;
+                this.core.pushHistory();
+                this._render();
+            });
+            wrap.appendChild(btn);
+        }
+        // [ADDED v3.88.0] The way to LIBI Global: to change the phones of the recipient picked, or to make the first one.
+        if (info.recipient || (this._global.loaded && !recipients.length)) {
+            if (!recipients.length) say('notify-target-hint', 'Global: make a global variable - the phones of Guy, of everyone - and send to it from every project. A phone replaced is then changed in one place.', 'var(--secondary-text-color, #616161)');
+            const open = document.createElement('button');
+            open.id = 'notifyOpenGlobal';
+            open.className = 'btn btn-ghost';
+            open.style.cssText = 'min-height:40px; align-self:flex-start;';
+            open.textContent = 'Open Global';
+            // [CHANGED v3.88.1] Straight to the editor of the one picked.
+            open.addEventListener('click', (e) => { e.stopPropagation(); this._openGlobal(info.recipient ? info.recipient.key : ''); });
+            wrap.appendChild(open);
+        }
+        return wrap;
+    }
+
     _picker(kind, value, onValue, opts = {}) {
         const wrap = document.createElement('div');
         wrap.className = 'fgrp';
@@ -1832,7 +2484,6 @@ class LibiPanel extends HTMLElement {
             node.allowCustomEntity = opts.allowCustom !== false;
             if (kind === 'person') node.includeDomains = ['person', 'device_tracker'];
             else if (kind === 'zone') node.includeDomains = ['zone'];
-            else if (kind === 'notify') node.includeDomains = ['notify'];
             else if (kind === 'counter') node.includeDomains = ['counter'];
             else if (opts.domains) node.includeDomains = opts.domains;
         }
@@ -1955,9 +2606,11 @@ class LibiPanel extends HTMLElement {
                 }
             }
 
-            slot.appendChild(this._picker(mode === 'value' ? 'entity' : 'notify', el.target,
-                v => { el.target = v; this.core.pushHistory(); this._render(); },
-                { label: mode === 'value' ? 'Target Entity / Helper' : 'Notify Service / Speaker', id: 'target' }));
+            // [CHANGED v3.87.0] A message goes to a phone or a notify action from LIBI's own list (_notifyTargetField).
+            slot.appendChild(mode === 'value'
+                ? this._picker('entity', el.target, v => { el.target = v; this.core.pushHistory(); this._render(); },
+                    { label: 'Target Entity / Helper', id: 'target' })
+                : this._notifyTargetField(el, mode));
             if (mode === 'value') {
                 // [CHANGED v3.7.0] A value assignment targets things the same way an action does.
                 const tpm = this._targetPicker(el);
@@ -1997,10 +2650,8 @@ class LibiPanel extends HTMLElement {
 
         } else if (el.type === 'notify') {
             const fgrpSrc = document.createElement('div'); fgrpSrc.className = 'fgrp'; fgrpSrc.innerHTML = `<label id="lbl_source">Message Text</label><textarea id="inp_source" rows="3">${this._esc(el.source || '')}</textarea>`; slot.appendChild(fgrpSrc);
-            const fgrpTgt = document.createElement('div'); fgrpTgt.className = 'fgrp'; fgrpTgt.innerHTML = `<label id="lbl_target">Notify Target</label>`;
-            const picker = document.createElement('ha-entity-picker'); picker.hass = this._hass; picker.value = el.target || ''; picker.includeDomains = ['notify'];
-            picker.id = "inp_target";
-            picker.addEventListener('value-changed', onChange('target')); fgrpTgt.appendChild(picker); slot.appendChild(fgrpTgt);
+            // [CHANGED v3.87.0] The same list as MOVE NOTIFY: the entity picker wrote a phone's notify entity here too.
+            slot.appendChild(this._notifyTargetField(el, 'notify'));
 
         } else if (el.type.startsWith('cmp') || el.type.startsWith('math')) {
             const isCmp = el.type.startsWith('cmp');
@@ -2158,6 +2809,8 @@ class LibiPanel extends HTMLElement {
         } else if (el.type.startsWith('timer')) { 
             if (isEmpty(el.label)) { errs.lbl = true; errs.el = true; } 
         }
+        // [ADDED v3.87.0] A notify target Home Assistant cannot call is red: Home Assistant saves it, and nothing is sent.
+        if (this._sendsMessage(el) && !errs.tgt && this._notifyTarget(el.target).problem) { errs.tgt = true; errs.el = true; }
         return errs;
     }
 
@@ -2552,14 +3205,11 @@ class LibiPanel extends HTMLElement {
             const s = String(v == null ? '' : v).replace(/\s*\+\d+$/, '').trim();
             if (/^[a-z_][a-z0-9_]*\.[a-z0-9_]+$/.test(s)) found.add(s);
         };
-        const walk = (els) => (els || []).forEach(el => {
+        this._eachElement(net, el => {
             ['label', 'target', 'source', 'sourceA', 'sourceB'].forEach(k => add(el[k]));
             const spec = (el.targetSpec || {}).entity_id;
             (Array.isArray(spec) ? spec : (spec ? [spec] : [])).forEach(add);
-            if (el.type === 'parallel') (el.branches || []).forEach(walk);
-            if (el.type === 'repeat') walk(el.sequence);
         });
-        (net.rungs || []).forEach(r => walk(r.elements));
         // Variables made for this net but not yet placed on a rung still belong to it.
         (net.vars || []).forEach(add);
         return found;
@@ -2703,11 +3353,12 @@ class LibiPanel extends HTMLElement {
                     <button class="vars-tab${this._varsTab === 'helper' ? ' on' : ''}" id="varsTabHelper">Helper</button>
                     <button class="vars-tab${this._varsTab === 'vars' ? ' on' : ''}" id="varsTabVars">Variables<span class="n">${rows.length}</span></button>
                     <button class="vars-tab${this._varsTab === 'search' ? ' on' : ''}" id="varsTabSearch">Search<span class="n">${projectCount}</span></button>
+                    <button class="vars-tab${this._varsTab === 'global' ? ' on' : ''}" id="varsTabGlobal" title="LIBI Global: the recipients of messages, for every project">Global<span class="n">${(this.core.recipients || []).length}</span></button>
                 </div>
                 <div class="spacer"></div>
                 <button class="vars-fold" id="varsFold" title="${this._varsOpen ? 'Fold the bar down' : 'Open the bar'}">${this._varsOpen ? '▼' : '▲'}</button>
             </div>
-            <div class="vars-body">${this._varsTab === 'helper' ? this._helperViewHtml() : body}</div>
+            <div class="vars-body">${this._varsTab === 'helper' ? this._helperViewHtml() : (this._varsTab === 'global' ? this._globalViewHtml() : body)}</div>
         </div>`;
     }
 
@@ -3382,6 +4033,10 @@ class LibiPanel extends HTMLElement {
             this._selectedNetId = null;
             this._modal = null;
             this._rememberProject();
+            // [ADDED v3.87.0] A name given in LIBI from another page since this one started is shown here too.
+            await this._loadLocalNames();
+            await this._loadPhones();
+            await this._loadGlobal();
             this._render();
             const s = res.stats || {};
             if (s.orphan) {
@@ -3621,9 +4276,11 @@ class LibiPanel extends HTMLElement {
 
     _elBody(el, errs) {
         // [ADDED v3.86.0] A pin shows the entity id, or the name the user gave it in LIBI; the hover keeps the id.
+        // [CHANGED v3.88.0] A recipient of LIBI Global by its name there: its script's id says nothing of whose it is.
         const pinShown = (v) => {
             if (typeof v !== 'string') return v;
-            const local = this.core.localName(v);
+            const recipient = this.core.recipientOf(v);
+            const local = this.core.localName(v) || (recipient ? recipient.name : '');
             return local ? local + ((v.match(/\s*\+\d+$/) || [''])[0]) : v;
         };
         const varPin = (side, name, val, errClass, propName, extra = '') => {
@@ -3953,6 +4610,62 @@ class LibiPanel extends HTMLElement {
             on('varsTabHelper', 'click', (e) => { e.stopPropagation(); this._varsTab = 'helper'; this._varsOpen = true; this._saveVars(); this._render(); });
             on('varsTabVars', 'click', (e) => { e.stopPropagation(); this._varsTab = 'vars'; this._varsOpen = true; this._saveVars(); this._render(); });
             on('varsTabSearch', 'click', (e) => { e.stopPropagation(); this._varsTab = 'search'; this._varsOpen = true; this._saveVars(); this._render(); });
+            // [ADDED v3.88.0] LIBI Global. A name typed is kept as it is typed, without drawing the page again (the box
+            // keeps its focus); a phone ticked draws the card again.
+            on('varsTabGlobal', 'click', (e) => { e.stopPropagation(); this._openGlobal(); });
+            const keyOf = (e) => e.currentTarget.getAttribute('data-key');
+            all('.glob-name', 'click', e => e.stopPropagation());
+            all('.glob-name', 'input', e => {
+                const key = keyOf(e);
+                this._global.drafts[key] = { name: e.currentTarget.value, phones: [...this._globalDraft(key).phones] };
+                const btn = [...sr.querySelectorAll('.glob-save')].find(b => b.getAttribute('data-key') === key);
+                if (btn) btn.disabled = !this._globalCanSave(key);
+            });
+            all('.glob-name', 'keydown', e => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                if (this._globalCanSave(keyOf(e))) this._globalSave(keyOf(e));
+            });
+            all('.glob-tick', 'click', e => e.stopPropagation());
+            all('.glob-tick', 'change', e => {
+                const key = keyOf(e);
+                const svc = e.currentTarget.getAttribute('data-svc');
+                if (!svc) return;
+                const base = this._globalDraft(key);
+                const phones = base.phones.filter(s => s !== svc);
+                if (e.currentTarget.checked) phones.push(svc);
+                this._global.drafts[key] = { name: base.name, phones };
+                this._render();
+            });
+            all('.glob-save', 'click', e => { e.stopPropagation(); this._globalSave(keyOf(e)); });
+            // [CHANGED v3.88.1] Cancel closes the editor and drops what was not saved; a row of the table opens one.
+            all('.glob-cancel', 'click', e => {
+                e.stopPropagation();
+                delete this._global.drafts[keyOf(e)];
+                Object.assign(this._global, { editing: '', said: {} });
+                this._render();
+            });
+            const openRow = (e) => {
+                Object.assign(this._global, { editing: keyOf(e), said: {} });
+                this._render();
+            };
+            all('.glob-row', 'click', e => { e.stopPropagation(); openRow(e); });
+            all('.glob-row', 'keydown', e => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                openRow(e);
+            });
+            all('.glob-row-del', 'click', e => { e.stopPropagation(); this._globalDelete(keyOf(e)); });
+            all('.glob-move-open', 'click', e => { e.stopPropagation(); this._openGlobalMove(keyOf(e)); });
+            all('.glob-del', 'click', e => { e.stopPropagation(); this._globalDelete(keyOf(e)); });
+            on('globAdd', 'click', (e) => {
+                e.stopPropagation();
+                this._global.drafts['+new'] = { name: '', phones: [] };
+                Object.assign(this._global, { editing: '+new', said: {} });
+                this._render();
+                const box = this.shadowRoot.querySelector('.glob-name[data-key="+new"]');
+                if (box) box.focus();
+            });
             on('varsScopeNet', 'click', (e) => { e.stopPropagation(); this._varsScope = 'net'; this._render(); });
             on('varsScopeAll', 'click', (e) => { e.stopPropagation(); this._varsScope = 'all'; this._render(); });
             // [ADDED v3.86.0] Every NET of the project, from the chip in the bar or from the project's name in the header.
@@ -4440,6 +5153,20 @@ class LibiPanel extends HTMLElement {
             this._deleteNet(e.currentTarget.getAttribute('data-nid'));
         });
         all('.ask-answer', 'click', e => this._answerAsk(e.currentTarget.getAttribute('data-answer')));
+        // [ADDED v3.89.0] The question to replace a phone with a global variable: a tick is kept without drawing the dialog
+        // again; Replace in N follows the ticks.
+        all('.gm-tick', 'change', e => {
+            const m = this._globalMove;
+            if (!m) return;
+            const id = e.currentTarget.getAttribute('data-id');
+            m.picked = m.picked.filter(x => x !== id);
+            if (e.currentTarget.checked) m.picked.push(id);
+            const go = this.shadowRoot.getElementById('gmGo');
+            const can = this._globalMoveItems(m.key).filter(i => i.can && m.picked.includes(i.id)).length;
+            if (go) { go.textContent = `Replace in ${can}`; go.disabled = !can || m.busy; }
+        });
+        on('gmGo', 'click', () => this._globalMoveRun());
+        on('gmCancel', 'click', () => this._closeGlobalMove());
 
         all('.load-net-btn', 'click', e => { 
             e.stopPropagation(); 
