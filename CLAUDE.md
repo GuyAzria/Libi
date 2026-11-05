@@ -33,7 +33,10 @@ Where the two differ, this file is the authority for LIBI.
   project's `made`), and only after the panel lists it and the user agrees;
   an entry opened from Home Assistant that leaves the canvas leaves the
   project and stays. A NET never takes a key Home Assistant holds for someone
-  else (`_taken_sync`): it gets the next free one.
+  else (`_taken_sync`): it gets the next free one. A NET not changed in LIBI
+  since LIBI last saw it is never sent (`_as_last_seen`, against its active
+  version), and what was deleted (gone), changed (conflict) or cannot be drawn
+  (loses) in Home Assistant is replaced only after the panel asks.
 - Projects (groups of nets) are stored as JSON under the Home Assistant config
   folder (`PROJECT_DIR_NAME`), and the parsed tree in `libi_ast.json`.
 - Frontend: `custom_components/libi/frontend/` - `libi-panel.js`,

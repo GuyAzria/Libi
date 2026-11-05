@@ -21,6 +21,8 @@
 //   message under the table no longer pushes the table down. One send to the config API for every save (_configApiSend).
 // [CHANGED v3.90.0 | 2026-11-05] Purpose: The HACS review of 2026-11-05 - SAVE & COMPILE lists what it would delete from
 //   Home Assistant and asks first (_confirmRemovals); only what LIBI made is ever offered, and Keep lets it go instead.
+//   Before it sends anything it also asks about what was deleted or changed in Home Assistant since LIBI saw it, and what
+//   LIBI cannot draw (_askBeforeSave).
 import { LibiCore } from './libi-core.js?v=3.90.0';
 import { getStyles } from './libi-css.js?v=3.90.0';
 import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.90.0';
@@ -335,7 +337,7 @@ class LibiPanel extends HTMLElement {
         // one that gets updated and no other workspace is touched.
         const slug = this._project ? this._project.slug : 'default';
         const name = this._project ? this._project.name : '';
-        const nets = this.core.nets;
+        let nets = this.core.nets;
         const ws = (msg) => this._hass.connection.sendMessagePromise(msg);
         const said = (err) => this._staleBackend(err) || (err && err.message ? err.message : String(err));
         let plan;
@@ -346,22 +348,25 @@ class LibiPanel extends HTMLElement {
             return { saved: false, failed: said(err) };
         }
         if (!plan.ok) return { saved: false, compileErrors: (plan.errors || []).length ? plan.errors : ['the compile did not finish'] };
-        // [ADDED v3.90.0] The HACS review (2026-11-05): no DELETE is sent before the user sees what it deletes and agrees.
-        // The plan offers only what LIBI made for this project (an automation opened from Home Assistant never); Keep
-        // leaves them in Home Assistant, and the project lets go of them; Cancel sends nothing at all.
+        // [ADDED v3.90.0] The HACS review (2026-11-05) and RULE 5: nothing is sent before the user has answered every
+        // question about it (_askBeforeSave) - what it deletes, what it puts back, what it replaces, what it cannot draw.
+        const answers = await this._askBeforeSave(plan);
+        if (!answers) return { saved: false, cancelled: true, failed: 'you chose Cancel, so nothing was sent to Home Assistant' };
+        let upserts = plan.upserts || [];
         let removals = plan.removals || [];
         let kept = [];
-        if (removals.length) {
-            const answer = await this._confirmRemovals(removals);
-            if (answer !== 'delete' && answer !== 'keep') {
-                return { saved: false, cancelled: true, failed: 'you chose Cancel, so nothing was sent to Home Assistant' };
-            }
-            if (answer === 'keep') {
-                kept = removals.map(op => ({ domain: op.domain, key: op.key }));
-                removals = [];
-            }
+        if (answers.gone === 'again') upserts = [...upserts, ...(plan.gone || []).map(op => ({ ...op, new: true }))];
+        if (answers.gone === 'remove') {
+            const dropped = new Set((plan.gone || []).map(op => String(op.net_id)));
+            this.core.nets = this.core.nets.filter(n => !dropped.has(String(n.id)));
+            this.core.pushHistory();
+            nets = this.core.nets;
         }
-        const { done, failure } = await this._configApiSend([...(plan.upserts || []).map(op => ({ ...op, op: 'upsert' })),
+        if (answers.removals === 'keep') {
+            kept = removals.map(op => ({ domain: op.domain, key: op.key }));
+            removals = [];
+        }
+        const { done, failure } = await this._configApiSend([...upserts.map(op => ({ ...op, op: 'upsert' })),
             ...removals.map(op => ({ ...op, op: 'remove' }))]);
         let r;
         try {
@@ -374,6 +379,11 @@ class LibiPanel extends HTMLElement {
         // one in which Home Assistant refused nothing.
         r.complete = r.saved !== false && !failure;
         if (r.complete) this._markSaved();
+        // [ADDED v3.90.0] A NET not changed in LIBI is not sent; one Home Assistant changed since is said, left as it is.
+        const left = plan.left || [];
+        if (r.saved && left.length) {
+            r.message = `${r.message || 'Saved.'} Changed in Home Assistant since LIBI last saw ${left.length === 1 ? 'it, so left as it is' : 'them, so left as they are'}: ${left.join(', ')}.`;
+        }
         // [ADDED v3.47.0] The backend says which version of each net is the one now in Home Assistant.
         if (r.versions) this._versions = r.versions;
         if (!this._project && r.slug) {
@@ -484,20 +494,95 @@ class LibiPanel extends HTMLElement {
      *  'cancel'. A page already left - the save asked for on leaving - asks with the browser's dialog, Cancel keeping
      *  them. */
     async _confirmRemovals(removals) {
-        const names = removals.map(op => String(op.label || `${op.domain} ${op.key}`));
+        const names = this._opNames(removals);
         const one = names.length === 1;
-        if (!this.isConnected) {
-            return window.confirm(`LIBI: SAVE & COMPILE deletes ${one ? 'this' : 'these'} from Home Assistant. LIBI made ${one ? 'it' : 'them'} for this project, and ${one ? 'it is' : 'they are'} no longer on the canvas:\n\n${names.map(n => '• ' + n).join('\n')}\n\nOK deletes ${one ? 'it' : 'them'}. Cancel keeps ${one ? 'it' : 'them'} in Home Assistant as ${one ? 'it is' : 'they are'}, outside this project.`)
-                ? 'delete' : 'keep';
+        return this._saveQuestion({
+            title: one ? 'Delete it from Home Assistant?' : `Delete ${names.length} from Home Assistant?`,
+            text: `LIBI made ${one ? 'this' : 'these'} for this project, and ${one ? 'it is' : 'they are'} no longer on the canvas. SAVE & COMPILE deletes ${one ? 'it' : 'them'} from Home Assistant only if you say so:`,
+            items: names,
+            answers: [{ id: 'delete', label: one ? 'Delete it' : `Delete ${names.length}`, kind: 'btn-danger',
+                        note: `${one ? 'it is' : 'they are'} deleted from Home Assistant, and the rest is saved.` },
+                      { id: 'keep', label: 'Keep in Home Assistant', kind: 'btn-primary',
+                        note: `${one ? 'it stays' : 'they stay'} in Home Assistant as ${one ? 'it is' : 'they are'}, and ${one ? 'leaves' : 'leave'} this project. The rest is saved.` },
+                      { id: 'cancel', label: 'Cancel', kind: 'btn-ghost', note: 'nothing is saved, and nothing is deleted.' }],
+            confirm: `LIBI: SAVE & COMPILE deletes ${one ? 'this' : 'these'} from Home Assistant. LIBI made ${one ? 'it' : 'them'} for this project, and ${one ? 'it is' : 'they are'} no longer on the canvas:\n\n${names.map(n => '• ' + n).join('\n')}\n\nOK deletes ${one ? 'it' : 'them'}. Cancel keeps ${one ? 'it' : 'them'} in Home Assistant as ${one ? 'it is' : 'they are'}, outside this project.`,
+            ok: 'delete', cancel: 'keep' });
+    }
+
+    /** [ADDED v3.90.0] The names of what a question of SAVE & COMPILE is about, as the plan gives them. */
+    _opNames(ops) {
+        return (ops || []).map(op => String(op.label || `${op.domain} ${op.key}`));
+    }
+
+    /** [ADDED v3.90.0] One question of SAVE & COMPILE before it sends anything: the dialog with its answers - or, on a page
+     *  already left (the save asked for on leaving), the browser's own dialog, OK being q.ok and Cancel q.cancel. Resolves
+     *  to the id of the answer, 'cancel' when the dialog was closed. */
+    async _saveQuestion(q) {
+        if (!this.isConnected) return window.confirm(q.confirm) ? q.ok : q.cancel;
+        return (await this._ask(q.title, q.text, q.answers, q.items)) || 'cancel';
+    }
+
+    /** [ADDED v3.90.0] RULE 5 and the HACS review (2026-11-05): before SAVE & COMPILE sends anything, it asks about what
+     *  the user may not know it would do. An entry deleted in Home Assistant since LIBI saved it is put back only if the
+     *  user says so - or its NET leaves the project too. A change made in Home Assistant since LIBI last saw it is
+     *  replaced only if the user says so, and so is what LIBI cannot draw of an automation. Then the removals. Every
+     *  question comes before anything is sent; Cancel to any of them sends nothing. Returns { gone, removals } - the
+     *  answers that choose what is sent - or null for Cancel. */
+    async _askBeforeSave(plan) {
+        const out = { gone: '', removals: '' };
+        const bullets = (names) => names.map(n => '• ' + n).join('\n');
+        const gone = plan.gone || [];
+        if (gone.length) {
+            const names = this._opNames(gone);
+            const one = names.length === 1;
+            out.gone = await this._saveQuestion({
+                title: one ? 'Deleted in Home Assistant' : `${names.length} deleted in Home Assistant`,
+                text: `Since LIBI saved ${one ? 'it, this was' : 'them, these were'} deleted in Home Assistant - in its own editor, or from another LIBI project. LIBI puts ${one ? 'it' : 'them'} back only if you say so:`,
+                items: names,
+                answers: [{ id: 'remove', label: one ? 'Remove its NET' : 'Remove their NETs', kind: 'btn-primary',
+                            note: `${one ? 'the NET leaves' : 'the NETs leave'} this project too, and nothing is put back in Home Assistant. The rest is saved.` },
+                          { id: 'again', label: one ? 'Save it again' : 'Save them again', kind: 'btn-ghost',
+                            note: `LIBI creates ${one ? 'it' : 'them'} in Home Assistant again from ${one ? 'its NET' : 'their NETs'}.` },
+                          { id: 'cancel', label: 'Cancel', kind: 'btn-ghost', note: 'nothing is saved.' }],
+                confirm: `LIBI: since LIBI saved ${one ? 'it, this was' : 'them, these were'} deleted in Home Assistant:\n\n${bullets(names)}\n\nOK saves ${one ? 'it' : 'them'} again. Cancel leaves ${one ? 'it' : 'them'} deleted, and removes ${one ? 'its NET' : 'their NETs'} from this project.`,
+                ok: 'again', cancel: 'remove' });
+            if (out.gone !== 'again' && out.gone !== 'remove') return null;
         }
-        const answer = await this._ask(one ? 'Delete it from Home Assistant?' : `Delete ${names.length} from Home Assistant?`,
-            `LIBI made ${one ? 'this' : 'these'} for this project, and ${one ? 'it is' : 'they are'} no longer on the canvas. SAVE & COMPILE deletes ${one ? 'it' : 'them'} from Home Assistant only if you say so:`,
-            [{ id: 'delete', label: one ? 'Delete it' : `Delete ${names.length}`, kind: 'btn-danger',
-               note: `${one ? 'it is' : 'they are'} deleted from Home Assistant, and the rest is saved.` },
-             { id: 'keep', label: 'Keep in Home Assistant', kind: 'btn-primary',
-               note: `${one ? 'it stays' : 'they stay'} in Home Assistant as ${one ? 'it is' : 'they are'}, and ${one ? 'leaves' : 'leave'} this project. The rest is saved.` },
-             { id: 'cancel', label: 'Cancel', kind: 'btn-ghost', note: 'nothing is saved, and nothing is deleted.' }], names);
-        return answer || 'cancel';
+        const conflicts = (plan.upserts || []).filter(op => op.conflict);
+        if (conflicts.length) {
+            const names = this._opNames(conflicts);
+            const one = names.length === 1;
+            const answer = await this._saveQuestion({
+                title: one ? 'Changed in Home Assistant' : `${names.length} changed in Home Assistant`,
+                text: `Since LIBI last saw ${one ? 'it, this was' : 'them, these were'} changed in Home Assistant - in its own editor, or from another LIBI page. Saving your ${one ? 'NET replaces that change' : 'NETs replaces those changes'}:`,
+                items: names,
+                answers: [{ id: 'overwrite', label: one ? 'Replace with my NET' : 'Replace with my NETs', kind: 'btn-danger',
+                            note: `what was changed in Home Assistant is lost. The rest is saved.` },
+                          { id: 'cancel', label: 'Cancel', kind: 'btn-primary',
+                            note: 'nothing is saved. Open the project again to see the change: the NET of an automation is drawn again from Home Assistant.' }],
+                confirm: `LIBI: since LIBI last saw ${one ? 'it, this was' : 'them, these were'} changed in Home Assistant:\n\n${bullets(names)}\n\nOK replaces that change with your ${one ? 'NET' : 'NETs'}. Cancel saves nothing.`,
+                ok: 'overwrite', cancel: 'cancel' });
+            if (answer !== 'overwrite') return null;
+        }
+        const losing = (plan.upserts || []).filter(op => (op.loses || []).length);
+        if (losing.length) {
+            const names = losing.map(op => `${this._opNames([op])[0]}: ${op.loses.join('; ')}`);
+            const one = names.length === 1;
+            const answer = await this._saveQuestion({
+                title: 'Parts LIBI cannot draw',
+                text: `LIBI cannot draw all of ${one ? 'this automation' : 'these automations'}, so saving your changes also changes what is listed:`,
+                items: names,
+                answers: [{ id: 'save', label: 'Save anyway', kind: 'btn-danger', note: 'those parts change as listed. The rest is saved.' },
+                          { id: 'cancel', label: 'Cancel', kind: 'btn-primary', note: "nothing is saved. Change those parts in Home Assistant's own editor instead." }],
+                confirm: `LIBI cannot draw all of ${one ? 'this automation' : 'these automations'}, so saving your changes also changes:\n\n${bullets(names)}\n\nOK saves anyway. Cancel saves nothing.`,
+                ok: 'save', cancel: 'cancel' });
+            if (answer !== 'save') return null;
+        }
+        if ((plan.removals || []).length) {
+            out.removals = await this._confirmRemovals(plan.removals);
+            if (out.removals !== 'delete' && out.removals !== 'keep') return null;
+        }
+        return out;
     }
 
     _answerAsk(id) {

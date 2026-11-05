@@ -527,6 +527,142 @@ async def test_the_plan_refuses_an_entry_the_project_neither_owns_nor_opened(has
     assert _automations(libi) == [HAND]
 
 
+# [ADDED 2026-11-05, v3.90.0] RULE 5, the same class as the HACS review: a save sends only what was changed in LIBI. What
+# was not changed is never rewritten - what LIBI cannot draw is not lost, a change made in Home Assistant is not undone -
+# and what was deleted, changed or cannot be drawn in Home Assistant is replaced only once the user says so.
+# A choose without a default: the trigger no option names is lost on the way back (open-compile-gaps #3).
+LOSSY = {"id": "c1", "alias": "Two doors", "triggers": [
+    {"trigger": "state", "entity_id": "binary_sensor.a", "to": "on", "id": "t1"},
+    {"trigger": "state", "entity_id": "binary_sensor.b", "to": "on", "id": "t2"}],
+    "actions": [{"choose": [{"conditions": [{"condition": "trigger", "id": "t1"}],
+                             "sequence": [{"action": "light.turn_on", "target": {"entity_id": "light.x"}}]}]}]}
+
+
+def _triggers(entry) -> list:
+    return entry.get("triggers") or entry.get("trigger") or []
+
+
+async def _reopened(client, slug="p") -> list:
+    res = await send(client, {"type": "libi/project_open", "slug": slug})
+    assert res["success"], res
+    return res["result"]["nets"]
+
+
+async def test_a_net_not_changed_in_libi_is_never_rewritten(hass, libi, hass_ws_client, hass_client):
+    """Found on 2026-11-05: an automation LIBI cannot draw all of, renamed in Home Assistant's editor, lost a trigger at
+    the next save of its project - a save of another NET."""
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(LOSSY), copy.deepcopy(AUTO)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    await save(client, http, [await _opened(client, "c1", "n1"), await _opened(client, "a1", "n2")])
+    renamed = dict(copy.deepcopy(LOSSY), alias="Two doors, renamed in Home Assistant")
+    assert (await http.post("/api/config/automation/config/c1", json=renamed)).status == 200
+    nets = [json.loads(json.dumps(n).replace("light.x", "light.w")) if n["id"] == "n2" else n
+            for n in await _reopened(client)]
+    plan, done = await save(client, http, nets)
+    assert [op["key"] for op in plan["upserts"]] == ["a1"] and done["status"] == "ok", (plan, done)
+    c1 = [a for a in _automations(libi) if a["id"] == "c1"][0]
+    assert len(_triggers(c1)) == 2 and c1["alias"] == "Two doors, renamed in Home Assistant"
+
+
+async def test_a_script_changed_in_home_assistant_is_left_as_it_is(hass, libi, hass_ws_client, hass_client):
+    """A script NET is drawn in LIBI, and not again from Home Assistant: changed in Home Assistant's script editor and not
+    in LIBI, a save left it as LIBI drew it - the change undone without a word."""
+    await home_assistant_files(hass, libi)
+    client, http = await hass_ws_client(hass), await hass_client()
+    net = _script_net(hass, name="Night")
+    await save(client, http, [net])
+    mine = yaml.safe_load((libi / "scripts.yaml").read_text(encoding="utf-8"))["night"]
+    changed = dict(copy.deepcopy(mine), sequence=mine["sequence"] + [{"delay": 5}])
+    assert (await http.post("/api/config/script/config/night", json=changed)).status == 200
+    plan, done = await save(client, http, [net])
+    assert (plan["upserts"], plan["unchanged"], plan["left"]) == ([], 1, ['script "Night" (night)']), plan
+    assert done["status"] == "ok"
+    assert yaml.safe_load((libi / "scripts.yaml").read_text(encoding="utf-8"))["night"]["sequence"][-1] == {"delay": 5}
+
+
+async def test_an_entry_deleted_in_home_assistant_is_put_back_only_if_the_user_says_so(hass, libi, hass_ws_client,
+                                                                                       hass_client):
+    gone = dict(AUTO, id="g1", alias="Gone")
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(AUTO), copy.deepcopy(gone)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    await save(client, http, [await _opened(client, "a1", "n1"), await _opened(client, "g1", "n2")])
+    assert (await http.delete("/api/config/automation/config/g1")).status == 200
+    nets = await _reopened(client)
+    edited = [json.loads(json.dumps(n).replace("light.x", "light.w")) if n["id"] == "n1" else n for n in nets]
+    # Asked, and Cancel: nothing at all.
+    plan, done = await save(client, http, edited, gone="cancel")
+    assert done is None and [op["key"] for op in plan["upserts"]] == ["a1"]
+    assert [(g["key"], g["net_id"], g["changed"], g["label"]) for g in plan["gone"]] == [
+        ("g1", "n2", False, 'NET 2 "Gone": automation "Gone" (g1)')], plan["gone"]
+    assert [a["id"] for a in _automations(libi)] == ["a1"]
+    # Save it again: put back.
+    _plan, done = await save(client, http, edited, gone="again")
+    assert done["status"] == "ok" and [a["id"] for a in _automations(libi)] == ["a1", "g1"], done
+    # Deleted again; Remove its NET: not put back, and the NET leaves the project.
+    assert (await http.delete("/api/config/automation/config/g1")).status == 200
+    plan, done = await save(client, http, await _reopened(client), gone="remove")
+    assert [g["key"] for g in plan["gone"]] == ["g1"] and done["status"] == "ok", done
+    assert [a["id"] for a in _automations(libi)] == ["a1"] and [n["id"] for n in _project(libi)["nets"]] == ["n1"]
+    plan, _done = await save(client, http, await _reopened(client))
+    assert (plan["gone"], plan["upserts"]) == ([], [])
+
+
+async def test_what_could_be_put_back_is_checked_by_home_assistant_first(hass, libi, monkeypatch, hass_ws_client,
+                                                                         hass_client):
+    """An entry the user may choose to put back is sent like any other, so Home Assistant's validator checks it first."""
+    gone = dict(AUTO, id="g1", alias="Gone")
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(gone)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    await save(client, http, [await _opened(client, "g1", "n2")])
+    assert (await http.delete("/api/config/automation/config/g1")).status == 200
+
+    async def refuses(_hass, _domain, config):
+        return "bad trigger" if config.get("id") == "g1" else None
+
+    monkeypatch.setattr(ai, "validate_with_home_assistant", refuses)
+    plan, done = await save(client, http, await _reopened(client))
+    assert done is None and plan["ok"] is False
+    assert plan["errors"] == ['NET 1 "Gone": automation "Gone" (g1): Home Assistant does not accept it: bad trigger'], plan
+
+
+async def test_a_change_made_in_home_assistant_is_replaced_only_if_the_user_says_so(hass, libi, hass_ws_client,
+                                                                                    hass_client):
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(AUTO)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    net = await _opened(client)
+    await save(client, http, [net])
+    # The page stays open; meanwhile an action is added in Home Assistant's editor.
+    changed = copy.deepcopy(AUTO)
+    changed["actions"].append({"action": "light.turn_on", "target": {"entity_id": "light.hall"}})
+    assert (await http.post("/api/config/automation/config/a1", json=changed)).status == 200
+    edited = json.loads(json.dumps(net).replace("light.x", "light.w"))
+    plan, done = await save(client, http, [edited], conflicts="cancel")
+    assert done is None and [(op["key"], op["conflict"]) for op in plan["upserts"]] == [("a1", True)]
+    assert len(_automations(libi)[0]["actions"]) == 2
+    _plan, done = await save(client, http, [edited], conflicts="overwrite")
+    assert done["status"] == "ok" and _automations(libi)[0]["actions"] == [
+        {"action": "light.turn_on", "target": {"entity_id": "light.w"}}], done
+    # A NET saved and not changed in Home Assistant since is no conflict.
+    plan, _done = await save(client, http, [json.loads(json.dumps(edited).replace("light.w", "light.v"))])
+    assert [(op["key"], op["conflict"]) for op in plan["upserts"]] == [("a1", False)]
+
+
+async def test_what_libi_cannot_draw_is_lost_only_if_the_user_says_so(hass, libi, hass_ws_client, hass_client):
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(LOSSY)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    net = await _opened(client, "c1")
+    edited = json.loads(json.dumps(net).replace("light.x", "light.z"))
+    plan, done = await save(client, http, [edited], loses="cancel")
+    assert done is None and [(op["key"], op["loses"]) for op in plan["upserts"]] == [("c1", ["length .trigger: 2 to 1"])]
+    assert len(_triggers(_automations(libi)[0])) == 2
+    _plan, done = await save(client, http, [edited], loses="save")
+    assert done["status"] == "ok" and len(_triggers(_automations(libi)[0])) == 1
+    # The original put back on the canvas goes back exactly as it was: nothing of it is lost, nothing asked.
+    plan, done = await save(client, http, [net])
+    assert [(op["key"], op["loses"], op["conflict"]) for op in plan["upserts"]] == [("c1", [], False)], plan["upserts"]
+    assert len(_triggers(_automations(libi)[0])) == 2
+
+
 async def test_a_page_from_before_the_update_cannot_write(hass, libi, writes, hass_ws_client):
     (libi / "automations.yaml").write_text(_dump([AUTO]), encoding="utf-8")
     client = await hass_ws_client(hass)
@@ -1038,3 +1174,17 @@ async def test_the_state_written_between_removing_and_adding_is_not_a_failed_rel
     hass.states.async_set(entry.entity_id, "unavailable", {"friendly_name": "LIBI Global: Guy"})
     bad, errors = await ws._wait_for_reloads(hass, op, since)
     assert bad == {"script"} and errors[0].startswith("script.libi_send_to_guy is unavailable")
+
+
+async def test_the_original_put_back_over_a_change_in_home_assistant_is_asked_about_once(hass, libi, hass_ws_client,
+                                                                                         hass_client):
+    """V1 put back on the canvas goes back exactly as it was, so nothing of it is lost: over a change made in Home
+    Assistant since, the save asks whether to replace that change - and not about parts LIBI cannot draw."""
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(LOSSY)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    net = await _opened(client, "c1")
+    await save(client, http, [json.loads(json.dumps(net).replace("light.x", "light.z"))], loses="save")
+    assert (await http.post("/api/config/automation/config/c1", json=dict(copy.deepcopy(LOSSY), alias="Renamed"))).status == 200
+    plan, done = await save(client, http, [net])
+    assert [(op["key"], op["conflict"], op["loses"]) for op in plan["upserts"]] == [("c1", True, [])], plan["upserts"]
+    assert done["status"] == "ok" and _automations(libi)[0]["alias"] == "Two doors", done

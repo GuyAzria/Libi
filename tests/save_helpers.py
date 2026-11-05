@@ -15,7 +15,8 @@
 #   libi/compile_project, each change through Home Assistant's own config API, libi/save_done.
 # [CHANGED v3.90.0 | 2026-11-05] Purpose: As the panel saves since the HACS review of 2026-11-05: it asks before any
 #   removal (removals="delete", "keep" or "cancel"), tells LIBI the ones kept, and passes on whether an upsert created
-#   its entry (new).
+#   its entry (new); and before it puts back what was deleted in Home Assistant (gone), replaces a change made there
+#   (conflicts), or saves what LIBI cannot draw all of (loses).
 """SAVE & COMPILE as the panel makes it, for the tests: libi/compile_project, then each change through Home Assistant's
 own config API - the endpoints its automation, script and scene editors use - then libi/save_done."""
 import copy
@@ -62,22 +63,34 @@ async def send(client, msg: dict) -> dict:
 
 
 async def save(client, http, nets: list, slug: str = "p", name: str = "P", refuse: tuple = (),
-               removals: str = "delete") -> tuple[dict, dict | None]:
+               removals: str = "delete", gone: str = "again", conflicts: str = "overwrite",
+               loses: str = "save") -> tuple[dict, dict | None]:
     """SAVE & COMPILE as the panel makes it. The changes go through Home Assistant's config API one by one, and the first
     one refused stops the rest, as in the panel; a key in `refuse` is refused as Home Assistant refuses an entry it does
     not accept. Returns the plan and what libi/save_done answered (None when the plan refused the save).
     [CHANGED v3.90.0] The panel asks before it sends a removal; `removals` is the user's answer: "delete" sends them,
-    "keep" sends none and says so, "cancel" sends nothing at all (and then libi/save_done is not called: None)."""
+    "keep" sends none and says so, "cancel" sends nothing at all (and then libi/save_done is not called: None).
+    The other answers, each asked only when there is something to ask about, "cancel" sending nothing: `gone` - "again"
+    puts back what was deleted in Home Assistant, "remove" removes those NETs from the project; `conflicts` -
+    "overwrite" replaces the changes made in Home Assistant; `loses` - "save" saves what LIBI cannot draw all of."""
     planned = await send(client, {"type": "libi/compile_project", "slug": slug, "name": name, "nets": nets})
     assert planned["success"], planned
     plan = planned["result"]
     if not plan["ok"]:
         return plan, None
-    if plan["removals"] and removals == "cancel":
+    upserts = list(plan["upserts"])
+    asked = [(plan["removals"], removals), (plan["gone"], gone), ([op for op in upserts if op["conflict"]], conflicts),
+             ([op for op in upserts if op["loses"]], loses)]
+    if any(items and answer == "cancel" for items, answer in asked):
         return plan, None
+    if plan["gone"] and gone == "again":
+        upserts += [dict(op, new=True) for op in plan["gone"]]
+    elif plan["gone"]:
+        dropped = {op["net_id"] for op in plan["gone"]}
+        nets = [n for n in nets if str(n.get("id") or "") not in dropped]
     removed = plan["removals"] if removals == "delete" else []
     kept = [{"domain": op["domain"], "key": op["key"]} for op in plan["removals"] if removals == "keep"]
-    ops = ([dict(op, op="upsert") for op in plan["upserts"]] + [dict(op, op="remove") for op in removed])
+    ops = ([dict(op, op="upsert") for op in upserts] + [dict(op, op="remove") for op in removed])
     done, failure = [], None
     for index, op in enumerate(ops):
         url = f"/api/config/{op['domain']}/config/{op['key']}"

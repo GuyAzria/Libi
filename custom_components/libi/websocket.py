@@ -643,15 +643,79 @@ async def _originals_as_they_were(hass: HomeAssistant, slug: str, entries: list[
         original = originals.get(str(entry["net"].get("id") or ""))
         if not original or (original.get("domain"), str(original.get("key"))) != (entry["domain"], entry["key"]):
             continue
-        try:
-            opened = yaml_to_ast(hass, copy.deepcopy(original["config"]))
-            opened.update(id=entry["net"].get("id"), ha_id=entry["key"], level=entry["domain"])
-            as_opened = ast_to_yaml(hass, opened)
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("[libi] the original of %s could not be compared: %s", entry["label"], err)
-            continue
-        if as_opened == entry["config"]:
+        if _as_libi_compiles(hass, entry, original["config"]) == entry["config"]:
             entry["config"] = copy.deepcopy(original["config"])
+            entry["original"] = True
+        await asyncio.sleep(0)
+
+
+def _as_libi_compiles(hass: HomeAssistant, entry: dict, config: Any) -> dict | None:
+    """[ADDED v3.90.0] An automation as its NET compiles once LIBI opens it: what the NET is when nobody changed it in
+    LIBI. None when it cannot be compared. Reads the registries, so on the event loop."""
+    if entry["domain"] != "automation" or not isinstance(config, dict):
+        return None
+    try:
+        opened = yaml_to_ast(hass, copy.deepcopy(config))
+        opened.update(id=entry["net"].get("id"), ha_id=entry["key"], level=entry["domain"])
+        return ast_to_yaml(hass, opened)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("[libi] %s could not be compared with what Home Assistant has: %s", entry["label"], err)
+        return None
+
+
+def _last_seen_sync(hass: HomeAssistant, slug: str) -> tuple[dict, list[str], dict[str, set[str]], dict | None]:
+    """[ADDED v3.90.0] Home Assistant's files, what this project owns in them, and its version history - what LIBI last
+    saw of each NET - read together."""
+    with _FILE_LOCK:
+        files, errors = _read_home_assistant_files(hass)
+        owned = (_read_project_sync(hass, slug) or {}).get("owned") or {}
+        history = _read_versions_sync(hass, slug)
+    return files, errors, {d: {str(k) for k in owned.get(o) or []} for d, o in _OWNED_KEYS.items()}, history
+
+
+def _seen_config(history: dict | None, net_id: str) -> dict | None:
+    """[ADDED v3.90.0] The config of the version of a NET that LIBI last saw in Home Assistant - the active one, recorded
+    when the project was opened or saved. None when there is none."""
+    rec = ((history or {}).get("nets") or {}).get(net_id) or {}
+    versions = [v for v in rec.get("versions") or [] if isinstance(v.get("config"), dict)]
+    active = next((v for v in versions if v.get("v") == rec.get("active")), None)
+    return active["config"] if active else None
+
+
+async def _as_last_seen(hass: HomeAssistant, slug: str, entries: list[dict]) -> None:
+    """[ADDED v3.90.0] RULE 5 - a save never rewrites what the user did not change - for every NET, against what LIBI
+    last saw of it in Home Assistant (its active version):
+    - not changed in LIBI since: nothing is sent, whatever Home Assistant has now - what LIBI cannot draw is not lost,
+      and a change made in Home Assistant's editor is not undone (left, when Home Assistant's differs);
+    - changed in LIBI, and Home Assistant's changed too since then: a conflict - the save asks before it replaces it;
+    - changed in LIBI, of an automation LIBI cannot draw all of: what the save would lose (loses) - asked too;
+    - no longer in Home Assistant though this project saved it: deleted outside LIBI since (gone) - never put back
+      without asking.
+    Without a version history to read, a NET is sent as before."""
+    files, errors, owned, history = await hass.async_add_executor_job(_last_seen_sync, hass, slug)
+    if errors:
+        return
+    for entry in entries:
+        current = _file_entry(files[entry["domain"]], entry["key"])
+        seen = _seen_config(history, str(entry["net"].get("id") or ""))
+        untouched = seen is not None and (entry["config"] == seen or same_config(entry["config"], seen)
+                                          or _as_libi_compiles(hass, entry, seen) == entry["config"])
+        if current is None:
+            entry["gone"] = entry["key"] in owned[entry["domain"]]
+            entry["changed"] = not untouched
+        elif untouched:
+            entry["left"] = not same_config(current, seen)
+            entry["config"] = copy.deepcopy(current)
+        elif not same_config(current, entry["config"]):
+            entry["conflict"] = seen is not None and not same_config(current, seen)
+            # The original put back is sent exactly as it was: nothing of it is lost.
+            if entry["domain"] == "automation" and not entry.get("original"):
+                try:
+                    report = verify_round_trip(hass, copy.deepcopy(current))
+                except Exception as err:  # noqa: BLE001
+                    report = {"ok": False, "issues": [f"it could not be checked: {ai._sanitize(err)}"]}
+                if not report.get("ok"):
+                    entry["loses"] = [str(issue)[:200] for issue in (report.get("issues") or [])[:5]] or ["it changes"]
         await asyncio.sleep(0)
 
 
@@ -664,7 +728,10 @@ def _plan_save_sync(hass: HomeAssistant, slug: str, entries: list[dict]) -> dict
     "made"), and the panel lists them and asks before it sends any DELETE. Every other entry the canvas no longer has is
     released: it stays in Home Assistant as it is, and leaves the project. An upsert says whether it creates its entry
     (new), so the project knows what it made; one that would change an entry this project neither owns nor opened is
-    refused, whatever chose its key."""
+    refused, whatever chose its key. After _as_last_seen: a NET not changed in LIBI is unchanged here (left names the
+    ones Home Assistant changed since); an upsert says whether it replaces a change made in Home Assistant (conflict) and
+    what LIBI cannot draw of it (loses); an entry deleted outside LIBI is not an upsert but gone - the panel asks about
+    each of these before it sends anything."""
     with _FILE_LOCK:
         files, errors = _read_home_assistant_files(hass)
         if errors:
@@ -675,12 +742,22 @@ def _plan_save_sync(hass: HomeAssistant, slug: str, entries: list[dict]) -> dict
         protected = _all_owned_except_sync(hass, slug)
     now: dict[str, set] = {domain: set() for domain in _DOMAIN_FILES}
     upserts: list[dict] = []
+    gone: list[dict] = []
+    left: list[str] = []
     unchanged = 0
     for entry in entries:
         now[entry["domain"]].add(entry["key"])
         current = _file_entry(files[entry["domain"]], entry["key"])
         if current is not None and same_config(current, entry["config"]):
             unchanged += 1
+            if entry.get("left"):
+                left.append(_entry_label(entry["domain"], entry["key"], current))
+            continue
+        # [ADDED v3.90.0] Deleted outside LIBI since this project saved it: put back only if the user says so.
+        if current is None and entry.get("gone"):
+            gone.append({"domain": entry["domain"], "key": entry["key"], "config": entry["config"],
+                         "net_id": str(entry["net"].get("id") or ""), "changed": bool(entry.get("changed")),
+                         "label": f'{entry["label"]}: {_entry_label(entry["domain"], entry["key"], entry["config"])}'})
             continue
         if (current is not None and not entry.get("linked")
                 and entry["key"] not in {str(k) for k in previous.get(_OWNED_KEYS[entry["domain"]]) or []}):
@@ -688,13 +765,14 @@ def _plan_save_sync(hass: HomeAssistant, slug: str, entries: list[dict]) -> dict
                           "Assistant, and this project did not save it - it is not changed")
             continue
         upserts.append({"domain": entry["domain"], "key": entry["key"], "config": entry["config"],
-                        "net_id": str(entry["net"].get("id") or ""), "label": entry["label"], "new": current is None})
+                        "net_id": str(entry["net"].get("id") or ""), "label": entry["label"], "new": current is None,
+                        "conflict": bool(entry.get("conflict")), "loses": list(entry.get("loses") or [])})
     removals: list[dict] = []
     released: list[dict] = []
     for domain, owned_key in _OWNED_KEYS.items():
-        gone = {str(k) for k in previous.get(owned_key) or []} - now[domain] - protected[owned_key]
+        off_canvas = {str(k) for k in previous.get(owned_key) or []} - now[domain] - protected[owned_key]
         mine = {str(k) for k in made.get(owned_key) or []}
-        for key in sorted(gone):
+        for key in sorted(off_canvas):
             current = _file_entry(files[domain], key)
             if current is not None:
                 (removals if key in mine else released).append(
@@ -702,7 +780,7 @@ def _plan_save_sync(hass: HomeAssistant, slug: str, entries: list[dict]) -> dict
     if errors:
         return {"ok": False, "errors": errors + ["nothing was saved"]}
     return {"ok": True, "errors": [], "upserts": upserts, "removals": removals, "released": released,
-            "unchanged": unchanged}
+            "gone": gone, "left": left, "unchanged": unchanged}
 
 
 def _record_save_sync(hass: HomeAssistant, slug: str, name: str, nets: list, entries: list[dict],
@@ -1070,8 +1148,10 @@ async def ws_handle_compile_project(hass: HomeAssistant, connection: websocket_a
         connection.send_result(msg["id"], {"ok": False, "errors": errors, "stamp": stamp})
         return
     await _originals_as_they_were(hass, slug, entries)
+    await _as_last_seen(hass, slug, entries)
     plan = await hass.async_add_executor_job(_plan_save_sync, hass, slug, entries)
-    for op in plan.get("upserts") or []:
+    # [CHANGED v3.90.0] What the user may choose to put back is checked as well.
+    for op in (plan.get("upserts") or []) + (plan.get("gone") or []):
         # [ADDED v3.87.0] Home Assistant saves a notify action it does not have and fails only when it runs - the user's
         # train reminder (2026-11-04). Checked on what is sent: an entry LIBI does not change is not stopped by one.
         plan["errors"] += [f"{op['label']}: {p}" for p in ai.notify_action_problems(hass, op["domain"], op["config"])]

@@ -1,0 +1,187 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-05] Purpose: RULE 5, the class of the HACS review of 2026-11-05 - before SAVE & COMPILE sends
+  anything it asks about what the user may not know it would do: an entry deleted in Home Assistant since LIBI saved it
+  (Remove its NET, Save it again), a change made in Home Assistant since LIBI saw it (Replace with my NET), what LIBI
+  cannot draw of an automation (Save anyway), then what it deletes. Every question comes before anything is sent, Cancel
+  to any sends nothing and changes nothing on the canvas; a page already left asks with the browser's dialog. A NET
+  Home Assistant changed and LIBI did not is said after the save. Desktop width; the dialog's layout at every width is
+  checked by test_panel_save_removals*.html.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi save questions test</title></head>
+<body style="margin:0;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { makeSaveHass, makeSavePanel, LAMP, until, sleep } from './save_removals_fixture.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const asked = [], told = [];
+let confirmAnswers = [];
+window.confirm = (q) => { asked.push(String(q)); return confirmAnswers.length ? confirmAnswers.shift() : false; };
+window.alert = (m) => { told.push(String(m)); };
+window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const GONE = () => ({ ...LAMP(), id: 'n2', ha_id: 'g1', name: 'Gone' });
+const GONE_OP = { domain: 'automation', key: 'g1', config: { id: 'g1', alias: 'Gone' }, net_id: 'n2', changed: false,
+  label: 'NET 2 "Gone": automation "Gone" (g1)' };
+
+try {
+  const { hass, sent, api, state } = makeSaveHass();
+  const panel = await makeSavePanel(hass);
+  const sr = panel.shadowRoot;
+  const core = panel.core;
+  const types = () => sent.map(m => m.type).filter(t => t.startsWith('libi/') && !t.startsWith('libi/ai') && t !== 'libi/project_list');
+  const doneMsg = () => sent.find(m => m.type === 'libi/save_done');
+  const title = () => (sr.querySelector('.ask-modal .modal-title') || {}).textContent;
+  const answer = async (id) => {
+    await until(() => sr.querySelector(`.ask-answer[data-answer="${id}"]`));
+    sr.querySelector(`.ask-answer[data-answer="${id}"]`).click();
+    await sleep(20);
+  };
+  // Two NETs, the first changed and not saved; the plan as the backend gives it, nothing asked about yet.
+  const fresh = () => {
+    state.reset([]);
+    state.plan.upserts = state.plan.upserts.slice(0, 1);
+    state.plan.gone = []; state.plan.left = [];
+    asked.length = 0; told.length = 0; confirmAnswers = [];
+    core.nets = [LAMP(), GONE()];
+    core.syncCounters(); core.repairAST(); core.validateAST();
+    panel._project = { slug: 'p', name: 'P' };
+    panel._markSaved();
+    core.nets[0].rungs[0].elements[1].label = 'light.y';
+    core.pushHistory();
+    panel._render();
+  };
+
+  // ---- Deleted in Home Assistant since LIBI saved it
+  fresh();
+  state.plan.gone = [GONE_OP];
+  let saving = panel._saveProject();
+  await until(() => title() === 'Deleted in Home Assistant');
+  check('a NET whose entry was deleted in Home Assistant is asked about, and nothing is sent yet', api.length === 0
+        && sr.querySelector('.ask-text').textContent === 'Since LIBI saved it, this was deleted in Home Assistant - in its own editor, or from another LIBI project. LIBI puts it back only if you say so:'
+        && [...sr.querySelectorAll('.ask-list li')].map(li => li.textContent).join('|') === 'NET 2 "Gone": automation "Gone" (g1)'
+        && [...sr.querySelectorAll('.ask-answer')].map(b => b.textContent).join() === 'Remove its NET,Save it again,Cancel',
+        sr.querySelector('.ask-modal').textContent);
+  await answer('cancel');
+  let r = await saving;
+  check('Cancel sends nothing, and the NET stays', r.cancelled === true && api.length === 0 && !types().includes('libi/save_done')
+        && core.nets.length === 2, JSON.stringify([api, types(), core.nets.length]));
+
+  fresh();
+  state.plan.gone = [GONE_OP];
+  saving = panel._saveProject();
+  await answer('remove');
+  r = await saving;
+  check('Remove its NET puts nothing back in Home Assistant', JSON.stringify(api.map(a => a[0] + ' ' + a[1])) === '["POST config/automation/config/a1"]',
+        JSON.stringify(api));
+  check('and the NET leaves the canvas and the project saved', core.nets.map(n => n.id).join() === 'n1'
+        && doneMsg().nets.map(n => n.id).join() === 'n1' && r.complete === true, JSON.stringify([core.nets.map(n => n.id), doneMsg().nets.map(n => n.id)]));
+
+  fresh();
+  state.plan.gone = [GONE_OP];
+  saving = panel._saveProject();
+  await answer('again');
+  r = await saving;
+  check('Save it again puts it back, as created by LIBI, and the NET stays', JSON.stringify(api.map(a => a[0] + ' ' + a[1])) === JSON.stringify([
+        'POST config/automation/config/a1', 'POST config/automation/config/g1']) && core.nets.length === 2
+        && JSON.stringify(doneMsg().done[1]) === JSON.stringify({ domain: 'automation', key: 'g1', op: 'upsert', new: true }),
+        JSON.stringify([api, doneMsg()]));
+
+  // ---- Changed in Home Assistant since LIBI saw it
+  fresh();
+  state.plan.upserts[0].conflict = true;
+  saving = panel._saveProject();
+  await until(() => title() === 'Changed in Home Assistant');
+  check('a change made in Home Assistant is asked about before it is replaced', api.length === 0
+        && sr.querySelector('.ask-text').textContent === 'Since LIBI last saw it, this was changed in Home Assistant - in its own editor, or from another LIBI page. Saving your NET replaces that change:'
+        && [...sr.querySelectorAll('.ask-answer')].map(b => b.textContent).join() === 'Replace with my NET,Cancel', sr.querySelector('.ask-modal').textContent);
+  await answer('cancel');
+  r = await saving;
+  check('Cancel leaves it as Home Assistant has it', r.cancelled === true && api.length === 0);
+  fresh();
+  state.plan.upserts[0].conflict = true;
+  saving = panel._saveProject();
+  await answer('overwrite');
+  r = await saving;
+  check('Replace with my NET sends it', api.length === 1 && api[0][1] === 'config/automation/config/a1' && r.complete === true, JSON.stringify(api));
+
+  // ---- What LIBI cannot draw
+  fresh();
+  state.plan.upserts[0].loses = ['length .trigger: 2 to 1'];
+  saving = panel._saveProject();
+  await until(() => title() === 'Parts LIBI cannot draw');
+  check('what LIBI cannot draw is listed, per automation, before it is saved', api.length === 0
+        && [...sr.querySelectorAll('.ask-list li')].map(li => li.textContent).join('|') === 'NET 1 "Lamp": length .trigger: 2 to 1'
+        && [...sr.querySelectorAll('.ask-answer')].map(b => b.textContent).join() === 'Save anyway,Cancel', sr.querySelector('.ask-modal').textContent);
+  await answer('cancel');
+  r = await saving;
+  check('Cancel saves nothing', r.cancelled === true && api.length === 0);
+  fresh();
+  state.plan.upserts[0].loses = ['length .trigger: 2 to 1'];
+  saving = panel._saveProject();
+  await answer('save');
+  r = await saving;
+  check('Save anyway saves it', api.length === 1 && r.complete === true, JSON.stringify(api));
+
+  // ---- All of them, in order, before anything is sent; Cancel at the last changes nothing
+  fresh();
+  state.plan.gone = [GONE_OP];
+  state.plan.upserts[0].conflict = true;
+  state.plan.upserts[0].loses = ['length .trigger: 2 to 1'];
+  state.plan.removals = [{ domain: 'scene', key: 'old', label: 'scene "Old evening" (old)' }];
+  saving = panel._saveProject();
+  const order = [];
+  for (const id of ['remove', 'overwrite', 'save']) {
+    await until(() => sr.querySelector('.ask-modal'));
+    order.push(title());
+    await answer(id);
+  }
+  await until(() => sr.querySelector('.ask-modal'));
+  order.push(title());
+  check('the questions come one after the other, nothing sent before the last is answered', order.join('|') ===
+        'Deleted in Home Assistant|Changed in Home Assistant|Parts LIBI cannot draw|Delete it from Home Assistant?' && api.length === 0,
+        JSON.stringify([order, api]));
+  await answer('cancel');
+  r = await saving;
+  check('Cancel at the last sends nothing, and the NET answered Remove for is still on the canvas', r.cancelled === true
+        && api.length === 0 && core.nets.length === 2 && !types().includes('libi/save_done'), JSON.stringify([api, core.nets.length]));
+
+  // ---- A NET Home Assistant changed and LIBI did not: left, and said
+  fresh();
+  state.plan.left = ['script "Night" (night)'];
+  r = await panel._saveProject();
+  check('a NET changed in Home Assistant and not in LIBI is said after the save', r.message === 'Saved. Changed in Home Assistant since LIBI last saw it, so left as it is: script "Night" (night).',
+        r.message);
+
+  // ---- Leaving the page: the browser's dialogs, Cancel never putting back or replacing anything
+  fresh();
+  state.plan.gone = [GONE_OP];
+  confirmAnswers = [true, false];
+  panel.remove();
+  await until(() => types().includes('libi/save_done'));
+  check('a page already left asks about what was deleted with the browser\'s dialog; Cancel removes the NET, puts nothing back',
+        asked[1] === 'LIBI: since LIBI saved it, this was deleted in Home Assistant:\n\n• NET 2 "Gone": automation "Gone" (g1)\n\nOK saves it again. Cancel leaves it deleted, and removes its NET from this project.'
+        && api.length === 1 && doneMsg().nets.length === 1, JSON.stringify([asked, api]));
+  document.body.appendChild(panel); await sleep(50);
+  fresh();
+  state.plan.upserts[0].conflict = true;
+  confirmAnswers = [true, false];
+  panel.remove();
+  await sleep(300);
+  check('and Cancel to a change made in Home Assistant saves nothing', asked[1] === 'LIBI: since LIBI last saw it, this was changed in Home Assistant:\n\n• NET 1 "Lamp"\n\nOK replaces that change with your NET. Cancel saves nothing.'
+        && api.length === 0 && !types().includes('libi/save_done'), JSON.stringify([asked, api, types()]));
+  document.body.appendChild(panel); await sleep(50);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>
