@@ -11,13 +11,12 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.88.0 | 2026-11-05] Purpose: LIBI Global (libi/global, libi/global_plan, libi/global_done): the recipients of
-#   messages, each a script that sends to the phones ticked for it, saved through Home Assistant's config API as a NET
-#   is. A phone replaced is changed there once, for every project. A NET cannot take a recipient's script key. A save's
-#   wait for the reload no longer takes the state Home Assistant writes between removing and adding an entity for failed.
 # [ADDED v3.89.0 | 2026-11-05] Purpose: libi/global_move_plan and libi/global_move_done - the automations and scripts that
 #   send straight to the phone of a recipient send through the recipient instead, those the user confirms, saved through
 #   Home Assistant's config API; one a NET of LIBI draws is not changed under its drawing.
+# [CHANGED v3.90.0 | 2026-11-05] Purpose: The HACS review of 2026-11-05 - a save removes only what LIBI created itself
+#   (the project's "made"), and the panel asks first; an entry opened from Home Assistant that leaves the canvas leaves
+#   the project and stays as it is. A NET never takes a key Home Assistant holds for someone else: the next free one.
 import asyncio
 import copy
 import json
@@ -509,6 +508,40 @@ def _file_entry(data: Any, key: str) -> Any:
     return next((item for item in data or [] if isinstance(item, dict) and str(item.get("id", "")) == key), None)
 
 
+def _file_keys(data: Any) -> set[str]:
+    """[ADDED v3.90.0] Every key a file holds: the ids of the entries of a list, the keys of scripts.yaml."""
+    if isinstance(data, dict):
+        return {str(key) for key in data}
+    return {str(item["id"]) for item in data or [] if isinstance(item, dict) and item.get("id") is not None}
+
+
+def _entry_label(domain: str, key: str, entry: Any) -> str:
+    """[ADDED v3.90.0] An entry of Home Assistant's as the user knows it: its kind and its name, and its key."""
+    name = str((entry or {}).get("alias") or (entry or {}).get("name") or "").strip() if isinstance(entry, dict) else ""
+    return f'{domain} "{name[:80]}" ({key})' if name else f"{domain} {key}"
+
+
+def _taken_sync(hass: HomeAssistant, slug: str, ours: tuple | list = ()) -> tuple[dict[str, set[str]], list[str]]:
+    """[ADDED v3.90.0] Per domain, the keys a NET of this project may not take (_compile_nets): every key Home
+    Assistant's files hold that this project does not own, and every key another project owns. `ours` is (domain, key)
+    of what this save just sent - in the files now, in the project only once the save is recorded. A file or this
+    project that cannot be read is an error: then nothing is planned or recorded (RULE 31)."""
+    with _FILE_LOCK:
+        files, errors = _read_home_assistant_files(hass)
+        project = _read_project_sync(hass, slug)
+        if project is None and os.path.exists(_project_path(hass, slug)):
+            errors.append(f"the project {slug} could not be read")
+        protected = _all_owned_except_sync(hass, slug)
+    if errors:
+        return {}, errors
+    owned = (project or {}).get("owned") or {}
+    taken: dict[str, set[str]] = {}
+    for domain, owned_key in _OWNED_KEYS.items():
+        mine = {str(key) for key in owned.get(owned_key) or []} | {str(k) for d, k in ours if d == domain}
+        taken[domain] = (_file_keys(files[domain]) | protected[owned_key]) - mine
+    return taken, []
+
+
 def legacy_file_note_sync(hass: HomeAssistant) -> None:
     """[CHANGED v3.85.0] Read only - the HACS review: LIBI leaves libi_automations.yaml alone and says in the log when it
     still holds automations. Up to v3.84.0 a save emptied it, so an install upgraded since has [] there and hears nothing."""
@@ -529,11 +562,17 @@ def legacy_file_note_sync(hass: HomeAssistant) -> None:
             "and run twice: check them, then remove the file and its include line.", len(data))
 
 
-def _compile_nets(hass: HomeAssistant, nets: list) -> tuple[list[dict], list[str]]:
+def _compile_nets(hass: HomeAssistant, nets: list, taken: dict | None = None) -> tuple[list[dict], list[str]]:
     """[ADDED v3.85.0] Every net of a project, compiled: one entry for each that compiles to something - its domain,
     the key Home Assistant files it under and its config. A net that compiles to nothing is a half drawn one: it stays
     in the project and is not sent. A net that does not compile is an error, and then nothing is saved.
-    scripts.yaml is a mapping, so a script needs an object id: its name as a slug, a repeated name with a number."""
+    scripts.yaml is a mapping, so a script needs an object id: its name as a slug, a repeated name with a number.
+    [CHANGED v3.90.0] A NET never takes an entry it has no claim to - the HACS review (2026-11-05): a script NET called
+    "Good night" replaced the user's script.good_night. `taken` (_taken_sync) holds, per domain, the keys Home Assistant
+    holds for someone else; such a key goes to the next free one - good_night_2, n1_2 - which the next save finds again,
+    because then this project owns it. Only a NET with an ha_id - an automation opened from Home Assistant - keeps its
+    key: it is that automation, and the user opened it to change it."""
+    taken = taken or {}
     entries: list[dict] = []
     errors: list[str] = []
     scripts: set[str] = set()
@@ -553,7 +592,7 @@ def _compile_nets(hass: HomeAssistant, nets: list) -> tuple[list[dict], list[str
         if level == "script":
             base = slugify(net.get("name"), fallback="libi_" + slugify(net.get("id"), "script"))
             key, counter = base, 2
-            while key in scripts:
+            while key in scripts or key in taken.get("script", ()):
                 key, counter = f"{base}_{counter}", counter + 1
             scripts.add(key)
             # [ADDED v3.88.0] The keys of LIBI Global's recipients are theirs: a NET saved there would replace one.
@@ -566,7 +605,21 @@ def _compile_nets(hass: HomeAssistant, nets: list) -> tuple[list[dict], list[str
             if not key:
                 errors.append(f"{label}: it has no id for Home Assistant")
                 continue
-        entries.append({"net": net, "label": label, "domain": level, "key": key, "config": compiled})
+        entries.append({"net": net, "label": label, "domain": level, "key": key, "config": compiled,
+                        "linked": level != "script" and key == str(net.get("ha_id") or "")})
+    # [ADDED v3.90.0] An automation or a scene whose id Home Assistant holds for someone else - a NET drawn in LIBI is its
+    # NET id, n1 in every project - goes to the next free id, one no other NET of this save has.
+    claimed = {(e["domain"], e["key"]) for e in entries}
+    for entry in entries:
+        domain, base = entry["domain"], entry["key"]
+        if domain == "script" or entry["linked"] or base not in taken.get(domain, ()):
+            continue
+        counter = 2
+        while (domain, f"{base}_{counter}") in claimed or f"{base}_{counter}" in taken[domain]:
+            counter += 1
+        entry["key"] = f"{base}_{counter}"
+        entry["config"]["id"] = entry["key"]
+        claimed.add((domain, entry["key"]))
     return entries, errors
 
 
@@ -605,12 +658,20 @@ async def _originals_as_they_were(hass: HomeAssistant, slug: str, entries: list[
 def _plan_save_sync(hass: HomeAssistant, slug: str, entries: list[dict]) -> dict:
     """[ADDED v3.85.0] What a save changes in Home Assistant's files - read, never written: each entry whose config does
     not mean what the one in its file means (same_config), or is not there yet, and each entry this project wrote before
-    and no longer has - never one another project claims. A file that cannot be read means no plan at all (RULE 5)."""
+    and no longer has - never one another project claims. A file that cannot be read means no plan at all (RULE 5).
+    [CHANGED v3.90.0] The HACS review (2026-11-05): a save removed every entry the project had saved once, an automation
+    opened from Home Assistant's editor too. Now a removal is only an entry this project created in Home Assistant (its
+    "made"), and the panel lists them and asks before it sends any DELETE. Every other entry the canvas no longer has is
+    released: it stays in Home Assistant as it is, and leaves the project. An upsert says whether it creates its entry
+    (new), so the project knows what it made; one that would change an entry this project neither owns nor opened is
+    refused, whatever chose its key."""
     with _FILE_LOCK:
         files, errors = _read_home_assistant_files(hass)
         if errors:
             return {"ok": False, "errors": errors + ["nothing was saved"]}
-        previous = (_read_project_sync(hass, slug) or {}).get("owned") or {}
+        project = _read_project_sync(hass, slug) or {}
+        previous = project.get("owned") or {}
+        made = project.get("made") or {}
         protected = _all_owned_except_sync(hass, slug)
     now: dict[str, set] = {domain: set() for domain in _DOMAIN_FILES}
     upserts: list[dict] = []
@@ -621,34 +682,60 @@ def _plan_save_sync(hass: HomeAssistant, slug: str, entries: list[dict]) -> dict
         if current is not None and same_config(current, entry["config"]):
             unchanged += 1
             continue
+        if (current is not None and not entry.get("linked")
+                and entry["key"] not in {str(k) for k in previous.get(_OWNED_KEYS[entry["domain"]]) or []}):
+            errors.append(f"{entry['label']}: {_entry_label(entry['domain'], entry['key'], current)} is already in Home "
+                          "Assistant, and this project did not save it - it is not changed")
+            continue
         upserts.append({"domain": entry["domain"], "key": entry["key"], "config": entry["config"],
-                        "net_id": str(entry["net"].get("id") or ""), "label": entry["label"]})
+                        "net_id": str(entry["net"].get("id") or ""), "label": entry["label"], "new": current is None})
     removals: list[dict] = []
+    released: list[dict] = []
     for domain, owned_key in _OWNED_KEYS.items():
         gone = {str(k) for k in previous.get(owned_key) or []} - now[domain] - protected[owned_key]
-        removals += [{"domain": domain, "key": key} for key in sorted(gone)
-                     if _file_entry(files[domain], key) is not None]
-    return {"ok": True, "errors": [], "upserts": upserts, "removals": removals, "unchanged": unchanged}
+        mine = {str(k) for k in made.get(owned_key) or []}
+        for key in sorted(gone):
+            current = _file_entry(files[domain], key)
+            if current is not None:
+                (removals if key in mine else released).append(
+                    {"domain": domain, "key": key, "label": _entry_label(domain, key, current)})
+    if errors:
+        return {"ok": False, "errors": errors + ["nothing was saved"]}
+    return {"ok": True, "errors": [], "upserts": upserts, "removals": removals, "released": released,
+            "unchanged": unchanged}
 
 
 def _record_save_sync(hass: HomeAssistant, slug: str, name: str, nets: list, entries: list[dict],
-                      write_project: bool) -> dict:
+                      write_project: bool, done: list[dict], kept: list[tuple[str, str]]) -> dict:
     """[ADDED v3.85.0] After the panel sent the changes to Home Assistant's config API: Home Assistant's files are read
     back - the browser's word is not taken for it - and the project records what they hold. Its nets; the entries it
     owns there, a removal that failed included, so the next save removes it; a version of every net that runs as it was
-    built. Only a save that reached Home Assistant, or had nothing to change there, writes the project."""
+    built. Only a save that reached Home Assistant, or had nothing to change there, writes the project.
+    [CHANGED v3.90.0] And what it made: the entries its upserts created (done, new), the only ones a later save may
+    offer to remove. An entry the canvas no longer has that this project did not make, or whose removal the user
+    declined (kept), leaves the project and stays in Home Assistant as it is (released) - a later save never touches
+    it. Only a removal that did not happen - refused, or not sent - is kept, to be asked again."""
     with _FILE_LOCK:
         files, errors = _read_home_assistant_files(hass)
         if errors:
             return {"saved": False, "errors": errors}
         project = _read_project_sync(hass, slug) or {}
         previous = project.get("owned") or {}
+        made_before = project.get("made") or {}
         protected = _all_owned_except_sync(hass, slug)
         owned: dict[str, list] = {}
+        made: dict[str, list] = {}
+        released: list[str] = []
         for domain, owned_key in _OWNED_KEYS.items():
-            mine = {e["key"] for e in entries if e["domain"] == domain}
-            mine |= {str(k) for k in previous.get(owned_key) or []} - protected[owned_key]
-            owned[owned_key] = sorted(k for k in mine if _file_entry(files[domain], k) is not None)
+            on_canvas = {e["key"] for e in entries if e["domain"] == domain}
+            before = {str(k) for k in previous.get(owned_key) or []} - protected[owned_key]
+            created = {str(k) for k in made_before.get(owned_key) or []} - protected[owned_key]
+            created |= {op["key"] for op in done if op["domain"] == domain and op["op"] == "upsert" and op.get("new")}
+            retry = (created & before) - on_canvas - {key for d, key in kept if d == domain}
+            owned[owned_key] = sorted(k for k in on_canvas | retry if _file_entry(files[domain], k) is not None)
+            made[owned_key] = sorted(k for k in created if k in owned[owned_key])
+            released += [_entry_label(domain, k, _file_entry(files[domain], k)) for k in sorted(before - on_canvas - retry)
+                         if _file_entry(files[domain], k) is not None]
         running = [e for e in entries
                    if (current := _file_entry(files[e["domain"]], e["key"])) is not None and same_config(current, e["config"])]
         if not write_project:
@@ -664,13 +751,16 @@ def _record_save_sync(hass: HomeAssistant, slug: str, name: str, nets: list, ent
             # one was loaded from, which is the ha_id carried on the net.
             "nets": nets,
             "owned": owned,
+            # [ADDED v3.90.0] Of those, the ones this project created in Home Assistant. A project from before 3.90.0
+            # has none: a save never removes what it saved then.
+            "made": made,
         })
         # [ADDED v3.47.0] Only what runs in Home Assistant is a version, so the history never holds one that did not
         # run. A net removed from the project takes its history along.
         keep_ids = {str(n.get("id")) for n in nets if isinstance(n, dict) and n.get("id")}
         versions = _update_versions_locked(hass, slug, [(e["net"], e["config"], None) for e in running], "saved",
                                            keep_ids)
-    return {"saved": True, "errors": [], "versions": versions,
+    return {"saved": True, "errors": [], "versions": versions, "released": released,
             "counts": {owned_key: sum(1 for e in entries if e["domain"] == domain)
                        for domain, owned_key in _OWNED_KEYS.items()}}
 
@@ -697,9 +787,11 @@ def _release_net_sync(hass: HomeAssistant, slug: str, net_id: str, domain: str, 
             project["nets"] = [n for n in project.get("nets") or []
                                if not (isinstance(n, dict) and str(n.get("id") or "") == net_id)]
             if domain in _OWNED_KEYS and key:
-                owned = project.get("owned") or {}
-                owned[_OWNED_KEYS[domain]] = [k for k in owned.get(_OWNED_KEYS[domain]) or [] if str(k) != key]
-                project["owned"] = owned
+                # [CHANGED v3.90.0] Its record of what this project made goes with it.
+                for record in ("owned", "made"):
+                    held = project.get(record) or {}
+                    held[_OWNED_KEYS[domain]] = [k for k in held.get(_OWNED_KEYS[domain]) or [] if str(k) != key]
+                    project[record] = held
             project["updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             _write_project_sync(hass, slug, project)
         history = _read_versions_sync(hass, slug)
@@ -854,11 +946,22 @@ def _since(stamp: str) -> datetime:
 
 
 def _an_op(op: Any) -> dict | None:
-    """[ADDED v3.85.0] A change the panel says it made through Home Assistant's config API, or None when it is not one."""
+    """[ADDED v3.85.0] A change the panel says it made through Home Assistant's config API, or None when it is not one.
+    [CHANGED v3.90.0] An upsert keeps `new`, the plan's own word that it created its entry (libi/compile_project)."""
     if not isinstance(op, dict) or op.get("domain") not in _DOMAIN_FILES or op.get("op") not in ("upsert", "remove"):
         return None
     key = str(op.get("key") or "")
-    return {"domain": op["domain"], "key": key, "op": op["op"]} if 0 < len(key) <= 255 else None
+    if not 0 < len(key) <= 255:
+        return None
+    return {"domain": op["domain"], "key": key, "op": op["op"], "new": op["op"] == "upsert" and op.get("new") is True}
+
+
+def _a_key(item: Any) -> tuple[str, str] | None:
+    """[ADDED v3.90.0] An entry the panel names - a removal the user declined - or None when it is not one."""
+    if not isinstance(item, dict) or item.get("domain") not in _DOMAIN_FILES:
+        return None
+    key = str(item.get("key") or "")
+    return (item["domain"], key) if 0 < len(key) <= 255 else None
 
 
 async def _wait_for_reloads(hass: HomeAssistant, ops: list[dict], since: datetime) -> tuple[set[str], list[str]]:
@@ -957,7 +1060,12 @@ async def ws_handle_compile_project(hass: HomeAssistant, connection: websocket_a
         connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
         return
     stamp = datetime.now(timezone.utc).isoformat()
-    entries, errors = _compile_nets(hass, msg["nets"])
+    # [CHANGED v3.90.0] What Home Assistant holds for someone else, so no NET takes it (the HACS review, 2026-11-05).
+    taken, errors = await hass.async_add_executor_job(_taken_sync, hass, slug)
+    if errors:
+        connection.send_result(msg["id"], {"ok": False, "errors": errors + ["nothing was saved"], "stamp": stamp})
+        return
+    entries, errors = _compile_nets(hass, msg["nets"], taken)
     if errors:
         connection.send_result(msg["id"], {"ok": False, "errors": errors, "stamp": stamp})
         return
@@ -983,23 +1091,32 @@ async def ws_handle_compile_project(hass: HomeAssistant, connection: websocket_a
     vol.Optional("done", default=[]): [dict],
     vol.Optional("failure"): vol.Any(None, dict),
     vol.Optional("stamp", default=""): str,
+    # [ADDED v3.90.0] The removals the user chose to keep in Home Assistant when the panel asked.
+    vol.Optional("kept", default=[]): [dict],
 })
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_save_done(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     """[ADDED v3.85.0] SAVE & COMPILE, step 3, after the panel sent the changes to Home Assistant's config API, which
     stops at the first one refused: the project records what reached Home Assistant's files, read back from them, and
-    LIBI waits for every reload. A save is reported as one only when Home Assistant confirms it (RULE 10)."""
+    LIBI waits for every reload. A save is reported as one only when Home Assistant confirms it (RULE 10).
+    [CHANGED v3.90.0] The NETs get the keys libi/compile_project gave them: what this save sent is in the files now, so
+    it is not taken. What leaves the project and stays in Home Assistant is said."""
     slug = msg["slug"] or "default"
     if not valid_project_slug(slug):
         connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
         return
-    entries, errors = _compile_nets(hass, msg["nets"])
-    await _originals_as_they_were(hass, slug, entries)
     done = [op for op in (_an_op(x) for x in msg["done"]) if op]
+    kept = [item for item in (_a_key(x) for x in msg["kept"]) if item]
     failure = msg.get("failure") if isinstance(msg.get("failure"), dict) else None
-    result = await hass.async_add_executor_job(_record_save_sync, hass, slug, msg["name"], msg["nets"], entries,
-                                               bool(done) or failure is None)
+    sent = [(op["domain"], op["key"]) for op in done if op["op"] == "upsert"]
+    taken, errors = await hass.async_add_executor_job(_taken_sync, hass, slug, sent)
+    result: dict = {"saved": False, "errors": []}
+    if not errors:
+        entries, errors = _compile_nets(hass, msg["nets"], taken)
+        await _originals_as_they_were(hass, slug, entries)
+        result = await hass.async_add_executor_job(_record_save_sync, hass, slug, msg["name"], msg["nets"], entries,
+                                                   bool(done) or failure is None, done, kept)
     errors = list(result.get("errors") or []) + errors
     if failure:
         what = str(failure.get("label") or f"{failure.get('domain', '')} {failure.get('key', '')}").strip()
@@ -1020,6 +1137,11 @@ async def ws_handle_save_done(hass: HomeAssistant, connection: websocket_api.Act
                                                      changed=f"{len(done)} change(s)" if done else "no change")
     else:
         message = "Not saved."
+    # [ADDED v3.90.0] What left the project and stays in Home Assistant, said: no save touches it again.
+    released = result.get("released") or []
+    if released:
+        message += (f" Left in Home Assistant as {'it is' if len(released) == 1 else 'they are'}, and no longer in this "
+                    f"project: {', '.join(released[:10])}{' and more' if len(released) > 10 else ''}.")
     if errors:
         message += " Problems: " + "; ".join(errors[:5])
     connection.send_result(msg["id"], {"status": "error" if errors else "ok",
@@ -1029,6 +1151,7 @@ async def ws_handle_save_done(hass: HomeAssistant, connection: websocket_api.Act
                                        "written": written,
                                        "reloaded": [d for d in written if d not in bad],
                                        "versions": result.get("versions") or {},
+                                       "released": released,
                                        "errors": errors})
 
 
@@ -1140,7 +1263,14 @@ async def ws_handle_net_delete_plan(hass: HomeAssistant, connection: websocket_a
     if net is None:
         connection.send_error(msg["id"], "not_found", "No such NET")
         return
-    entries, _errors = _compile_nets(hass, msg["nets"])
+    # [CHANGED v3.90.0] The key a save gives the NET, which may not be the one Home Assistant holds for someone else: the
+    # entry deleted is this NET's own.
+    taken, errors = await hass.async_add_executor_job(_taken_sync, hass, slug)
+    if errors:
+        connection.send_result(msg["id"], {"domain": "", "key": "", "stamp": "", "in_ha": False, "original": None,
+                                           "errors": errors})
+        return
+    entries, _errors = _compile_nets(hass, msg["nets"], taken)
     entry = next((e for e in entries if e["net"] is net), None)
     if entry:
         domain, key = entry["domain"], entry["key"]

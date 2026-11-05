@@ -14,22 +14,22 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.89.0
+ * v3.90.0
  */
-// [ADDED v3.88.1 | 2026-11-05] Purpose: The Global tab is a table of the global variables - name, type, device, id - and
-//   a row or New opens one editor; a save closes it (the user's request: the Save that stayed showed nothing happening).
 // [ADDED v3.89.0 | 2026-11-05] Purpose: After a save, LIBI asks to replace the phone with the global variable wherever an
 //   automation still sends straight to it (the user's request), and does it for those ticked (_globalMoveRun); the
 //   message under the table no longer pushes the table down. One send to the config API for every save (_configApiSend).
-import { LibiCore } from './libi-core.js?v=3.89.0';
-import { getStyles } from './libi-css.js?v=3.89.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.89.0';
-import { LibiOnline } from './libi-online.js?v=3.89.0';
-import { LibiAiChat } from './libi-ai.js?v=3.89.0';
+// [CHANGED v3.90.0 | 2026-11-05] Purpose: The HACS review of 2026-11-05 - SAVE & COMPILE lists what it would delete from
+//   Home Assistant and asks first (_confirmRemovals); only what LIBI made is ever offered, and Keep lets it go instead.
+import { LibiCore } from './libi-core.js?v=3.90.0';
+import { getStyles } from './libi-css.js?v=3.90.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.90.0';
+import { LibiOnline } from './libi-online.js?v=3.90.0';
+import { LibiAiChat } from './libi-ai.js?v=3.90.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.89.0';
+export const LIBI_BUILD = '3.90.0';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -301,6 +301,8 @@ class LibiPanel extends HTMLElement {
             return;
         }
         this._saveProject().then(r => {
+            // [CHANGED v3.90.0] Cancel in the question before a removal needs no word after it.
+            if (r.cancelled) return;
             alert(this._saveResultText(r));
             if ((r.errors || []).length) console.warn('LIBI save reported problems', r.errors);
         });
@@ -310,6 +312,7 @@ class LibiPanel extends HTMLElement {
      *  own message. */
     _saveResultText(r) {
         if (r.refused) return 'Cannot compile: Syntax/Structural errors found (Missing Triggers, Missing Actions, or Missing Variables). Please fix red blocks.';
+        if (r.cancelled) return 'Not saved: you chose Cancel, so nothing was sent to Home Assistant.';
         if (r.compileErrors) return 'Not saved: the compile failed, so nothing was written.\n\n' + r.compileErrors.map(e => '• ' + e).join('\n');
         if (r.failed) return 'Save failed: ' + r.failed;
         return r.message || 'Saved.';
@@ -343,11 +346,26 @@ class LibiPanel extends HTMLElement {
             return { saved: false, failed: said(err) };
         }
         if (!plan.ok) return { saved: false, compileErrors: (plan.errors || []).length ? plan.errors : ['the compile did not finish'] };
+        // [ADDED v3.90.0] The HACS review (2026-11-05): no DELETE is sent before the user sees what it deletes and agrees.
+        // The plan offers only what LIBI made for this project (an automation opened from Home Assistant never); Keep
+        // leaves them in Home Assistant, and the project lets go of them; Cancel sends nothing at all.
+        let removals = plan.removals || [];
+        let kept = [];
+        if (removals.length) {
+            const answer = await this._confirmRemovals(removals);
+            if (answer !== 'delete' && answer !== 'keep') {
+                return { saved: false, cancelled: true, failed: 'you chose Cancel, so nothing was sent to Home Assistant' };
+            }
+            if (answer === 'keep') {
+                kept = removals.map(op => ({ domain: op.domain, key: op.key }));
+                removals = [];
+            }
+        }
         const { done, failure } = await this._configApiSend([...(plan.upserts || []).map(op => ({ ...op, op: 'upsert' })),
-            ...(plan.removals || []).map(op => ({ ...op, op: 'remove' }))]);
+            ...removals.map(op => ({ ...op, op: 'remove' }))]);
         let r;
         try {
-            r = (await ws({ type: 'libi/save_done', slug, name, nets, done, failure, stamp: plan.stamp || '' })) || {};
+            r = (await ws({ type: 'libi/save_done', slug, name, nets, done, failure, kept, stamp: plan.stamp || '' })) || {};
         } catch (err) {
             console.error('LIBI could not record the save', err);
             return { saved: false, failed: said(err) };
@@ -377,7 +395,8 @@ class LibiPanel extends HTMLElement {
             try {
                 if (op.op === 'upsert') await this._hass.callApi('POST', path, op.config);
                 else await this._hass.callApi('DELETE', path);
-                done.push({ domain: op.domain, key: op.key, op: op.op });
+                // [CHANGED v3.90.0] With the plan's word that the upsert created its entry: what the project made.
+                done.push({ domain: op.domain, key: op.key, op: op.op, ...(op.op === 'upsert' && op.new === true ? { new: true } : {}) });
             } catch (err) {
                 failure = { domain: op.domain, key: op.key, op: op.op, label: op.label || '', message: this._apiError(err),
                     not_sent: ops.length - index - 1 };
@@ -435,25 +454,50 @@ class LibiPanel extends HTMLElement {
 
     /** [ADDED v3.85.0] A question with answers of its own - Yes and No, or the ways a NET can be deleted. Resolves to the
      *  id of the answer chosen. */
-    _ask(title, text, answers) {
+    _ask(title, text, answers, items = []) {
         return new Promise(resolve => {
             if (this._askState) this._askState.resolve(null);
-            this._askState = { title, text, answers, resolve };
+            this._askState = { title, text, answers, items, resolve };
             this._modal = 'ask';
             this._render();
         });
     }
 
     _askDialogHtml() {
-        const a = this._askState || { title: '', text: '', answers: [] };
+        const a = this._askState || { title: '', text: '', answers: [], items: [] };
         const notes = a.answers.filter(x => x.note)
             .map(x => `<p class="ask-note" dir="auto"><b>${this._esc(x.label)}</b>: ${this._esc(x.note)}</p>`).join('');
         const buttons = a.answers.map(x => `<button class="btn ${x.kind || 'btn-ghost'} ask-answer" data-answer="${this._esc(x.id)}">${this._esc(x.label)}</button>`).join('');
+        // [ADDED v3.90.0] What the question is about, one per line - the names come from the user's YAML, so escaped.
+        const items = (a.items || []).length
+            ? `<ul class="ask-list">${a.items.map(x => `<li dir="auto" title="${this._esc(x)}">${this._esc(x)}</li>`).join('')}</ul>` : '';
         return `<div class="modal-overlay" id="modalOverlay"><div class="modal ask-modal">
             <h2 class="modal-title" dir="auto">${this._esc(a.title)}</h2>
-            <p class="ask-text" dir="auto">${this._esc(a.text)}</p>${notes}
+            <p class="ask-text" dir="auto">${this._esc(a.text)}</p>${items}${notes}
             <div class="modal-actions ask-actions">${buttons}</div>
         </div></div>`;
+    }
+
+    /** [ADDED v3.90.0] The HACS review (2026-11-05): before SAVE & COMPILE deletes anything from Home Assistant, it says
+     *  what and asks. Only entries LIBI created for this project come here, ones the canvas no longer has (Clear all
+     *  nets, undo, another automation loaded into the NET, the AI chat's Replace). Resolves to 'delete', 'keep' or
+     *  'cancel'. A page already left - the save asked for on leaving - asks with the browser's dialog, Cancel keeping
+     *  them. */
+    async _confirmRemovals(removals) {
+        const names = removals.map(op => String(op.label || `${op.domain} ${op.key}`));
+        const one = names.length === 1;
+        if (!this.isConnected) {
+            return window.confirm(`LIBI: SAVE & COMPILE deletes ${one ? 'this' : 'these'} from Home Assistant. LIBI made ${one ? 'it' : 'them'} for this project, and ${one ? 'it is' : 'they are'} no longer on the canvas:\n\n${names.map(n => '• ' + n).join('\n')}\n\nOK deletes ${one ? 'it' : 'them'}. Cancel keeps ${one ? 'it' : 'them'} in Home Assistant as ${one ? 'it is' : 'they are'}, outside this project.`)
+                ? 'delete' : 'keep';
+        }
+        const answer = await this._ask(one ? 'Delete it from Home Assistant?' : `Delete ${names.length} from Home Assistant?`,
+            `LIBI made ${one ? 'this' : 'these'} for this project, and ${one ? 'it is' : 'they are'} no longer on the canvas. SAVE & COMPILE deletes ${one ? 'it' : 'them'} from Home Assistant only if you say so:`,
+            [{ id: 'delete', label: one ? 'Delete it' : `Delete ${names.length}`, kind: 'btn-danger',
+               note: `${one ? 'it is' : 'they are'} deleted from Home Assistant, and the rest is saved.` },
+             { id: 'keep', label: 'Keep in Home Assistant', kind: 'btn-primary',
+               note: `${one ? 'it stays' : 'they stay'} in Home Assistant as ${one ? 'it is' : 'they are'}, and ${one ? 'leaves' : 'leave'} this project. The rest is saved.` },
+             { id: 'cancel', label: 'Cancel', kind: 'btn-ghost', note: 'nothing is saved, and nothing is deleted.' }], names);
+        return answer || 'cancel';
     }
 
     _answerAsk(id) {
@@ -475,6 +519,8 @@ class LibiPanel extends HTMLElement {
         if (answer !== 'yes') return answer === 'no';
         const r = await this._saveProject();
         if (r.complete && r.status === 'ok') return true;
+        // [CHANGED v3.90.0] Cancel before a removal: nothing was saved, and the editor stays.
+        if (r.cancelled) return false;
         alert(this._saveResultText(r));
         return !!r.complete;
     }
@@ -4966,8 +5012,9 @@ class LibiPanel extends HTMLElement {
             this._saveToBackend(); 
         });
         
-        on('clearAllBtn', 'click', () => { 
-            if(confirm('Are you sure you want to clear all Nets from the editor?')) { 
+        // [CHANGED v3.90.0] The question says what the next save does with them (the HACS review, 2026-11-05).
+        on('clearAllBtn', 'click', () => {
+            if(confirm('Clear all NETs from the editor?\n\nNothing is deleted from Home Assistant now. When you then press SAVE & COMPILE, an automation opened from Home Assistant stays there as it is, and leaves this project; what LIBI made for this project is deleted only if you agree when LIBI asks.')) {
                 this.core.nets = []; 
                 this.core.pushHistory(); 
                 this._render(); 

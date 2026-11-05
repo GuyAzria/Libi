@@ -14,12 +14,12 @@
  */
 /**
  * LIBI Panel - Styles
- * v3.89.0
+ * v3.90.0
  */
-// [ADDED v3.88.1 | 2026-11-05] Purpose: LIBI Global as a table (.glob-table) and one editor at a time (.glob-edit); a
-//   button that cannot be pressed looks it (the user pressed a Save that was off and saw nothing happen).
 // [ADDED v3.89.0 | 2026-11-05] Purpose: The message over the Global table no longer takes 200px and pushes the table
 //   down (the user, after a save); the line that offers Replace…, and its dialog (.gm-*).
+// [CHANGED v3.90.0 | 2026-11-05] Purpose: The list of what a save would delete, in the question that asks first
+//   (.ask-list): it scrolls on its own, so the answers stay in view on a phone.
 export const getStyles = () => `
 :host { display: block; height: 100vh; overflow-y: hidden; background: var(--primary-background-color, #f5f5f5); color: var(--primary-text-color, #212121); font-family: var(--primary-font-family, sans-serif); box-sizing: border-box; direction: ltr !important; text-align: left; }
 /* [ADDED v3.35.0] Colour tokens. The light values are the colours the panel always used; the
@@ -564,6 +564,11 @@ export const getStyles = () => `
 .ask-modal { width: 480px; max-width: calc(100vw - 32px); }
 .ask-text { margin: 0 0 8px 0; font-size: 14px; white-space: pre-line; }
 .ask-note { margin: 0 0 6px 0; font-size: 13px; color: var(--secondary-text-color, #757575); }
+/* [ADDED v3.90.0] What a save would delete: it scrolls on its own, so the answers below it stay in view on a phone; a long
+   name ends in an ellipsis (the whole name is its title). */
+.ask-modal { overflow-y: auto; }
+.ask-list { margin: 0 0 8px 0; padding: 6px 8px; padding-inline-start: 24px; list-style: disc; flex: 0 1 auto; min-height: 48px; max-height: 32vh; overflow-y: auto; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 8px; font-size: 13px; }
+.ask-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 0; }
 .ask-actions { flex-wrap: wrap; }
 .ask-actions .btn { min-height: 40px; }
 .ver-original { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 8px; background: var(--primary-color, #03a9f4); color: #fff; }

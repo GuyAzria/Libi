@@ -7,6 +7,8 @@
   what reached Home Assistant. Leaving the editor with changes not saved asks Yes or No - closing the project, opening
   another, leaving for another page of Home Assistant - and closing the browser tab warns. The editor's own marks are
   no change.
+  [CHANGED v1.1.0 | 2026-11-05] Purpose: The plan here deletes nothing: a save that would delete asks first since the HACS
+  review of 2026-11-05, and test_panel_save_removals*.html checks that question, Delete, Keep and Cancel.
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi save test</title></head>
 <body style="margin:0; width:1280px; height:800px;">
@@ -35,9 +37,9 @@ const reset = () => {
   plan = { ok: true, errors: [], unchanged: 0, stamp: '2026-11-04T05:00:00+00:00',
     upserts: [{ domain: 'automation', key: 'a1', config: { id: 'a1', alias: 'Lamp' }, label: 'NET 1 "Lamp"' },
               { domain: 'script', key: 'night', config: { alias: 'Night', sequence: [] }, label: 'NET 2 "Night"' }],
-    removals: [{ domain: 'scene', key: 'old' }] };
-  saved = { status: 'ok', saved: true, message: 'Saved. 1 automations, 1 scripts, 0 scenes in this project; 3 change(s) sent to Home Assistant.',
-    written: ['automation', 'scene', 'script'], reloaded: ['automation', 'scene', 'script'], errors: [], versions: {} };
+    removals: [] };
+  saved = { status: 'ok', saved: true, message: 'Saved. 1 automations, 1 scripts, 0 scenes in this project; 2 change(s) sent to Home Assistant.',
+    written: ['automation', 'script'], reloaded: ['automation', 'script'], errors: [], versions: {} };
 };
 const hass = {
   states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
@@ -109,16 +111,16 @@ try {
   r = await panel._saveProject();
   check('each change is a POST or a DELETE of Home Assistant\'s config API, in order', JSON.stringify(api) === JSON.stringify([
         ['POST', 'config/automation/config/a1', { id: 'a1', alias: 'Lamp' }],
-        ['POST', 'config/script/config/night', { alias: 'Night', sequence: [] }],
-        ['DELETE', 'config/scene/config/old', null]]), JSON.stringify(api));
+        ['POST', 'config/script/config/night', { alias: 'Night', sequence: [] }]]), JSON.stringify(api));
   const done = sent.find(m => m.type === 'libi/save_done');
   check('then LIBI is told what was done', JSON.stringify(types()) === '["libi/compile_project","libi/save_done"]' && JSON.stringify(done.done) === JSON.stringify([
-        { domain: 'automation', key: 'a1', op: 'upsert' }, { domain: 'script', key: 'night', op: 'upsert' }, { domain: 'scene', key: 'old', op: 'remove' }])
-        && done.failure === null && done.stamp === plan.stamp && done.slug === 'p' && done.nets.length === 1, JSON.stringify(done));
+        { domain: 'automation', key: 'a1', op: 'upsert' }, { domain: 'script', key: 'night', op: 'upsert' }])
+        && JSON.stringify(done.kept) === '[]' && done.failure === null && done.stamp === plan.stamp && done.slug === 'p' && done.nets.length === 1, JSON.stringify(done));
   check('a save that went through is saved', r.complete === true && panel._hasUnsavedChanges(true) === false && !sr.querySelector('.project-chip .dirty'));
 
   // ---- The first change Home Assistant refuses stops the rest
   reset(); canvas(); edit();
+  plan.upserts.push({ domain: 'scene', key: 'evening', config: { id: 'evening', name: 'Evening', entities: {} }, label: 'NET 3 "Evening"' });
   refuse = 'night';
   r = await panel._saveProject();
   const stopped = sent.find(m => m.type === 'libi/save_done');
@@ -211,7 +213,7 @@ try {
   panel.remove();
   await until(() => types().includes('libi/save_done'));
   check('leaving the editor with changes not saved asks, OK being Yes', asked[0] === 'LIBI: the changes were not saved. Save them now?\n\nOK saves them (SAVE & COMPILE). Cancel leaves them unsaved.', JSON.stringify(asked));
-  check('and Yes saves them', JSON.stringify(types()) === '["libi/compile_project","libi/save_done"]' && api.length === 3, JSON.stringify(types()));
+  check('and Yes saves them', JSON.stringify(types()) === '["libi/compile_project","libi/save_done"]' && api.length === 2, JSON.stringify(types()));
   // A panel that is only moved in the page is back at once, and asks nothing.
   reset();
   document.body.appendChild(panel); await sleep(50);

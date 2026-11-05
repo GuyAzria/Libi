@@ -28,7 +28,12 @@ Where the two differ, this file is the authority for LIBI.
   Home Assistant's own config API (`config/<domain>/config/<key>`, POST to
   save, DELETE to remove - Home Assistant validates, writes and reloads), and
   `libi/save_done` reads back what reached the files, records it in the
-  project and waits for each reload (`websocket.py`).
+  project and waits for each reload (`websocket.py`). Since 3.90.0 (the HACS
+  review of 2026-11-05) a save removes only what LIBI created itself (the
+  project's `made`), and only after the panel lists it and the user agrees;
+  an entry opened from Home Assistant that leaves the canvas leaves the
+  project and stays. A NET never takes a key Home Assistant holds for someone
+  else (`_taken_sync`): it gets the next free one.
 - Projects (groups of nets) are stored as JSON under the Home Assistant config
   folder (`PROJECT_DIR_NAME`), and the parsed tree in `libi_ast.json`.
 - Frontend: `custom_components/libi/frontend/` - `libi-panel.js`,

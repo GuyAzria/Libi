@@ -1,0 +1,157 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-05] Purpose: The HACS review of 2026-11-05 - SAVE & COMPILE sends no DELETE before the user sees
+  what it deletes and agrees: the question lists the entries, escaped; Delete sends them after the saves, Keep sends none
+  and tells LIBI which were kept, Cancel sends nothing at all and says nothing after. LIBI is told which upserts created
+  their entry (new). The question asked when leaving the page is the browser's own. Clear all nets says what the next
+  save does. Desktop width; the phone and tablet pages check the layout.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi save removals test</title></head>
+<body style="margin:0;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { makeSaveHass, makeSavePanel, changedCanvas, removalLayoutChecks, until, sleep } from './save_removals_fixture.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const asked = [], told = [];
+let confirmAnswer = false;
+window.confirm = (q) => { asked.push(String(q)); return confirmAnswer; };
+window.alert = (m) => { told.push(String(m)); };
+window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+try {
+  const { hass, sent, api, state } = makeSaveHass();
+  const panel = await makeSavePanel(hass);
+  const sr = panel.shadowRoot;
+  const types = () => sent.map(m => m.type).filter(t => t.startsWith('libi/') && !t.startsWith('libi/ai') && t !== 'libi/project_list');
+  const doneMsg = () => sent.find(m => m.type === 'libi/save_done');
+  const answer = async (id) => {
+    await until(() => sr.querySelector(`.ask-answer[data-answer="${id}"]`));
+    sr.querySelector(`.ask-answer[data-answer="${id}"]`).click();
+  };
+  const fresh = () => { state.reset(); asked.length = 0; told.length = 0; confirmAnswer = false; changedCanvas(panel); };
+
+  // ---- Asked before anything is sent
+  fresh();
+  let saving = panel._saveProject();
+  await until(() => sr.querySelector('.ask-modal .ask-list'));
+  check('the save asks before it deletes, and has sent nothing yet', api.length === 0 && JSON.stringify(types()) === '["libi/compile_project"]',
+        JSON.stringify([api, types()]));
+  check('the question names how many', sr.querySelector('.ask-modal .modal-title').textContent === 'Delete 2 from Home Assistant?'
+        && sr.querySelector('.ask-text').textContent === 'LIBI made these for this project, and they are no longer on the canvas. SAVE & COMPILE deletes them from Home Assistant only if you say so:',
+        sr.querySelector('.ask-modal').textContent);
+  const items = [...sr.querySelectorAll('.ask-list li')];
+  check('and lists each of them by name, the name escaped', items.map(li => li.textContent).join('|') === 'scene "Old evening" (old)|automation "<b>Hall</b> light" (n7)'
+        && !sr.querySelector('.ask-list b') && items.every(li => li.getAttribute('dir') === 'auto'), sr.querySelector('.ask-list').innerHTML);
+  check('the answers are Delete, Keep in Home Assistant, and Cancel', [...sr.querySelectorAll('.ask-answer')].map(b => b.textContent).join() === 'Delete 2,Keep in Home Assistant,Cancel'
+        && sr.querySelector('.ask-answer[data-answer="delete"]').classList.contains('btn-danger'), sr.querySelector('.ask-actions').textContent);
+  check('each answer says what it does', [...sr.querySelectorAll('.ask-note')].map(p => p.textContent).join('|') ===
+        'Delete 2: they are deleted from Home Assistant, and the rest is saved.|Keep in Home Assistant: they stay in Home Assistant as they are, and leave this project. The rest is saved.|Cancel: nothing is saved, and nothing is deleted.',
+        [...sr.querySelectorAll('.ask-note')].map(p => p.textContent).join('|'));
+
+  // ---- Cancel: nothing at all
+  await answer('cancel');
+  let r = await saving;
+  check('Cancel sends nothing to Home Assistant, and LIBI records nothing', api.length === 0 && !types().includes('libi/save_done')
+        && r.cancelled === true && r.saved === false, JSON.stringify([api, types(), r]));
+  check('the changes are still not saved, and the question is gone', panel._hasUnsavedChanges(true) === true && !sr.querySelector('.ask-modal'));
+  check('the words after a Cancel, where they are shown', panel._saveResultText(r) === 'Not saved: you chose Cancel, so nothing was sent to Home Assistant.', panel._saveResultText(r));
+  fresh();
+  panel._saveToBackend();
+  await answer('cancel');
+  await sleep(50);
+  check('SAVE & COMPILE says nothing after a Cancel', told.length === 0 && api.length === 0, JSON.stringify(told));
+
+  // ---- Keep in Home Assistant: the saves only, and LIBI is told what was kept
+  fresh();
+  saving = panel._saveProject();
+  await answer('keep');
+  r = await saving;
+  check('Keep sends the saves and no DELETE', JSON.stringify(api.map(a => a[0] + ' ' + a[1])) === JSON.stringify([
+        'POST config/automation/config/a1', 'POST config/script/config/good_night_2']), JSON.stringify(api));
+  check('and tells LIBI which it kept, and which upsert created its entry', JSON.stringify(doneMsg().kept) === JSON.stringify([
+        { domain: 'scene', key: 'old' }, { domain: 'automation', key: 'n7' }]) && JSON.stringify(doneMsg().done) === JSON.stringify([
+        { domain: 'automation', key: 'a1', op: 'upsert' }, { domain: 'script', key: 'good_night_2', op: 'upsert', new: true }]),
+        JSON.stringify(doneMsg()));
+  check('a save with Keep is saved', r.complete === true && panel._hasUnsavedChanges(true) === false);
+
+  // ---- Delete: the saves, then each DELETE, in order
+  fresh();
+  saving = panel._saveProject();
+  await answer('delete');
+  r = await saving;
+  check('Delete sends the saves, then each DELETE, in order', JSON.stringify(api.map(a => a[0] + ' ' + a[1])) === JSON.stringify([
+        'POST config/automation/config/a1', 'POST config/script/config/good_night_2', 'DELETE config/scene/config/old',
+        'DELETE config/automation/config/n7']), JSON.stringify(api));
+  check('and LIBI is told what was done, nothing kept', JSON.stringify(doneMsg().kept) === '[]' && doneMsg().done.length === 4
+        && JSON.stringify(doneMsg().done.slice(2)) === JSON.stringify([{ domain: 'scene', key: 'old', op: 'remove' }, { domain: 'automation', key: 'n7', op: 'remove' }]),
+        JSON.stringify(doneMsg()));
+  check('a save with Delete is saved', r.complete === true);
+
+  // ---- One of them, and none
+  fresh();
+  state.plan.removals = state.plan.removals.slice(0, 1);
+  saving = panel._saveProject();
+  await until(() => sr.querySelector('.ask-modal'));
+  check('one is asked about as one', sr.querySelector('.ask-modal .modal-title').textContent === 'Delete it from Home Assistant?'
+        && sr.querySelector('.ask-answer[data-answer="delete"]').textContent === 'Delete it', sr.querySelector('.ask-modal').textContent);
+  await answer('cancel'); await saving;
+  fresh();
+  state.plan.removals = [];
+  r = await panel._saveProject();
+  check('nothing to delete: nothing is asked', !sr.querySelector('.ask-modal') && r.complete === true && api.length === 2 && JSON.stringify(doneMsg().kept) === '[]',
+        JSON.stringify([api, doneMsg()]));
+
+  // ---- Leaving the editor with changes not saved: Yes, then the question, then Cancel stays
+  fresh();
+  const closing = panel._projectClose();
+  await answer('yes');
+  await answer('cancel');
+  await closing;
+  check('closing the project, Yes then Cancel: nothing is sent, and the project stays open, said nothing after',
+        panel._project && panel._project.slug === 'p' && api.length === 0 && told.length === 0 && !types().includes('libi/save_done'),
+        JSON.stringify([panel._project, api, told]));
+
+  // ---- Leaving for another page of Home Assistant: the browser's own dialogs
+  fresh();
+  confirmAnswer = true;
+  panel.remove();
+  await until(() => types().includes('libi/save_done'));
+  check('a page already left asks with the browser\'s dialog, and lists them', asked.length === 2
+        && asked[1] === 'LIBI: SAVE & COMPILE deletes these from Home Assistant. LIBI made them for this project, and they are no longer on the canvas:\n\n• scene "Old evening" (old)\n• automation "<b>Hall</b> light" (n7)\n\nOK deletes them. Cancel keeps them in Home Assistant as they are, outside this project.',
+        JSON.stringify(asked));
+  check('OK deletes them', api.filter(a => a[0] === 'DELETE').length === 2 && JSON.stringify(doneMsg().kept) === '[]', JSON.stringify(api));
+  document.body.appendChild(panel); await sleep(50);
+  fresh();
+  let n = 0;
+  window.confirm = (q) => { asked.push(String(q)); n += 1; return n === 1; };
+  panel.remove();
+  await until(() => types().includes('libi/save_done'));
+  check('Cancel there keeps them, and the rest is saved', api.length === 2 && api.every(a => a[0] === 'POST') && doneMsg().kept.length === 2,
+        JSON.stringify([api, doneMsg()]));
+  window.confirm = (q) => { asked.push(String(q)); return confirmAnswer; };
+  document.body.appendChild(panel); await sleep(50);
+
+  // ---- Clear all nets says what the next save does
+  fresh();
+  confirmAnswer = false;
+  panel.shadowRoot.getElementById('clearAllBtn').click();
+  check('Clear all nets says nothing is deleted now, and what a save then does', asked[0] === 'Clear all NETs from the editor?\n\nNothing is deleted from Home Assistant now. When you then press SAVE & COMPILE, an automation opened from Home Assistant stays there as it is, and leaves this project; what LIBI made for this project is deleted only if you agree when LIBI asks.'
+        && panel.core.nets.length === 1, JSON.stringify(asked));
+
+  // ---- The layout of the question at desktop width
+  fresh();
+  await removalLayoutChecks(check, panel, state);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

@@ -13,6 +13,9 @@
 # more details. <https://www.gnu.org/licenses/>.
 # [ADDED v3.85.0 | 2026-11-04] Purpose: SAVE & COMPILE as the panel makes it, against a real Home Assistant -
 #   libi/compile_project, each change through Home Assistant's own config API, libi/save_done.
+# [CHANGED v3.90.0 | 2026-11-05] Purpose: As the panel saves since the HACS review of 2026-11-05: it asks before any
+#   removal (removals="delete", "keep" or "cancel"), tells LIBI the ones kept, and passes on whether an upsert created
+#   its entry (new).
 """SAVE & COMPILE as the panel makes it, for the tests: libi/compile_project, then each change through Home Assistant's
 own config API - the endpoints its automation, script and scene editors use - then libi/save_done."""
 import copy
@@ -58,16 +61,23 @@ async def send(client, msg: dict) -> dict:
     return await client.receive_json()
 
 
-async def save(client, http, nets: list, slug: str = "p", name: str = "P", refuse: tuple = ()) -> tuple[dict, dict | None]:
+async def save(client, http, nets: list, slug: str = "p", name: str = "P", refuse: tuple = (),
+               removals: str = "delete") -> tuple[dict, dict | None]:
     """SAVE & COMPILE as the panel makes it. The changes go through Home Assistant's config API one by one, and the first
     one refused stops the rest, as in the panel; a key in `refuse` is refused as Home Assistant refuses an entry it does
-    not accept. Returns the plan and what libi/save_done answered (None when the plan refused the save)."""
+    not accept. Returns the plan and what libi/save_done answered (None when the plan refused the save).
+    [CHANGED v3.90.0] The panel asks before it sends a removal; `removals` is the user's answer: "delete" sends them,
+    "keep" sends none and says so, "cancel" sends nothing at all (and then libi/save_done is not called: None)."""
     planned = await send(client, {"type": "libi/compile_project", "slug": slug, "name": name, "nets": nets})
     assert planned["success"], planned
     plan = planned["result"]
     if not plan["ok"]:
         return plan, None
-    ops = ([dict(op, op="upsert") for op in plan["upserts"]] + [dict(op, op="remove") for op in plan["removals"]])
+    if plan["removals"] and removals == "cancel":
+        return plan, None
+    removed = plan["removals"] if removals == "delete" else []
+    kept = [{"domain": op["domain"], "key": op["key"]} for op in plan["removals"] if removals == "keep"]
+    ops = ([dict(op, op="upsert") for op in plan["upserts"]] + [dict(op, op="remove") for op in removed])
     done, failure = [], None
     for index, op in enumerate(ops):
         url = f"/api/config/{op['domain']}/config/{op['key']}"
@@ -81,8 +91,8 @@ async def save(client, http, nets: list, slug: str = "p", name: str = "P", refus
             failure = {"domain": op["domain"], "key": op["key"], "op": op["op"], "label": op.get("label", ""),
                        "message": message, "not_sent": len(ops) - index - 1}
             break
-        done.append({"domain": op["domain"], "key": op["key"], "op": op["op"]})
+        done.append({"domain": op["domain"], "key": op["key"], "op": op["op"], **({"new": True} if op.get("new") else {})})
     finished = await send(client, {"type": "libi/save_done", "slug": slug, "name": name, "nets": nets, "done": done,
-                                   "failure": failure, "stamp": plan["stamp"]})
+                                   "failure": failure, "stamp": plan["stamp"], "kept": kept})
     assert finished["success"], finished
     return plan, finished["result"]
