@@ -1,14 +1,13 @@
 <!doctype html>
 <!--
   LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
-  [ADDED v1.0.0 | 2026-10-27] Purpose: Net versions in the panel. The badge names the version that runs;
-  the Versions dialog lists every version with its YAML (escaped); putting an earlier one on the canvas
-  keeps the net's id and automation, gives its elements fresh ids, and the save that follows sends it.
-  The dialog fits a phone screen.
-  [ADDED v1.1.0 | 2026-10-29] Purpose: A NET added from the AI chat is saved with the panel's own save and read
-  back; a red block anywhere on the canvas refuses the save and the chat says so.
+  Net versions in the panel. The badge names the version that runs; the Versions dialog lists every version with its
+  YAML (escaped); putting an earlier one on the canvas keeps the net's id and automation, gives its elements fresh ids,
+  and the save that follows sends it. The dialog fits a phone screen. A NET added from the AI chat is saved with the
+  panel's own save and read back; a red block anywhere on the canvas refuses the save and the chat says so.
   [ADDED v1.2.0 | 2026-11-04] Purpose: The save goes through libi/compile_project, Home Assistant's own config API and
   libi/save_done; the list says which version is the original and which its copy.
+  [CHANGED v1.3.0 | 2026-11-06] Purpose: Each change checked again before it is sent (libi/save_check): yes.
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi net versions test</title></head>
 <body style="margin:0; width:1280px; height:800px;">
@@ -63,6 +62,7 @@ function makeHass() {
                                                      stats: {}, versions: { n1: { active: 2, latest: 2, count: 2 } } };
         if (m.type === 'libi/net_versions') return { active: 2, versions: JSON.parse(JSON.stringify(VERSIONS)) };
         if (m.type === 'libi/compile_project') return JSON.parse(JSON.stringify(PLAN));
+        if (m.type === 'libi/save_check') return { ok: true, token: m.new ? `tk-${m.key}` : '' };
         if (m.type === 'libi/save_done') return JSON.parse(JSON.stringify(saveResult));
         if (m.type === 'libi/verify_automation') return verifyResult;
         if (m.type === 'libi/preview_yaml') return { yaml: '' };

@@ -17,6 +17,8 @@ import copy
 import json
 import logging
 import os
+import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import yaml
@@ -31,7 +33,7 @@ from custom_components.libi.const import AI_MODE_NONE, CONF_AI_MODE, DOMAIN
 from custom_components.libi.libi_to_yaml import same_config
 from custom_components.libi.yaml_to_libi import day_bits_template, yaml_to_ast
 
-from .save_helpers import home_assistant_files, save, send
+from .save_helpers import home_assistant_files, revision_of, save, send
 
 AUTO = {
     "id": "a1", "alias": "Lamp", "description": "keep me", "mode": "single",
@@ -236,7 +238,7 @@ async def test_an_automation_not_set_up_again_is_not_reloaded(hass, libi, monkey
     hass.services.async_register("automation", "reload", no_reload)
     monkeypatch.setattr(ws, "RELOAD_WAIT_SECONDS", 0.5)
     client, http = await hass_ws_client(hass), await hass_client()
-    edited = json.loads(json.dumps(_net(hass)).replace("light.x", "light.y"))
+    edited = json.loads(json.dumps(await _opened(client)).replace("light.x", "light.y"))
     _plan, done = await save(client, http, [edited])
     assert (done["status"], done["reloaded"]) == ("error", []), done
     assert any("automation a1: Home Assistant has not reloaded it within" in e for e in done["errors"]), done
@@ -311,7 +313,8 @@ async def test_a_net_gone_from_the_project_is_removed_through_the_api(hass, libi
     await save(client, http, [_net(hass), _net(hass, hall)])
     assert hass.states.get("automation.hall") is not None
     plan, done = await save(client, http, [_net(hass)])
-    assert plan["removals"] == [{"domain": "automation", "key": "a2", "label": 'automation "Hall" (a2)'}], plan
+    assert _sans_before(plan["removals"]) == [{"domain": "automation", "key": "a2", "label": 'automation "Hall" (a2)'}]
+    assert re.fullmatch(r"[0-9a-f]{64}", plan["removals"][0]["before"]), plan
     assert done["status"] == "ok", done
     assert [a["id"] for a in yaml.safe_load((libi / "automations.yaml").read_text(encoding="utf-8"))] == ["a1"]
     assert hass.states.get("automation.hall") is None
@@ -340,6 +343,11 @@ def _project(libi, slug="p") -> dict:
     return json.loads((libi / "libi" / f"{slug}.libi").read_text(encoding="utf-8"))
 
 
+def _sans_before(ops: list) -> list:
+    """[ADDED v3.91.0] The plan's changes without what each found (before, a fingerprint libi/save_check compares)."""
+    return [{k: v for k, v in op.items() if k != "before"} for op in ops]
+
+
 async def test_an_automation_opened_from_home_assistant_is_never_deleted_by_a_save(hass, libi, hass_ws_client,
                                                                                    hass_client):
     """Frenck's case: a hand-written automation opened in LIBI and saved once, then gone from the canvas (Clear all
@@ -354,7 +362,7 @@ async def test_an_automation_opened_from_home_assistant_is_never_deleted_by_a_sa
     # Clear all nets, then SAVE & COMPILE: nothing is deleted - the automation leaves the project, and that is said.
     plan, done = await save(client, http, [])
     assert plan["removals"] == []
-    assert plan["released"] == [{"domain": "automation", "key": "a1", "label": 'automation "Lamp" (a1)'}]
+    assert _sans_before(plan["released"]) == [{"domain": "automation", "key": "a1", "label": 'automation "Lamp" (a1)'}]
     assert done["status"] == "ok" and done["released"] == ['automation "Lamp" (a1)'], done
     assert done["message"].endswith('Left in Home Assistant as it is, and no longer in this project: automation "Lamp" '
                                     '(a1).'), done["message"]
@@ -388,7 +396,8 @@ async def test_what_libi_made_is_removed_only_once_the_user_confirms(hass, libi,
     assert _project(libi)["made"]["automations"] == ["a1"]
     # Asked, and Cancel: nothing is sent, nothing is recorded.
     plan, done = await save(client, http, [], removals="cancel")
-    assert done is None and plan["removals"] == [{"domain": "automation", "key": "a1", "label": 'automation "Lamp" (a1)'}]
+    assert done is None and _sans_before(plan["removals"]) == [
+        {"domain": "automation", "key": "a1", "label": 'automation "Lamp" (a1)'}]
     assert [a["id"] for a in _automations(libi)] == ["hand1", "a1"] and _project(libi)["owned"]["automations"] == ["a1"]
     # Keep in Home Assistant: nothing is deleted, the automation leaves the project, and no later save asks again.
     plan, done = await save(client, http, [], removals="keep")
@@ -441,11 +450,13 @@ async def test_what_a_project_from_before_3_90_saved_is_never_removed_by_a_save(
     assert plan["removals"] == [] and [r["key"] for r in plan["released"]] == ["a1"] and done["status"] == "ok", done
     assert [a["id"] for a in _automations(libi)] == ["a1"]
     hall = dict(AUTO, id="a2", alias="Hall")
-    planned = (await send(client, {"type": "libi/compile_project", "slug": "p", "nets": [_net(hass, hall)]}))["result"]
+    revision = await revision_of(client, "p")
+    planned = (await send(client, {"type": "libi/compile_project", "slug": "p", "nets": [_net(hass, hall)],
+                                   "revision": revision}))["result"]
     assert (await http.post("/api/config/automation/config/a2", json=planned["upserts"][0]["config"])).status == 200
     old_panel = await send(client, {"type": "libi/save_done", "slug": "p", "nets": [_net(hass, hall)],
                                     "done": [{"domain": "automation", "key": "a2", "op": "upsert"}],
-                                    "stamp": planned["stamp"]})
+                                    "stamp": planned["stamp"], "revision": revision})
     assert old_panel["result"]["status"] == "ok", old_panel
     assert _project(libi)["made"]["automations"] == []
     plan, _done = await save(client, http, [])
@@ -488,7 +499,8 @@ async def test_a_script_net_never_replaces_a_script_of_the_same_name(hass, libi,
     # The next save finds the same key, so nothing changes; and deleting the NET deletes its own script.
     plan, _done = await save(client, http, [net])
     assert (plan["upserts"], plan["unchanged"]) == ([], 1)
-    info = (await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "n1", "nets": [net]}))["result"]
+    info = (await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "n1", "nets": [net],
+                    "revision": await revision_of(client, "p")}))["result"]
     assert (info["domain"], info["key"], info["in_ha"]) == ("script", "good_night_2", True)
     # Nor one another project saved.
     plan, _done = await save(client, http, [_script_net(hass)], slug="q")
@@ -512,7 +524,8 @@ async def test_a_net_drawn_in_libi_never_replaces_another_projects_automation(ha
     assert by_id["n1_2"]["actions"][0]["target"] == {"entity_id": "light.other"}
     plan, _done = await save(client, http, [other], slug="q")
     assert (plan["upserts"], plan["unchanged"]) == ([], 1)
-    info = (await send(client, {"type": "libi/net_delete_plan", "slug": "q", "net_id": "n1", "nets": [other]}))["result"]
+    info = (await send(client, {"type": "libi/net_delete_plan", "slug": "q", "net_id": "n1", "nets": [other],
+                    "revision": await revision_of(client, "q")}))["result"]
     assert (info["key"], info["in_ha"]) == ("n1_2", True)
 
 
@@ -754,14 +767,15 @@ async def test_deleting_a_net_completely_deletes_its_automation(hass, libi, hass
     client, http = await hass_ws_client(hass), await hass_client()
     net = await _opened(client)
     await save(client, http, [net])
-    planned = await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "n1", "nets": [net]})
+    planned = await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "n1", "nets": [net],
+                    "revision": await revision_of(client, "p")})
     info = planned["result"]
     assert (info["domain"], info["key"], info["in_ha"], info["errors"]) == ("automation", "a1", True, [])
     assert info["original"] == {"v": 1, "config": AUTO}
     stamp = (await send(client, {"type": "libi/compile_project", "slug": "p", "nets": []}))["result"]["stamp"]
     assert (await http.delete("/api/config/automation/config/a1")).status == 200
-    assert await _removed(client, net_id="n1", mode="deleted", domain="automation", key="a1", stamp=stamp) == {
-        "ok": True, "errors": []}
+    removed = await _removed(client, net_id="n1", mode="deleted", domain="automation", key="a1", stamp=stamp)
+    assert (removed["ok"], removed["errors"], removed["revision"]) == (True, [], 2), removed
     assert yaml.safe_load((libi / "automations.yaml").read_text(encoding="utf-8")) == []
     assert hass.states.get("automation.lamp") is None
     project = json.loads((libi / "libi" / "p.libi").read_text(encoding="utf-8"))
@@ -777,7 +791,8 @@ async def test_deleting_a_net_back_to_v1_puts_the_original_back_as_it_was(hass, 
     _plan, done = await save(client, http, [edited])
     assert done["status"] == "ok", done
     assert yaml.safe_load((libi / "automations.yaml").read_text(encoding="utf-8"))[0] != ORIGINAL
-    info = (await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "n1", "nets": [edited]}))["result"]
+    info = (await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "n1", "nets": [edited],
+                    "revision": await revision_of(client, "p")}))["result"]
     assert info["original"]["config"] == ORIGINAL
     stamp = (await send(client, {"type": "libi/compile_project", "slug": "p", "nets": []}))["result"]["stamp"]
     assert (await http.post("/api/config/automation/config/a1", json=info["original"]["config"])).status == 200
@@ -806,7 +821,7 @@ async def test_removing_a_net_from_libi_only_keeps_its_automation(hass, libi, ha
     await home_assistant_files(hass, libi)
     client, http = await hass_ws_client(hass), await hass_client()
     await save(client, http, [_net(hass)])
-    assert (await _removed(client, net_id="n_a1", mode="kept", domain="automation", key="a1")) == {"ok": True, "errors": []}
+    assert (await _removed(client, net_id="n_a1", mode="kept", domain="automation", key="a1"))["errors"] == []
     plan, _done = await save(client, http, [])
     assert plan["removals"] == []
     assert [a["id"] for a in yaml.safe_load((libi / "automations.yaml").read_text(encoding="utf-8"))] == ["a1"]
@@ -816,9 +831,11 @@ async def test_removing_a_net_from_libi_only_keeps_its_automation(hass, libi, ha
 async def test_the_delete_plan_of_a_draft_has_nothing_in_home_assistant(hass, libi, hass_ws_client):
     client = await hass_ws_client(hass)
     draft = {"id": "n_draft", "name": "Draft", "rungs": []}
-    info = (await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "n_draft", "nets": [draft]}))["result"]
+    info = (await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "n_draft", "nets": [draft],
+                    "revision": await revision_of(client, "p")}))["result"]
     assert (info["domain"], info["key"], info["in_ha"], info["original"]) == ("", "", False, None)
-    res = await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "nope", "nets": [draft]})
+    res = await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "nope", "nets": [draft],
+                    "revision": await revision_of(client, "p")})
     assert res["success"] is False and res["error"]["code"] == "not_found"
 
 
@@ -1154,7 +1171,6 @@ async def test_every_notify_action_of_an_entry_is_checked_the_nested_ones_too(ha
 # accepted by Home Assistant, though it was saved and reloaded. Set here by hand, so it does not depend on timing.
 async def test_the_state_written_between_removing_and_adding_is_not_a_failed_reload(hass):
     import asyncio
-    from datetime import datetime, timedelta, timezone
 
     entry = er.async_get(hass).async_get_or_create("script", "script", "libi_send_to_guy",
                                                      suggested_object_id="libi_send_to_guy")
@@ -1188,3 +1204,326 @@ async def test_the_original_put_back_over_a_change_in_home_assistant_is_asked_ab
     plan, done = await save(client, http, [net])
     assert [(op["key"], op["conflict"], op["loses"]) for op in plan["upserts"]] == [("c1", True, [])], plan["upserts"]
     assert done["status"] == "ok" and _automations(libi)[0]["alias"] == "Two doors", done
+
+
+# [ADDED 2026-11-06, v3.91.0] CLAUDE.md RULES 38-40 - the review of 2026-11-06, each found against a real Home Assistant
+# first: a copy of a NET overwrote the user's own automation of the same id; two NETs saved to one automation; a key moved
+# aside moved back and made a second script; what was created in Home Assistant while the save's questions were open was
+# overwritten and then counted as LIBI's; a page opened before another page saved overwrote that save.
+def _scripts(libi) -> dict:
+    return yaml.safe_load((libi / "scripts.yaml").read_text(encoding="utf-8")) or {}
+
+
+def _copy_as_390(net: dict, nid: str) -> dict:
+    """A NET duplicated by LIBI 3.90.0 and before: its ha_id was the original's with _copy, as if opened from there."""
+    copied = json.loads(json.dumps(net))
+    copied.update(id=nid, name=f'{net["name"]} COPY', ha_id=f'{net["ha_id"]}_copy')
+    return copied
+
+
+async def test_a_copy_of_a_net_never_replaces_an_automation_of_the_same_id(hass, libi, hass_ws_client, hass_client):
+    mine = dict(copy.deepcopy(AUTO), id="a1_copy", alias="My own, hand written")
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(AUTO), copy.deepcopy(mine)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    net = await _opened(client)
+    before = (libi / "automations.yaml").read_text(encoding="utf-8")
+    copied = json.loads(json.dumps(_copy_as_390(net, "n2")).replace("light.x", "light.copy"))
+    plan, done = await save(client, http, [net, copied])
+    assert done is None and plan["ok"] is False, plan
+    assert any('automation "My own, hand written" (a1_copy) is already in Home Assistant' in e for e in plan["errors"])
+    assert (libi / "automations.yaml").read_text(encoding="utf-8") == before
+    # Nor may Delete NET delete it: it is not that NET's.
+    info = (await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "n2", "nets": [net, copied],
+                                "revision": None}))["result"]
+    assert (info["domain"], info["key"], info["in_ha"], info["errors"]) == ("", "", False, []), info
+    # A copy as LIBI makes it now has no ha_id: a new automation, under its own NET id.
+    copied.pop("ha_id")
+    plan, done = await save(client, http, [net, copied])
+    assert [(op["key"], op["new"]) for op in plan["upserts"]] == [("n2", True)] and done["status"] == "ok", done
+    by_id = {a["id"]: a for a in _automations(libi)}
+    assert by_id["a1_copy"] == mine and by_id["n2"]["actions"][0]["target"] == {"entity_id": "light.copy"}
+    assert _project(libi)["made"]["automations"] == ["n2"]
+
+
+async def test_a_copy_never_replaces_another_projects_copy(hass, libi, hass_ws_client, hass_client):
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(AUTO)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    p1 = await _opened(client, slug="p")
+    p2 = json.loads(json.dumps(_copy_as_390(p1, "n2")).replace("light.x", "light.p"))
+    _plan, done = await save(client, http, [p1, p2])
+    assert done["status"] == "ok" and "a1_copy" in _project(libi, "p")["owned"]["automations"], done
+    q1 = await _opened(client, slug="q")
+    q2 = json.loads(json.dumps(_copy_as_390(q1, "n2")).replace("light.x", "light.q"))
+    plan, done = await save(client, http, [q1, q2], slug="q")
+    assert done is None and any("(a1_copy) is already in Home Assistant" in e for e in plan["errors"]), plan
+    assert {a["id"]: a for a in _automations(libi)}["a1_copy"]["actions"][0]["target"] == {"entity_id": "light.p"}
+
+
+async def test_two_nets_never_save_to_the_same_entry(hass, libi, hass_ws_client, hass_client):
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(AUTO)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    one = json.loads(json.dumps(await _opened(client, "a1", "n1")).replace("light.x", "light.one"))
+    two = json.loads(json.dumps(await _opened(client, "a1", "n2")).replace("light.x", "light.two"))
+    before = (libi / "automations.yaml").read_text(encoding="utf-8")
+    plan, done = await save(client, http, [one, two])
+    assert done is None and plan["ok"] is False
+    assert plan["errors"][0].startswith('NET 2 "Lamp": it would be automation a1, which NET 1 "Lamp" is too'), plan
+    assert (libi / "automations.yaml").read_text(encoding="utf-8") == before
+    # Two copies of one NET made by LIBI 3.90.0, both a1_copy.
+    plan, done = await save(client, http, [one, _copy_as_390(one, "n2"), _copy_as_390(one, "n3")])
+    assert done is None and any(e.startswith('NET 3 "Lamp COPY": it would be automation a1_copy, which NET 2')
+                                for e in plan["errors"]), plan
+    assert (libi / "automations.yaml").read_text(encoding="utf-8") == before
+
+
+async def test_a_key_moved_aside_stays_with_its_net(hass, libi, hass_ws_client, hass_client):
+    await home_assistant_files(hass, libi, scripts={"good_night": GOOD_NIGHT})
+    client, http = await hass_ws_client(hass), await hass_client()
+    net = _script_net(hass)
+    plan, _done = await save(client, http, [net])
+    assert [op["key"] for op in plan["upserts"]] == ["good_night_2"]
+    assert _project(libi)["keys"] == {"n1": {"domain": "script", "key": "good_night_2", "base": "good_night"}}
+    first = _scripts(libi)["good_night_2"]
+    # The user deletes their own script.good_night: LIBI's NET stays good_night_2 - nothing made, nothing to remove.
+    assert (await http.delete("/api/config/script/config/good_night")).status == 200
+    plan, done = await save(client, http, [net])
+    assert (plan["upserts"], plan["removals"], plan["unchanged"]) == ([], [], 1) and done["status"] == "ok", plan
+    assert _scripts(libi) == {"good_night_2": first}
+    # A new NET of the same name, before it on the canvas, gets a key of its own - never the one the first NET has.
+    newer = dict(json.loads(json.dumps(_script_net(hass, nid="n2")).replace("light.x", "light.newer")))
+    plan, done = await save(client, http, [newer, net])
+    assert [(op["key"], op["net_id"]) for op in plan["upserts"]] == [("good_night", "n2")] and done["status"] == "ok"
+    assert _scripts(libi)["good_night_2"] == first
+    # Renamed, a script NET is filed under its new name, as before - and the old one is asked about.
+    renamed = dict(copy.deepcopy(net), name="Sleep well")
+    plan, _done = await save(client, http, [newer, renamed], removals="cancel")
+    assert [op["key"] for op in plan["upserts"]] == ["sleep_well"] and [r["key"] for r in plan["removals"]] == [
+        "good_night_2"], plan
+
+
+async def test_an_automation_key_moved_aside_stays_with_its_net(hass, libi, hass_ws_client, hass_client):
+    await home_assistant_files(hass, libi)
+    drawn = _net(hass)
+    drawn.pop("ha_id", None)
+    drawn["id"] = "n1"
+    client, http = await hass_ws_client(hass), await hass_client()
+    await save(client, http, [drawn], slug="p")
+    other = json.loads(json.dumps(drawn).replace("light.x", "light.other"))
+    plan, _done = await save(client, http, [other], slug="q")
+    assert [op["key"] for op in plan["upserts"]] == ["n1_2"]
+    # Project p deletes its NET, and its automation with it: q's stays n1_2, and no second automation is made.
+    assert (await http.delete("/api/config/automation/config/n1")).status == 200
+    await send(client, {"type": "libi/net_removed", "slug": "p", "net_id": "n1", "mode": "deleted",
+                        "domain": "automation", "key": "n1"})
+    plan, done = await save(client, http, [other], slug="q")
+    assert (plan["upserts"], plan["removals"], plan["unchanged"]) == ([], [], 1) and done["status"] == "ok", plan
+    assert [a["id"] for a in _automations(libi)] == ["n1_2"]
+
+
+async def test_what_was_created_while_the_questions_were_open_is_never_written_over(hass, libi, hass_ws_client,
+                                                                                   hass_client):
+    await home_assistant_files(hass, libi)
+    client, http = await hass_ws_client(hass), await hass_client()
+    users = {"alias": "Good night - the user's", "sequence": [{"delay": 7}]}
+
+    async def in_home_assistants_editor():
+        assert (await http.post("/api/config/script/config/good_night", json=users)).status == 200
+
+    plan, done = await save(client, http, [_script_net(hass)], between=in_home_assistants_editor)
+    assert [(op["key"], op["new"]) for op in plan["upserts"]] == [("good_night", True)]
+    assert done["status"] == "error" and done["saved"] is False, done
+    assert any("not sent: it changed in Home Assistant after SAVE & COMPILE checked it" in e for e in done["errors"]), done
+    assert _scripts(libi) == {"good_night": users} and not (libi / "libi" / "p.libi").exists()
+    # The next save gives the NET a key of its own, and the user's script stays theirs.
+    plan, done = await save(client, http, [_script_net(hass)])
+    assert [op["key"] for op in plan["upserts"]] == ["good_night_2"] and done["status"] == "ok", done
+    assert _scripts(libi)["good_night"] == users and _project(libi)["made"]["scripts"] == ["good_night_2"]
+
+
+async def test_a_change_made_while_the_questions_were_open_is_never_written_over(hass, libi, hass_ws_client,
+                                                                                hass_client):
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(AUTO)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    net = await _opened(client)
+    await save(client, http, [net])
+    meanwhile = dict(copy.deepcopy(AUTO), alias="Renamed while the dialog was open")
+
+    async def in_home_assistants_editor():
+        assert (await http.post("/api/config/automation/config/a1", json=meanwhile)).status == 200
+
+    plan, done = await save(client, http, [json.loads(json.dumps(net).replace("light.x", "light.y"))],
+                            between=in_home_assistants_editor)
+    assert [op["key"] for op in plan["upserts"]] == ["a1"] and done["status"] == "error", done
+    assert _automations(libi)[0]["alias"] == "Renamed while the dialog was open"
+    assert _automations(libi)[0]["actions"][0]["target"] == {"entity_id": "light.x"}
+
+
+async def test_a_removal_of_what_changed_since_it_was_asked_about_is_not_sent(hass, libi, hass_ws_client, hass_client):
+    await home_assistant_files(hass, libi)
+    client, http = await hass_ws_client(hass), await hass_client()
+    await save(client, http, [_net(hass)])
+    assert _project(libi)["made"]["automations"] == ["a1"]
+    taken_over = dict(copy.deepcopy(AUTO), alias="Changed in Home Assistant's editor")
+
+    async def in_home_assistants_editor():
+        assert (await http.post("/api/config/automation/config/a1", json=taken_over)).status == 200
+
+    plan, done = await save(client, http, [], between=in_home_assistants_editor)
+    assert [r["key"] for r in plan["removals"]] == ["a1"] and done["status"] == "error", done
+    assert [a["alias"] for a in _automations(libi)] == ["Changed in Home Assistant's editor"]
+
+
+async def test_only_a_create_libi_checked_counts_as_made(hass, libi, hass_ws_client, hass_client):
+    """A page that does not check - one from before 3.91.0, or one that says new on its own - makes nothing LIBI's: a
+    later save never offers to remove it."""
+    await home_assistant_files(hass, libi)
+    client, http = await hass_ws_client(hass), await hass_client()
+    plan, done = await save(client, http, [_net(hass)], checked=False)
+    assert [(op["key"], op["new"]) for op in plan["upserts"]] == [("a1", True)] and done["status"] == "ok", done
+    assert (_project(libi)["owned"]["automations"], _project(libi)["made"]["automations"]) == (["a1"], [])
+    plan, _done = await save(client, http, [])
+    assert plan["removals"] == [] and [r["key"] for r in plan["released"]] == ["a1"]
+
+    async def made_with(key: str, handed, checked_at=None) -> bool:
+        """One create, checked - for this save, or for the stamp checked_at; save_done is handed what handed() makes of
+        the check's token and this save's stamp."""
+        nets = [_net(hass, dict(AUTO, id=key, alias=key))]
+        revision = await revision_of(client, "p")
+        planned = (await send(client, {"type": "libi/compile_project", "slug": "p", "nets": nets,
+                                       "revision": revision}))["result"]
+        check = (await send(client, {"type": "libi/save_check", "slug": "p", "revision": revision,
+                                     "domain": "automation", "key": key, "before": "", "new": True,
+                                     "stamp": checked_at or planned["stamp"]}))["result"]
+        assert check["ok"] and check["token"], check
+        assert (await http.post(f"/api/config/automation/config/{key}", json=planned["upserts"][0]["config"])).status == 200
+        token, stamp = handed(check["token"], checked_at or planned["stamp"])
+        res = await send(client, {"type": "libi/save_done", "slug": "p", "nets": nets, "revision": revision,
+                                  "done": [{"domain": "automation", "key": key, "op": "upsert", "new": True,
+                                            "token": token}], "stamp": stamp})
+        assert res["result"]["saved"] is True, res
+        return key in _project(libi)["made"]["automations"]
+
+    another_save = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    assert await made_with("a2", lambda token, stamp: (token[::-1], stamp)) is False
+    # The token of this save handed to another save, of a minute ago: no proof for it.
+    assert await made_with("a3", lambda token, stamp: (token, another_save)) is False
+    # A save of two hours ago - a token kept that long, or replayed - is no proof either.
+    assert await made_with("a5", lambda token, stamp: (token, stamp), checked_at=two_hours_ago) is False
+    assert await made_with("a4", lambda token, stamp: (token, stamp)) is True
+
+
+async def test_a_key_another_project_took_after_the_plan_is_not_created(hass, libi, hass_ws_client):
+    """Another project owns the key now - saved, then deleted in Home Assistant, so not in the file: no create there."""
+    await home_assistant_files(hass, libi)
+    (libi / "libi").mkdir(exist_ok=True)
+    (libi / "libi" / "q.libi").write_text(json.dumps({"libi_project": 1, "slug": "q", "name": "Q", "nets": [],
+                                                      "owned": {"automations": ["n1"]}}), encoding="utf-8")
+    client = await hass_ws_client(hass)
+    check = (await send(client, {"type": "libi/save_check", "slug": "p", "revision": None, "domain": "automation",
+                                 "key": "n1", "before": "", "new": True, "stamp": "s"}))["result"]
+    assert check["ok"] is False and check["error"].startswith("another LIBI project took this key"), check
+    check = (await send(client, {"type": "libi/save_check", "slug": "p", "revision": None, "domain": "automation",
+                                 "key": "n5", "before": "", "new": True, "stamp": "s"}))["result"]
+    assert check["ok"] is True and check["token"], check
+
+
+async def test_a_page_older_than_the_project_saves_nothing(hass, libi, hass_ws_client, hass_client):
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(AUTO)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    await save(client, http, [await _opened(client)])
+    opened = (await send(client, {"type": "libi/project_open", "slug": "p"}))["result"]
+    page_a, page_b = opened["nets"], copy.deepcopy(opened["nets"])
+    revision = opened["revision"]
+    drawn = _net(hass)
+    drawn.pop("ha_id", None)
+    drawn.update(id="n2", name="Added on page A")
+    plan, done = await save(client, http, json.loads(json.dumps(page_a).replace("light.x", "light.a")) + [drawn],
+                            revision=revision)
+    assert done["status"] == "ok" and done["revision"] == revision + 1, done
+    # Page B, opened before page A saved: nothing is sent, nothing recorded - page A's NET and change stay.
+    plan, done = await save(client, http, json.loads(json.dumps(page_b).replace("light.x", "light.b")),
+                            revision=revision)
+    assert done is None and plan.get("stale") is True, plan
+    assert plan["errors"][0].startswith("This project was saved from another LIBI page since this page opened it")
+    assert [n["id"] for n in _project(libi)["nets"]] == ["n1", "n2"]
+    assert [(a["id"], a["actions"][0]["target"]["entity_id"]) for a in _automations(libi)] == [
+        ("a1", "light.a"), ("n2", "light.x")]
+    # Nor a check, a delete plan or a record from it.
+    check = (await send(client, {"type": "libi/save_check", "slug": "p", "revision": revision, "domain": "automation",
+                                 "key": "a1", "before": "", "stamp": plan["stamp"]}))["result"]
+    assert check["ok"] is False and check["error"].startswith("This project was saved from another LIBI page"), check
+    info = (await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "n2", "nets": page_a + [drawn],
+                                "revision": revision}))["result"]
+    assert info["in_ha"] is False and info["errors"][0].startswith("This project was saved from another"), info
+    done = (await send(client, {"type": "libi/save_done", "slug": "p", "nets": page_b, "done": [],
+                                "revision": revision, "stamp": plan["stamp"]}))["result"]
+    assert done["saved"] is False and [n["id"] for n in _project(libi)["nets"]] == ["n1", "n2"], done
+    # A page that never opened the project cannot save into it; a project not there yet needs no revision.
+    plan, done = await save(client, http, [], revision=None)
+    assert done is None and plan["errors"][0].startswith("This page has not opened this project"), plan
+    plan, done = await save(client, http, [], slug="fresh", revision=None)
+    assert done["status"] == "ok" and _project(libi, "fresh")["revision"] == 1, done
+    # A project deleted from another page is not made again by a page that had it open - one from before 3.91.0 too.
+    assert (await send(client, {"type": "libi/project_delete", "slug": "fresh"}))["success"]
+    for opened_at in (1, 0):
+        plan, done = await save(client, http, [], slug="fresh", revision=opened_at)
+        assert done is None and plan["errors"][0].startswith("This project was deleted since this page opened it"), plan
+    assert not (libi / "libi" / "fresh.libi").exists()
+
+
+async def test_a_page_from_before_3_91_is_told_to_reload(hass, libi, writes, hass_ws_client):
+    """A page left open across the update sends no revision and does not check before it sends: it plans nothing."""
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(AUTO)])
+    client = await hass_ws_client(hass)
+    plan = (await send(client, {"type": "libi/compile_project", "slug": "p", "nets": [_net(hass)]}))["result"]
+    assert (plan["ok"], plan["errors"]) == (False, [ws._OUTDATED]) and "upserts" not in plan, plan
+    net = dict(_net(hass), id="n1")
+    info = (await send(client, {"type": "libi/net_delete_plan", "slug": "p", "net_id": "n1", "nets": [net]}))["result"]
+    assert (info["in_ha"], info["errors"]) == (False, [ws._OUTDATED]), info
+    assert writes == []
+
+
+async def test_a_project_from_before_3_91_opens_and_saves(hass, libi, hass_ws_client, hass_client):
+    """No revision and no keys in its file: revision 0, and the key of each NET found as before, then kept."""
+    await home_assistant_files(hass, libi, scripts={"good_night": GOOD_NIGHT})
+    client, http = await hass_ws_client(hass), await hass_client()
+    await save(client, http, [_script_net(hass)])
+    project = _project(libi)
+    project.pop("revision")
+    project.pop("keys")
+    (libi / "libi" / "p.libi").write_text(json.dumps(project), encoding="utf-8")
+    opened = (await send(client, {"type": "libi/project_open", "slug": "p"}))["result"]
+    assert opened["revision"] == 0
+    plan, done = await save(client, http, opened["nets"], revision=0)
+    assert (plan["upserts"], plan["unchanged"]) == ([], 1) and done["revision"] == 1, (plan, done)
+    assert _project(libi)["keys"]["n1"]["key"] == "good_night_2"
+
+
+@pytest.mark.parametrize("path", ["clear all", "undo", "ai replace all", "another automation loaded into the net"])
+async def test_no_way_off_the_canvas_deletes_an_automation_opened_from_home_assistant(hass, libi, hass_ws_client,
+                                                                                    hass_client, path):
+    """CLAUDE.md RULE 40, scenarios 1 and 2: an automation of the user's - with what the ladder does not draw - opened
+    and saved in LIBI, then off the canvas each way the editor has: it stays in Home Assistant exactly as it was and
+    leaves the project; nothing about it is asked, nothing deleted. (What LIBI made itself is asked about; Keep.)"""
+    users = dict(copy.deepcopy(AUTO), variables={"brightness": 80}, trace={"stored_traces": 7}, max_exceeded="silent")
+    hall = dict(copy.deepcopy(AUTO), id="a2", alias="Hall")
+    await home_assistant_files(hass, libi, automations=[users, hall])
+    client, http = await hass_ws_client(hass), await hass_client()
+    drawn = _net(hass)
+    drawn.pop("ha_id", None)
+    drawn.update(id="n1", name="Drawn first")
+    opened = await _opened(client, "a1", "n2")
+    _plan, done = await save(client, http, [drawn, opened])
+    assert done["status"] == "ok", done
+    saved = {a["id"]: a for a in _automations(libi)}["a1"]
+    ai_net = dict(json.loads(json.dumps(drawn).replace("light.x", "light.ai")), id="n3", ha_id="libi_ai_1",
+                  name="From the AI chat")
+    canvas = {"clear all": [], "undo": [drawn], "ai replace all": [ai_net],
+              "another automation loaded into the net": [drawn, await _opened(client, "a2", "n2")]}[path]
+    plan, done = await save(client, http, canvas, removals="keep")
+    assert done is not None and done["status"] == "ok", (plan, done)
+    assert "a1" not in [r["key"] for r in plan["removals"]] and "a1" in [r["key"] for r in plan["released"]], plan
+    assert {a["id"]: a for a in _automations(libi)}["a1"] == saved
+    assert "a1" not in _project(libi)["owned"]["automations"] and "a1" not in _project(libi)["made"]["automations"]
+    assert hass.states.get("automation.lamp") is not None

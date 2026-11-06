@@ -11,12 +11,13 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.85.0 | 2026-11-04] Purpose: SAVE & COMPILE as the panel makes it, against a real Home Assistant -
-#   libi/compile_project, each change through Home Assistant's own config API, libi/save_done.
 # [CHANGED v3.90.0 | 2026-11-05] Purpose: As the panel saves since the HACS review of 2026-11-05: it asks before any
 #   removal (removals="delete", "keep" or "cancel"), tells LIBI the ones kept, and passes on whether an upsert created
 #   its entry (new); and before it puts back what was deleted in Home Assistant (gone), replaces a change made there
 #   (conflicts), or saves what LIBI cannot draw all of (loses).
+# [CHANGED v3.91.0 | 2026-11-06] Purpose: As the panel saves since 3.91.0 (CLAUDE.md RULE 38): with the revision of the
+#   project it opened, and each change checked again just before it is sent (libi/save_check), whose token says a create
+#   was a create.
 """SAVE & COMPILE as the panel makes it, for the tests: libi/compile_project, then each change through Home Assistant's
 own config API - the endpoints its automation, script and scene editors use - then libi/save_done."""
 import copy
@@ -62,9 +63,19 @@ async def send(client, msg: dict) -> dict:
     return await client.receive_json()
 
 
+LATEST = "latest"
+
+
+async def revision_of(client, slug: str) -> int | None:
+    """The revision of a project now, as a page that just opened it has it; None when there is no such project."""
+    listed = await send(client, {"type": "libi/project_list"})
+    return next((p["revision"] for p in listed["result"]["projects"] if p["slug"] == slug), None)
+
+
 async def save(client, http, nets: list, slug: str = "p", name: str = "P", refuse: tuple = (),
                removals: str = "delete", gone: str = "again", conflicts: str = "overwrite",
-               loses: str = "save") -> tuple[dict, dict | None]:
+               loses: str = "save", revision=LATEST, checked: bool = True,
+               between=None) -> tuple[dict, dict | None]:
     """SAVE & COMPILE as the panel makes it. The changes go through Home Assistant's config API one by one, and the first
     one refused stops the rest, as in the panel; a key in `refuse` is refused as Home Assistant refuses an entry it does
     not accept. Returns the plan and what libi/save_done answered (None when the plan refused the save).
@@ -72,8 +83,15 @@ async def save(client, http, nets: list, slug: str = "p", name: str = "P", refus
     "keep" sends none and says so, "cancel" sends nothing at all (and then libi/save_done is not called: None).
     The other answers, each asked only when there is something to ask about, "cancel" sending nothing: `gone` - "again"
     puts back what was deleted in Home Assistant, "remove" removes those NETs from the project; `conflicts` -
-    "overwrite" replaces the changes made in Home Assistant; `loses` - "save" saves what LIBI cannot draw all of."""
-    planned = await send(client, {"type": "libi/compile_project", "slug": slug, "name": name, "nets": nets})
+    "overwrite" replaces the changes made in Home Assistant; `loses` - "save" saves what LIBI cannot draw all of.
+    [CHANGED v3.91.0] `revision` is the one of the project the page opened - by default the project's now, as a page that
+    just opened it; `checked` - each change goes through libi/save_check just before it is sent, as the panel does (False:
+    a page that does not); `between`, a coroutine run after the plan and before anything is sent - while the questions are
+    open."""
+    if revision == LATEST:
+        revision = await revision_of(client, slug)
+    planned = await send(client, {"type": "libi/compile_project", "slug": slug, "name": name, "nets": nets,
+                                  "revision": revision})
     assert planned["success"], planned
     plan = planned["result"]
     if not plan["ok"]:
@@ -91,9 +109,22 @@ async def save(client, http, nets: list, slug: str = "p", name: str = "P", refus
     removed = plan["removals"] if removals == "delete" else []
     kept = [{"domain": op["domain"], "key": op["key"]} for op in plan["removals"] if removals == "keep"]
     ops = ([dict(op, op="upsert") for op in upserts] + [dict(op, op="remove") for op in removed])
+    if between is not None:
+        await between()
     done, failure = [], None
     for index, op in enumerate(ops):
         url = f"/api/config/{op['domain']}/config/{op['key']}"
+        token = ""
+        if checked:
+            check = await send(client, {"type": "libi/save_check", "slug": slug, "revision": revision,
+                                        "domain": op["domain"], "key": op["key"], "before": op["before"],
+                                        "new": bool(op.get("new")), "stamp": plan["stamp"]})
+            assert check["success"], check
+            if not check["result"]["ok"]:
+                failure = {"domain": op["domain"], "key": op["key"], "op": op["op"], "label": op.get("label", ""),
+                           "message": check["result"]["error"], "not_sent": len(ops) - index - 1, "stopped": True}
+                break
+            token = check["result"]["token"]
         if op["key"] in refuse:
             status, message = 400, "Message malformed: refused by the test"
         else:
@@ -104,8 +135,9 @@ async def save(client, http, nets: list, slug: str = "p", name: str = "P", refus
             failure = {"domain": op["domain"], "key": op["key"], "op": op["op"], "label": op.get("label", ""),
                        "message": message, "not_sent": len(ops) - index - 1}
             break
-        done.append({"domain": op["domain"], "key": op["key"], "op": op["op"], **({"new": True} if op.get("new") else {})})
+        done.append({"domain": op["domain"], "key": op["key"], "op": op["op"],
+                     **({"new": True, "token": token} if op.get("new") else {})})
     finished = await send(client, {"type": "libi/save_done", "slug": slug, "name": name, "nets": nets, "done": done,
-                                   "failure": failure, "stamp": plan["stamp"], "kept": kept})
+                                   "failure": failure, "stamp": plan["stamp"], "kept": kept, "revision": revision})
     assert finished["success"], finished
     return plan, finished["result"]

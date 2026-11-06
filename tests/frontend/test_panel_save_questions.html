@@ -8,6 +8,7 @@
   to any sends nothing and changes nothing on the canvas; a page already left asks with the browser's dialog. A NET
   Home Assistant changed and LIBI did not is said after the save. Desktop width; the dialog's layout at every width is
   checked by test_panel_save_removals*.html.
+  [CHANGED v1.1.0 | 2026-11-06] Purpose: What is put back carries the token libi/save_check gave it.
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi save questions test</title></head>
 <body style="margin:0;">
@@ -91,7 +92,7 @@ try {
   r = await saving;
   check('Save it again puts it back, as created by LIBI, and the NET stays', JSON.stringify(api.map(a => a[0] + ' ' + a[1])) === JSON.stringify([
         'POST config/automation/config/a1', 'POST config/automation/config/g1']) && core.nets.length === 2
-        && JSON.stringify(doneMsg().done[1]) === JSON.stringify({ domain: 'automation', key: 'g1', op: 'upsert', new: true }),
+        && JSON.stringify(doneMsg().done[1]) === JSON.stringify({ domain: 'automation', key: 'g1', op: 'upsert', new: true, token: 'tk-g1' }),
         JSON.stringify([api, doneMsg()]));
 
   // ---- Changed in Home Assistant since LIBI saw it

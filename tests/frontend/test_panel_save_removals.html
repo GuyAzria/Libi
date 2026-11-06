@@ -6,6 +6,7 @@
   and tells LIBI which were kept, Cancel sends nothing at all and says nothing after. LIBI is told which upserts created
   their entry (new). The question asked when leaving the page is the browser's own. Clear all nets says what the next
   save does. Desktop width; the phone and tablet pages check the layout.
+  [CHANGED v1.1.0 | 2026-11-06] Purpose: An upsert that created its entry carries the token libi/save_check gave it.
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi save removals test</title></head>
 <body style="margin:0;">
@@ -77,7 +78,7 @@ try {
         'POST config/automation/config/a1', 'POST config/script/config/good_night_2']), JSON.stringify(api));
   check('and tells LIBI which it kept, and which upsert created its entry', JSON.stringify(doneMsg().kept) === JSON.stringify([
         { domain: 'scene', key: 'old' }, { domain: 'automation', key: 'n7' }]) && JSON.stringify(doneMsg().done) === JSON.stringify([
-        { domain: 'automation', key: 'a1', op: 'upsert' }, { domain: 'script', key: 'good_night_2', op: 'upsert', new: true }]),
+        { domain: 'automation', key: 'a1', op: 'upsert' }, { domain: 'script', key: 'good_night_2', op: 'upsert', new: true, token: 'tk-good_night_2' }]),
         JSON.stringify(doneMsg()));
   check('a save with Keep is saved', r.complete === true && panel._hasUnsavedChanges(true) === false);
 

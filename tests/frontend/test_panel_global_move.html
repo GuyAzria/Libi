@@ -7,6 +7,7 @@
   why; the ones ticked go through libi/global_move_plan, Home Assistant's config API and libi/global_move_done, a NET of
   the page is changed on the page and saved with SAVE & COMPILE. What Home Assistant refuses is said and the question
   stays. The message over the table does not push the table down (the user: "the table is down instead of up").
+  [CHANGED v1.1.0 | 2026-11-06] Purpose: The page's save checks its change again before it sends it (libi/save_check).
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi global move test</title></head>
 <body style="margin:0; width:1400px; height:860px;">
@@ -147,7 +148,7 @@ try {
           { domain: 'script', key: 'announce', op: 'upsert' }]), JSON.stringify(done));
   check('then the NET of the page sends to the global variable, its other block left alone, and it is saved with SAVE & COMPILE',
         els().e1.target === GM && els().e2.target === GM && els().e3.target === S25
-        && JSON.stringify(types(n)) === JSON.stringify(['libi/global_move_plan', 'libi/global_move_done', 'libi/compile_project', 'libi/save_done', 'libi/global'])
+        && JSON.stringify(types(n)) === JSON.stringify(['libi/global_move_plan', 'libi/global_move_done', 'libi/compile_project', 'libi/save_check', 'libi/save_done', 'libi/global'])
         && !panel._hasUnsavedChanges(), JSON.stringify(types(n)));
   check('done, the question closes and the table says what changed', !modal() && panel._modal === null
         && tableSaid().startsWith('Replaced in 3: Alarm Smoke Sensor, <img src=x onerror="window.__y=1">Dishwasher, Announce. They send through Guy My Phone from now on.')

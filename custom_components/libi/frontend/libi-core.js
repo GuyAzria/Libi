@@ -14,12 +14,13 @@
  */
 /**
  * LIBI Panel - Core Engine
- * v3.88.0
+ * v3.91.0
  */
-// [ADDED v3.87.0 | 2026-11-04] Purpose: A phone has one name in LIBI, whichever of its two ids - its notify entity or the
-//   action that sends to it - a pin holds (phones, phoneOf, nameKey); a phone's action shows the phone's name.
 // [ADDED v3.88.0 | 2026-11-05] Purpose: A recipient of LIBI Global (script.libi_send_to_<name>) shows its name in LIBI
 //   Global, not its script's alias (recipients, recipientOf).
+// [CHANGED v3.91.0 | 2026-11-06] Purpose: CLAUDE.md RULE 38 - a copy of a NET (duplicateNet) is a new automation, not
+//   the one its original was opened from: it no longer gets an ha_id ("<id>_copy"), which saved it over the user's own
+//   automation of that id.
 export class LibiCore {
     constructor() {
         this.nets = [];
@@ -240,7 +241,9 @@ export class LibiCore {
         copy.id = `n${this.nid++}`;
         const rungMap = {};
         copy.name = `${src.name || 'Automation'} COPY`;
-        if (src.ha_id) copy.ha_id = `${src.ha_id}_copy`;
+        // [CHANGED v3.91.0] A copy names no automation of Home Assistant's: it is saved as a new one, under its own NET id.
+        // The callers that put a version or the AI chat's change in a NET's place give it that NET's ha_id themselves.
+        delete copy.ha_id;
         copy.collapsed = false;
         const reid = (arr) => {
             for (let el of arr || []) {

@@ -4,6 +4,8 @@
  *   (test_panel_save_removals*.html) - the HACS review of 2026-11-05: SAVE & COMPILE lists what it would delete from Home
  *   Assistant and asks first. A Home Assistant whose libi/compile_project and libi/save_done answer as the backend does,
  *   whose config API records each call, and the panel on it. Not a test page itself: the runner runs test_*.html only.
+ * [CHANGED v1.1.0 | 2026-11-06] Purpose: libi/save_check answers as the backend does when nothing changed since the plan
+ *   (state.check): yes, and a create with its token.
  */
 import '../../custom_components/libi/frontend/libi-panel.js';
 
@@ -33,6 +35,7 @@ export function makeSaveHass() {
       removals };
     state.saved = { status: 'ok', saved: true, message: 'Saved.', written: ['automation', 'script'], reloaded: ['automation', 'script'],
       errors: [], versions: {}, released: [] };
+    state.check = (m) => ({ ok: true, token: m.new ? `tk-${m.key}` : '' });
   };
   state.reset();
   const hass = {
@@ -45,6 +48,7 @@ export function makeSaveHass() {
         if (m.type === 'libi/ai_status') return { configured: false };
         if (m.type === 'libi/project_list') return { projects: [] };
         if (m.type === 'libi/compile_project') return JSON.parse(JSON.stringify(state.plan));
+        if (m.type === 'libi/save_check') return state.check(m);
         if (m.type === 'libi/save_done') return JSON.parse(JSON.stringify(state.saved));
         if (m.type === 'libi/project_open') return { slug: m.slug, name: 'Q', nets: [], stats: {}, versions: {} };
         return [];

@@ -3,10 +3,10 @@
  * [ADDED v1.0.0 | 2026-11-05] Purpose: What the LIBI Global pages share (test_panel_global*.html): a Home Assistant whose
  *   libi/global, libi/global_plan and libi/global_done answer as the backend does, whose config API records each call,
  *   and the panel on it. Not a test page itself: the runner runs test_*.html only.
- * [ADDED v1.1.0 | 2026-11-05] Purpose: layoutChecks checks the table of the Global tab and the editor of one global
- *   variable (LIBI 3.88.1).
+ *   layoutChecks checks the table of the Global tab and the editor of one global variable (LIBI 3.88.1).
  * [ADDED v1.2.0 | 2026-11-05] Purpose: libi/global_move_plan and libi/global_move_done answer as the backend does, and
  *   SAVE & COMPILE saves; moveLayoutChecks checks the question to replace a phone with a global variable (LIBI 3.89.0).
+ * [CHANGED v1.3.0 | 2026-11-06] Purpose: SAVE & COMPILE checks each change again first (libi/save_check): yes.
  */
 import '../../custom_components/libi/frontend/libi-panel.js';
 
@@ -128,6 +128,7 @@ export function makeHass() {
           return { ok: true, errors: [], stamp: 'SAVE', removals: [],
                    upserts: m.nets.map((n, i) => ({ domain: 'automation', key: n.id, label: `NET ${i + 1} "${n.name}"`, config: { id: n.id } })) };
         }
+        if (m.type === 'libi/save_check') return { ok: true, token: '' };
         if (m.type === 'libi/save_done') {
           return { status: 'ok', saved: true, message: 'Saved.', slug: m.slug, written: ['automation'], reloaded: ['automation'],
                    versions: {}, errors: [] };

@@ -1,0 +1,116 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-06] Purpose: CLAUDE.md RULES 38-39, found in the review of 2026-11-06. A browser that remembers
+  no project, with one project on Home Assistant, opens that project: until LIBI 3.90.0 the page showed its name over
+  another canvas - the one the browser kept, or a new one - and a save then replaced the project's NETs with it. The
+  page saves with the revision of the project it opened. A copy of a NET (Duplicate) names no automation of Home
+  Assistant's: it is saved as a new one, not over "<id>_copy".
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi open project test</title></head>
+<body style="margin:0;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const until = async (cond, ms = 3000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await sleep(10); return cond(); };
+window.confirm = () => false;
+window.alert = () => {};
+window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const LAMP = { id: 'n1', ha_id: 'a1', name: 'Lamp', level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r1', comment: '', elements: [
+  { id: 'e1', type: 'contact_no', isTrigger: true, label: 'binary_sensor.door' },
+  { id: 'e2', type: 'coil_s', label: 'light.x' }] }] };
+const KEPT = { id: 'n9', name: 'Kept by this browser', level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r1', comment: '', elements: [
+  { id: 'e1', type: 'contact_no', isTrigger: true, label: 'binary_sensor.window' },
+  { id: 'e2', type: 'coil_s', label: 'light.kept' }] }] };
+
+// A Home Assistant with the projects given, each opened with LAMP and its revision.
+function makeHass(projects) {
+  const sent = [];
+  const hass = {
+    states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+    user: { is_admin: true }, localize: (k) => k, callService: async () => {}, callApi: async () => ({ result: 'ok' }),
+    connection: {
+      sendMessagePromise: async (m) => {
+        sent.push(JSON.parse(JSON.stringify(m)));
+        if (m.type === 'libi/ai_status') return { configured: false };
+        if (m.type === 'libi/project_list') return { projects: projects.map(p => ({ slug: p.slug, name: p.name, nets: 1, revision: p.revision })) };
+        if (m.type === 'libi/project_open') {
+          const p = projects.find(x => x.slug === m.slug);
+          return { slug: p.slug, name: p.name, nets: [JSON.parse(JSON.stringify(LAMP))], stats: {}, versions: {}, revision: p.revision };
+        }
+        if (m.type === 'libi/load_automation') return { nets: [] };
+        return [];
+      },
+      subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+    },
+  };
+  return { hass, sent };
+}
+
+async function start(projects, stored) {
+  localStorage.clear();
+  for (const [k, v] of Object.entries(stored || {})) localStorage.setItem(k, v);
+  const { hass, sent } = makeHass(projects);
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '800px';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await until(() => panel._initialized);
+  await sleep(50);
+  return { panel, sent };
+}
+
+try {
+  // ---- One project, none remembered, the browser keeping another canvas: the project is opened
+  let { panel, sent } = await start([{ slug: 'garden', name: 'Garden', revision: 4 }], { libi_draft: JSON.stringify([KEPT]) });
+  check('one project and none remembered: it is opened', sent.some(m => m.type === 'libi/project_open' && m.slug === 'garden'),
+        JSON.stringify(sent.map(m => m.type)));
+  check('its NETs are on the canvas, not the ones the browser kept', panel.core.nets.map(n => n.id).join() === 'n1'
+        && panel._project && panel._project.slug === 'garden', JSON.stringify(panel.core.nets.map(n => n.id)));
+  check('the page saves with its revision', panel._revision === 4, String(panel._revision));
+  check('and remembers it', JSON.parse(localStorage.getItem('libi_project') || 'null').slug === 'garden', localStorage.getItem('libi_project'));
+  check('nothing is unsaved', panel._hasUnsavedChanges(true) === false);
+
+  // ---- A copy of a NET names no automation of Home Assistant's
+  const sr = panel.shadowRoot;
+  const dup = sr.querySelector('.duplicate-net-btn[data-nid="n1"]');
+  check('the NET has a Duplicate', !!dup);
+  if (dup) dup.click();
+  await sleep(50);
+  const copy = panel.core.nets[1];
+  check('the copy is a new NET with no ha_id: saved as a new automation, under its own id', !!copy && copy.id !== 'n1' && !('ha_id' in copy)
+        && copy.name === 'Lamp COPY', JSON.stringify(copy && { id: copy.id, ha_id: copy.ha_id, name: copy.name }));
+  check('the original keeps the automation it was opened from', panel.core.nets[0].ha_id === 'a1');
+  panel.core.nets = panel.core.nets.slice(0, 1); panel._markSaved();
+  panel.remove(); await sleep(50);
+
+  // ---- Two projects, none remembered: none is opened, none named
+  ({ panel, sent } = await start([{ slug: 'garden', name: 'Garden', revision: 4 }, { slug: 'house', name: 'House', revision: 1 }]));
+  check('two projects and none remembered: none is opened, and none is named over the canvas', !sent.some(m => m.type === 'libi/project_open')
+        && panel._project === null, JSON.stringify([sent.map(m => m.type), panel._project]));
+  check('and the page has no revision to save into one with', panel._revision === undefined || panel._revision === null, String(panel._revision));
+  panel._markSaved();
+  panel.remove(); await sleep(50);
+
+  // ---- The project remembered is opened, with its revision
+  ({ panel, sent } = await start([{ slug: 'garden', name: 'Garden', revision: 4 }, { slug: 'house', name: 'House', revision: 2 }],
+                                 { libi_project: JSON.stringify({ slug: 'house', name: 'House' }) }));
+  check('the project remembered is opened, with its revision', sent.some(m => m.type === 'libi/project_open' && m.slug === 'house')
+        && panel._project.slug === 'house' && panel._revision === 2, JSON.stringify([panel._project, panel._revision]));
+  panel.remove(); await sleep(50);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

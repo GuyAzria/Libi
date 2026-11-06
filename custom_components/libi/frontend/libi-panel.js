@@ -14,24 +14,26 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.90.0
+ * v3.91.0
  */
-// [ADDED v3.89.0 | 2026-11-05] Purpose: After a save, LIBI asks to replace the phone with the global variable wherever an
-//   automation still sends straight to it (the user's request), and does it for those ticked (_globalMoveRun); the
-//   message under the table no longer pushes the table down. One send to the config API for every save (_configApiSend).
 // [CHANGED v3.90.0 | 2026-11-05] Purpose: The HACS review of 2026-11-05 - SAVE & COMPILE lists what it would delete from
 //   Home Assistant and asks first (_confirmRemovals); only what LIBI made is ever offered, and Keep lets it go instead.
 //   Before it sends anything it also asks about what was deleted or changed in Home Assistant since LIBI saw it, and what
 //   LIBI cannot draw (_askBeforeSave).
-import { LibiCore } from './libi-core.js?v=3.90.0';
-import { getStyles } from './libi-css.js?v=3.90.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.90.0';
-import { LibiOnline } from './libi-online.js?v=3.90.0';
-import { LibiAiChat } from './libi-ai.js?v=3.90.0';
+// [CHANGED v3.91.0 | 2026-11-06] Purpose: CLAUDE.md RULES 38-39 - each change is checked again just before it is sent
+//   (libi/save_check, in _configApiSend), and one that changed since the plan is not sent; the page saves only the
+//   project as it opened it (its revision); Delete NET names the entry and says whether LIBI made it, and checks it
+//   again before it deletes; with one project and none remembered, the page opens it instead of showing another canvas
+//   under its name.
+import { LibiCore } from './libi-core.js?v=3.91.0';
+import { getStyles } from './libi-css.js?v=3.91.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.91.0';
+import { LibiOnline } from './libi-online.js?v=3.91.0';
+import { LibiAiChat } from './libi-ai.js?v=3.91.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.90.0';
+export const LIBI_BUILD = '3.91.0';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -245,12 +247,19 @@ class LibiPanel extends HTMLElement {
         // [ADDED v3.88.0] And LIBI Global's recipients, which a MOVE NOTIFY / TTS block shows by name.
         await this._loadGlobal();
         await this._projectRefreshList();
+        // [CHANGED v3.91.0] Only one project and none remembered - a new browser: it is opened. Until 3.90.0 its name was
+        // shown over the canvas the browser had kept, or a new one, and a save then replaced the project's NETs with it.
+        if (!(remembered && (this._projectList || []).some(p => p.slug === remembered.slug)) && (this._projectList || []).length === 1) {
+            remembered = { slug: this._projectList[0].slug };
+        }
         if (remembered && (this._projectList || []).some(p => p.slug === remembered.slug)) {
             try {
                 const res = await this._hass.connection.sendMessagePromise({ type: 'libi/project_open', slug: remembered.slug });
                 this.core.nets = res.nets || [];
                 this._project = { slug: res.slug, name: res.name };
+                this._revision = this._revisionOf(res);
                 this._versions = res.versions || {};
+                this._rememberProject();
                 this.core.syncCounters();
                 this.core.repairAST();
                 this._initialized = true;
@@ -262,11 +271,6 @@ class LibiPanel extends HTMLElement {
             } catch (err) {
                 console.warn('LIBI could not reopen the last project', err);
             }
-        }
-        if ((this._projectList || []).length === 1) {
-            // Only one workspace exists, so there is nothing to choose between.
-            this._project = { slug: this._projectList[0].slug, name: this._projectList[0].name };
-            this._rememberProject();
         }
         try { 
             const localDraft = localStorage.getItem('libi_draft');
@@ -315,6 +319,7 @@ class LibiPanel extends HTMLElement {
     _saveResultText(r) {
         if (r.refused) return 'Cannot compile: Syntax/Structural errors found (Missing Triggers, Missing Actions, or Missing Variables). Please fix red blocks.';
         if (r.cancelled) return 'Not saved: you chose Cancel, so nothing was sent to Home Assistant.';
+        if (r.stale) return 'Not saved: ' + r.failed;
         if (r.compileErrors) return 'Not saved: the compile failed, so nothing was written.\n\n' + r.compileErrors.map(e => '• ' + e).join('\n');
         if (r.failed) return 'Save failed: ' + r.failed;
         return r.message || 'Saved.';
@@ -338,15 +343,18 @@ class LibiPanel extends HTMLElement {
         const slug = this._project ? this._project.slug : 'default';
         const name = this._project ? this._project.name : '';
         let nets = this.core.nets;
+        // [ADDED v3.91.0] The revision of the project this page opened: the backend saves only that one (RULE 39).
+        const revision = this._revision === undefined ? null : this._revision;
         const ws = (msg) => this._hass.connection.sendMessagePromise(msg);
         const said = (err) => this._staleBackend(err) || (err && err.message ? err.message : String(err));
         let plan;
         try {
-            plan = (await ws({ type: 'libi/compile_project', slug, name, nets })) || {};
+            plan = (await ws({ type: 'libi/compile_project', slug, name, nets, revision })) || {};
         } catch (err) {
             console.error('LIBI could not compile', err);
             return { saved: false, failed: said(err) };
         }
+        if (plan.stale) return { saved: false, stale: true, failed: (plan.errors || []).join(' ') || 'this page is older than the project.' };
         if (!plan.ok) return { saved: false, compileErrors: (plan.errors || []).length ? plan.errors : ['the compile did not finish'] };
         // [ADDED v3.90.0] The HACS review (2026-11-05) and RULE 5: nothing is sent before the user has answered every
         // question about it (_askBeforeSave) - what it deletes, what it puts back, what it replaces, what it cannot draw.
@@ -366,15 +374,19 @@ class LibiPanel extends HTMLElement {
             kept = removals.map(op => ({ domain: op.domain, key: op.key }));
             removals = [];
         }
+        // [ADDED v3.91.0] RULE 38: each change checked again just before it is sent - as planned, or not sent at all.
+        const check = (op) => ws({ type: 'libi/save_check', slug, revision, domain: op.domain, key: op.key,
+            before: String(op.before || ''), new: op.op === 'upsert' && op.new === true, stamp: plan.stamp || '' });
         const { done, failure } = await this._configApiSend([...upserts.map(op => ({ ...op, op: 'upsert' })),
-            ...removals.map(op => ({ ...op, op: 'remove' }))]);
+            ...removals.map(op => ({ ...op, op: 'remove' }))], check);
         let r;
         try {
-            r = (await ws({ type: 'libi/save_done', slug, name, nets, done, failure, kept, stamp: plan.stamp || '' })) || {};
+            r = (await ws({ type: 'libi/save_done', slug, name, nets, done, failure, kept, revision, stamp: plan.stamp || '' })) || {};
         } catch (err) {
             console.error('LIBI could not record the save', err);
             return { saved: false, failed: said(err) };
         }
+        if (typeof r.revision === 'number') this._revision = r.revision;
         // [CHANGED v3.34.0] Only a save the backend confirms makes the project match what is saved; [CHANGED v3.85.0] and
         // one in which Home Assistant refused nothing.
         r.complete = r.saved !== false && !failure;
@@ -396,17 +408,35 @@ class LibiPanel extends HTMLElement {
 
     /** [ADDED v3.89.0] Each change to Home Assistant's config API, as its own editors send it - POST to save, DELETE to
      *  remove - stopping at the first one it refuses. SAVE & COMPILE, LIBI Global and the phone replaced with a global
-     *  variable all send with it. Returns what was sent ({ domain, key, op }) and the refusal, if any. */
-    async _configApiSend(ops) {
+     *  variable all send with it. Returns what was sent ({ domain, key, op }) and the refusal, if any.
+     *  [CHANGED v3.91.0] With check (SAVE & COMPILE: libi/save_check), each change is checked just before it is sent; one
+     *  that does not hold stops it and the rest (failure.stopped), and a create it confirmed carries its token. */
+    async _configApiSend(ops, check = null) {
         const done = [];
         let failure = null;
         for (const [index, op] of ops.entries()) {
             const path = `config/${op.domain}/config/${encodeURIComponent(op.key)}`;
+            let token = '';
+            if (check) {
+                let checked;
+                try {
+                    checked = (await check(op)) || {};
+                } catch (err) {
+                    checked = { ok: false, error: this._staleBackend(err) || (err && err.message ? err.message : String(err)) };
+                }
+                if (!checked.ok) {
+                    failure = { domain: op.domain, key: op.key, op: op.op, label: op.label || '', stopped: true,
+                        message: checked.error || 'LIBI could not check it again', not_sent: ops.length - index - 1 };
+                    break;
+                }
+                token = String(checked.token || '');
+            }
             try {
                 if (op.op === 'upsert') await this._hass.callApi('POST', path, op.config);
                 else await this._hass.callApi('DELETE', path);
                 // [CHANGED v3.90.0] With the plan's word that the upsert created its entry: what the project made.
-                done.push({ domain: op.domain, key: op.key, op: op.op, ...(op.op === 'upsert' && op.new === true ? { new: true } : {}) });
+                // [CHANGED v3.91.0] And the check's token, without which it is not.
+                done.push({ domain: op.domain, key: op.key, op: op.op, ...(op.op === 'upsert' && op.new === true ? { new: true, token } : {}) });
             } catch (err) {
                 failure = { domain: op.domain, key: op.key, op: op.op, label: op.label || '', message: this._apiError(err),
                     not_sent: ops.length - index - 1 };
@@ -419,9 +449,17 @@ class LibiPanel extends HTMLElement {
     /** [ADDED v3.85.0] A panel newer than the LIBI Home Assistant runs - copied in, Home Assistant not restarted (the
      *  JavaScript is new after a refresh, the Python only after a restart) - says so, instead of "Unknown command". */
     _staleBackend(err) {
-        return err && err.code === 'unknown_command'
+        // [CHANGED v3.91.0] A field the previous version does not know is refused as well.
+        const old = err && (err.code === 'unknown_command'
+            || (err.code === 'invalid_format' && /extra keys not allowed/.test(String(err.message || ''))));
+        return old
             ? 'LIBI was updated, but Home Assistant still runs the previous version. Restart Home Assistant (Settings ▸ System ▸ Restart), then try again.'
             : '';
+    }
+
+    /** [ADDED v3.91.0] The revision of a project as the backend gave it - the one this page saves with - or null. */
+    _revisionOf(res) {
+        return res && typeof res.revision === 'number' ? res.revision : null;
     }
 
     /** [ADDED v3.85.0] Home Assistant's reason for refusing a call to its config API: the message it answered with. */
@@ -622,7 +660,8 @@ class LibiPanel extends HTMLElement {
         const slug = this._project ? this._project.slug : 'default';
         let info;
         try {
-            info = (await ws({ type: 'libi/net_delete_plan', slug, net_id: nid, nets: this.core.nets })) || {};
+            info = (await ws({ type: 'libi/net_delete_plan', slug, net_id: nid, nets: this.core.nets,
+                revision: this._revision === undefined ? null : this._revision })) || {};
         } catch (err) {
             alert('Nothing was deleted: ' + (this._staleBackend(err) || 'LIBI could not check this NET - ' + (err && err.message ? err.message : err)));
             return;
@@ -632,8 +671,10 @@ class LibiPanel extends HTMLElement {
             return;
         }
         const kind = info.domain || 'automation';
+        // [CHANGED v3.91.0] RULE 38: by name, and whether LIBI made it or it was the user's, opened from Home Assistant.
+        const what = info.label || `its ${kind}`;
         const answers = [{ id: 'delete', label: 'Delete completely', kind: 'btn-danger',
-            note: info.in_ha ? `the NET goes, and its ${kind} is deleted from Home Assistant.` : 'the NET goes. It is not in Home Assistant.' }];
+            note: info.in_ha ? `the NET goes, and ${what} is deleted from Home Assistant.` : 'the NET goes. It is not in Home Assistant.' }];
         if (info.in_ha && info.original) {
             answers.push({ id: 'restore', label: `Delete and go back to V${info.original.v}`, kind: 'btn-primary',
                 note: `the NET goes, and its ${kind} goes back to V${info.original.v}, the original it was before LIBI changed it.` });
@@ -641,8 +682,10 @@ class LibiPanel extends HTMLElement {
         if (info.in_ha) answers.push({ id: 'keep', label: 'Remove from LIBI only', kind: 'btn-ghost', note: `the NET goes, and its ${kind} stays in Home Assistant as it is now.` });
         answers.push({ id: 'cancel', label: 'Cancel', kind: 'btn-ghost' });
         const number = this.core.nets.indexOf(net) + 1;
+        const whose = info.made ? 'LIBI made it for this project.'
+            : 'LIBI did not make it: it was opened from Home Assistant, or saved by a LIBI older than 3.90.';
         const choice = await this._ask(`Delete NET ${number} "${net.name || ''}"?`,
-            info.in_ha ? `What becomes of its ${kind} in Home Assistant?` : 'This NET is not in Home Assistant.', answers);
+            info.in_ha ? `What becomes of ${what} in Home Assistant? ${whose}` : 'This NET is not in Home Assistant.', answers);
         if (!choice || choice === 'cancel') return;
         // [CHANGED v3.77.0] Its local variables go too when the user agrees - asked before anything is deleted, deleted
         // only once the NET and its automation are gone. A NET that stays in Home Assistant keeps them.
@@ -654,6 +697,20 @@ class LibiPanel extends HTMLElement {
             picked = question && confirm(question) ? local.helpers.map(h => h.entity_id) : [];
         }
         const path = `config/${info.domain}/config/${encodeURIComponent(info.key)}`;
+        // [ADDED v3.91.0] Checked again just before: not deleted or put back over what changed while the dialog was open.
+        if ((choice === 'delete' && info.in_ha) || choice === 'restore') {
+            let checked;
+            try {
+                checked = (await ws({ type: 'libi/save_check', slug, revision: this._revision === undefined ? null : this._revision,
+                    domain: info.domain, key: info.key, before: String(info.before || ''), stamp: info.stamp || '' })) || {};
+            } catch (err) {
+                checked = { ok: false, error: this._staleBackend(err) || (err && err.message ? err.message : String(err)) };
+            }
+            if (!checked.ok) {
+                alert('Nothing was deleted: ' + (checked.error || 'LIBI could not check it again.'));
+                return;
+            }
+        }
         try {
             if (choice === 'delete' && info.in_ha) await this._hass.callApi('DELETE', path);
             if (choice === 'restore') await this._hass.callApi('POST', path, info.original.config);
@@ -669,6 +726,7 @@ class LibiPanel extends HTMLElement {
         } catch (err) {
             res = { ok: false, errors: [err && err.message ? err.message : String(err)] };
         }
+        if (typeof res.revision === 'number') this._revision = res.revision;
         this.core.nets = this.core.nets.filter(n => n.id !== nid);
         this.core.pushHistory();
         this._forgetSaved(nid);
@@ -4158,6 +4216,7 @@ class LibiPanel extends HTMLElement {
             this.core.repairAST();
             this.core.resetHistory ? this.core.resetHistory() : this.core.pushHistory();
             this._project = { slug: res.slug, name: res.name };
+            this._revision = this._revisionOf(res);
             this._versions = res.versions || {};
             this._markSaved();
             this._inspectedEl = null;
@@ -4186,6 +4245,7 @@ class LibiPanel extends HTMLElement {
             this.core.nets = [];
             this.core.pushHistory();
             this._project = { slug: res.slug, name: res.name };
+            this._revision = this._revisionOf(res);
             this._versions = {};
             this._markSaved();
             this._selectedNetId = null;
@@ -4202,6 +4262,7 @@ class LibiPanel extends HTMLElement {
             const res = await this._hass.connection.sendMessagePromise({ type: 'libi/project_delete', slug });
             if (this._project && this._project.slug === slug) {
                 this._project = null;
+                this._revision = null;
                 this.core.nets = [];
                 this.core.pushHistory();
                 this._rememberProject();
@@ -4220,6 +4281,7 @@ class LibiPanel extends HTMLElement {
     async _projectClose() {
         if (!(await this._leaveCheck())) return;
         this._project = null;
+        this._revision = null;
         this.core.nets = [];
         this.core.pushHistory();
         this._markSaved();
