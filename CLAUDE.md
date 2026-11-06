@@ -28,15 +28,7 @@ Where the two differ, this file is the authority for LIBI.
   Home Assistant's own config API (`config/<domain>/config/<key>`, POST to
   save, DELETE to remove - Home Assistant validates, writes and reloads), and
   `libi/save_done` reads back what reached the files, records it in the
-  project and waits for each reload (`websocket.py`). Since 3.90.0 (the HACS
-  review of 2026-11-05) a save removes only what LIBI created itself (the
-  project's `made`), and only after the panel lists it and the user agrees;
-  an entry opened from Home Assistant that leaves the canvas leaves the
-  project and stays. A NET never takes a key Home Assistant holds for someone
-  else (`_taken_sync`): it gets the next free one. A NET not changed in LIBI
-  since LIBI last saw it is never sent (`_as_last_seen`, against its active
-  version), and what was deleted (gone), changed (conflict) or cannot be drawn
-  (loses) in Home Assistant is replaced only after the panel asks.
+  project and waits for each reload (`websocket.py`).
 - Projects (groups of nets) are stored as JSON under the Home Assistant config
   folder (`PROJECT_DIR_NAME`), and the parsed tree in `libi_ast.json`.
 - Frontend: `custom_components/libi/frontend/` - `libi-panel.js`,
@@ -703,6 +695,160 @@ the brand folder, the missing workflows and tests. Still open:
   verified by the gate's tree-sitter scan and the syntax check only.
 - The AI chat has not yet run against a real model; its prompts are untested
   with Gemini and Ollama and may need tuning.
+
+---
+
+# RULE 38 — PERSISTENT OWNERSHIP AND NON-DESTRUCTIVE SAVES
+
+An automation, script, or scene visible in a LIBI project is NOT necessarily
+owned by LIBI. Visibility, import, opening in the editor, editing, saving, or
+read-back after a save NEVER establishes ownership. Ownership means that LIBI
+actually created that Home Assistant object, with a successful, verified create
+operation, and the project retains durable provenance for that exact key.
+
+- Track created-by-LIBI provenance separately from canvas membership and from
+  the keys currently present in Home Assistant. Persist it across saves,
+  restarts, project switches, upgrades, and migrations. Do not infer ownership
+  from a net's name, a slug, a matching key, or the fact that it appeared in a
+  previous save. An imported object remains external even after it is edited.
+- Treat missing, corrupt, ambiguous, or legacy ownership metadata as
+  **NOT OWNED**. Never "repair" it by claiming all current canvas keys.
+- Compile/save plans must identify every operation and its target as CREATE,
+  UPDATE, DELETE, or NO-OP, with the target's provenance and the reason for the
+  change. A net disappearing from the canvas is NOT authorization to DELETE.
+- Removing an imported/external net via Clear all nets, Undo, AI Replace all,
+  loading another automation into the same NET, switching projects, or any
+  other editor-only action removes it from LIBI's view only. The Home Assistant
+  object must remain untouched. The Delete NET dialog must distinguish
+  "Remove from LIBI" from any separate, explicitly authorized "Delete from
+  Home Assistant" operation.
+- A save may automatically consider deletion ONLY for a proven LIBI-created
+  object, and must still show the exact proposed removals and obtain explicit
+  confirmation that names the Home Assistant objects to be deleted. A generic
+  confirmation about clearing the editor is NOT permission to delete them.
+  External objects require a distinct explicit Home Assistant deletion action
+  and confirmation; never delete them merely as part of project reconciliation.
+- Before creating a script, automation, or scene, check all existing keys in
+  that Home Assistant domain, not just keys in the current save. If the desired
+  key already belongs to an external or unknown object, choose a free,
+  deterministic alternative key or refuse with a clear collision error.
+  Never upsert into that occupied key. Persist the allocated key so repeated
+  saves update the same LIBI-created object instead of creating duplicates.
+- An update to an external object is allowed only when the user intentionally
+  edits that exact Home Assistant object; it must preserve unsupported fields
+  per RULE 5 and must not grant future deletion rights to LIBI.
+- Recheck ownership, target identity and key availability immediately before
+  the actual Home Assistant config API write. If data changed since planning,
+  refuse the unsafe operation and require a fresh plan. Partial failures must
+  be shown accurately; never advance ownership metadata for an unverified
+  create or delete.
+
+These safeguards apply to every save path, frontend shortcut, migration and
+websocket command, including operations initiated by AI. RULES 5, 31 and 33
+remain in force; this rule makes their ownership boundary explicit.
+
+---
+
+# RULE 39 — CROSS-FILE AND CROSS-ACTION IMPACT ANALYSIS
+
+Before approving a data-sensitive change, trace the FULL path across files:
+user action in the frontend -> panel state/net changes -> websocket call ->
+backend compile/plan -> Home Assistant config API POST/DELETE -> read-back,
+ownership recording and reload -> persisted project -> next save.
+
+- Enumerate ALL entry points that can reach the same operation: direct UI
+  buttons, menus, Clear all, Delete NET, Undo/Redo, AI Replace all, importing,
+  loading a net into an occupied slot, project switching, recovery, migrations,
+  and retries. Do not assume the primary button is the only caller.
+- For every path, write down what changes in the canvas, project metadata,
+  Home Assistant object files, and running Home Assistant state. Distinguish
+  "remove from editor" from "delete from Home Assistant" at each boundary.
+- Check read/modify/write races, name collisions, stale snapshots, replayed
+  save plans, partial API failures, and reload failures. An operation that was
+  safe when planned must not become destructive when later executed.
+- Inspect the actual frontend and backend implementations together. A safe
+  backend plan is insufficient if the frontend silently turns its removals
+  into DELETE calls; a confirmation dialog is insufficient if other UI paths
+  bypass it.
+- Include a concise impact map in the task report for changes touching saves,
+  ownership, import, deletion, AI replacement, or Home Assistant reloads.
+
+---
+
+# RULE 40 — MANDATORY NEGATIVE AND STATEFUL REGRESSION TESTS
+
+RULE 32's negative examples are a minimum, not a complete checklist. Every
+change to persistence, import, save planning, or frontend net lifecycle MUST
+add automated tests exercising realistic multi-step user histories. A green
+lint, hassfest, HACS Action, syntax check, or simple single-save test does NOT
+replace these behavioural tests.
+
+Required scenarios (expand when new paths are discovered):
+
+1. Import an existing hand-written/Home Assistant-editor automation, save,
+   remove its NET with Clear all, then SAVE & COMPILE: the original automation
+   and its unsupported fields are unchanged.
+2. Repeat with Undo, AI Replace all, and loading another automation into the
+   same NET. None may DELETE the imported Home Assistant object.
+3. Remove an imported NET through Delete NET: removing it from LIBI alone
+   leaves Home Assistant unchanged; any actual Home Assistant deletion needs
+   its own unambiguous explicit approval and correct target list.
+4. Create and verify a LIBI-owned object, restart/reload the project, and
+   save again: ownership and the stable key persist. A deliberate deletion
+   displays exact targets and never executes if confirmation is declined.
+5. Create a script NET whose slug equals an existing external script key:
+   the external script is byte-for-byte/semantically unchanged, and the new
+   NET receives a stable unused key or a clear refusal. Repeat across saves,
+   renames, project switches, and two concurrent NETs with the same name.
+6. Missing or migrated ownership data, stale save plans, a concurrent
+   Home Assistant edit, a collision discovered after planning, a failed
+   API write, a failed reload, and a partially completed multi-object save:
+   no unapproved change, no false success, no false ownership claim.
+7. Save an unchanged project twice: no redundant writes, deletes, duplicate
+   objects, or unexpected reloads. Test a newly created project and an
+   upgraded legacy project separately.
+
+Run backend tests against the relevant Home Assistant API behaviour AND real
+frontend behaviour tests for the entry points involved. Assert the resulting
+Home Assistant objects and project provenance, not merely HTTP/websocket
+success codes or the visible canvas. A regression test for every confirmed
+data-loss or overwrite defect is required before declaring it fixed. If a
+required scenario cannot be tested, report it as a release BLOCKER rather
+than treating the untested path as safe.
+
+---
+
+# RULE 41 — INDEPENDENT ADVERSARIAL HACS REVIEW BEFORE RELEASE
+
+Before every release candidate, perform a distinct READ-ONLY review pass
+whose job is to DISPROVE safety, not to implement the requested feature or
+validate the author's preferred design. The reviewer must inspect actual
+source, diffs, relevant tests, and complete call paths; this file alone is
+not evidence that the implementation complies with it.
+
+- Review as a Home Assistant/HACS maintainer, a user with valuable existing
+  YAML objects, and a user executing unexpected but valid UI sequences.
+- Attempt to find unauthorized deletions, overwrites, ownership confusion,
+  missing confirmations, key collisions, unsupported-field loss, migrations
+  that reclassify objects, authorization bypasses, frontend/backend contract
+  drift, and partial-save or reload inconsistencies.
+- Challenge every destructive operation with: "Who created this object?",
+  "What exact user action authorized this change?", "What if this key
+  already exists?", "What if the user removes only the NET?", "What if the
+  saved state is old?", and "What other UI route reaches this code?".
+- Produce findings with severity, precise file/function/line references,
+  a reproducible sequence, the affected Home Assistant data, and the
+  missing regression test. Distinguish confirmed defects from hypotheses.
+- Fix verified findings in a separate implementation step, add tests, then
+  repeat the independent review on the changed code. Do not let the author
+  simply assert that their own patch is safe. Never invent a review run or
+  describe automated checks as having exercised real Home Assistant.
+- Do not release with unresolved data-loss, unauthorized deletion/overwrite,
+  privilege, or save-integrity findings. Report lower-severity findings,
+  limitations, and tests not run under RULES 2 and 34.
+
+This is an additional pre-release gate, not a substitute for RULE 3's
+validation, real Home Assistant tests, hassfest, or HACS Action.
 
 ---
 
