@@ -1,12 +1,13 @@
 /*
  * LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
- * [ADDED v1.0.0 | 2026-11-05] Purpose: What the LIBI Global pages share (test_panel_global*.html): a Home Assistant whose
- *   libi/global, libi/global_plan and libi/global_done answer as the backend does, whose config API records each call,
- *   and the panel on it. Not a test page itself: the runner runs test_*.html only.
- *   layoutChecks checks the table of the Global tab and the editor of one global variable (LIBI 3.88.1).
- * [ADDED v1.2.0 | 2026-11-05] Purpose: libi/global_move_plan and libi/global_move_done answer as the backend does, and
+ * What the LIBI Global pages share (test_panel_global*.html): a Home Assistant whose libi/global, libi/global_plan and
+ *   libi/global_done answer as the backend does, whose config API records each call, and the panel on it. Not a test page
+ *   itself: the runner runs test_*.html only. layoutChecks checks the table of the Global tab and the editor of one
+ *   global variable (LIBI 3.88.1). libi/global_move_plan and libi/global_move_done answer as the backend does, and
  *   SAVE & COMPILE saves; moveLayoutChecks checks the question to replace a phone with a global variable (LIBI 3.89.0).
  * [CHANGED v1.3.0 | 2026-11-06] Purpose: SAVE & COMPILE checks each change again first (libi/save_check): yes.
+ * [CHANGED v1.4.0 | 2026-11-06] Purpose: The names given in LIBI only are kept as the backend keeps them (state.names,
+ *   libi/local_name_set), and libi/global says who uses each (state.nameUsers); layoutChecks checks "Named in LIBI" too.
  */
 import '../../custom_components/libi/frontend/libi-panel.js';
 
@@ -55,7 +56,8 @@ export function makeHass() {
   st('script.libi_send_to_guy', 'LIBI Global: Guy');
   const sent = [];
   const api = [];
-  const state = { recipients: [GUY(), OLD()], apiFails: null, plan: null, global: null, move: null };
+  const state = { recipients: [GUY(), OLD()], apiFails: null, plan: null, global: null, move: null,
+    names: { [S23]: 'S23 guy' }, nameUsers: { [S23]: [{ domain: 'automation', key: 'smoke', name: 'Smoke alarm' }] } };
   const listing = () => ({ ok: true, errors: [], recipients: JSON.parse(JSON.stringify(state.recipients)), phones: PHONES });
   const slug = (name) => 'libi_send_to_' + String(name).toLowerCase().replace(/[^a-z0-9]+/g, '_');
   const hass = {
@@ -73,8 +75,12 @@ export function makeHass() {
         if (m.type === 'libi/ai_status') return { configured: false };
         if (m.type === 'libi/project_list') return { projects: [] };
         if (m.type === 'libi/phones') return { phones: PHONES };
-        if (m.type === 'libi/local_names') return { names: { [S23]: 'S23 guy' } };
-        if (m.type === 'libi/global') return state.global ? state.global() : listing();
+        if (m.type === 'libi/local_names') return { names: { ...state.names } };
+        if (m.type === 'libi/local_name_set') {
+          if (m.name) state.names[m.entity_id] = m.name; else delete state.names[m.entity_id];
+          return { names: { ...state.names } };
+        }
+        if (m.type === 'libi/global') return state.global ? state.global() : { ...listing(), name_users: JSON.parse(JSON.stringify(state.nameUsers)) };
         if (m.type === 'libi/global_plan') {
           if (state.plan) return state.plan(m);
           const key = m.key || slug(m.name);
@@ -175,9 +181,24 @@ export async function layoutChecks(check, panel, phone) {
     // The table
     Object.assign(panel._global, { editing: '', drafts: {}, said: {} });
     panel._varsTab = 'global'; panel._varsOpen = true;
+    // [ADDED v1.4.0] And a long name given in LIBI only, under Named in LIBI.
+    panel.core.localNames = { [S23]: 'S23 guy', 'light.hall': `${long} - the hall light` };
     panel._render();
     await sleep(40);
     const scroll = sr.querySelector('.glob-scroll');
+    const tagRows = [...sr.querySelectorAll('.glob-tag-row')];
+    check(`${dir} named in LIBI: a row for each name, under the global variables`, tagRows.length === 2
+          && sr.querySelector('.glob-tags').getBoundingClientRect().top >= sr.querySelector('.glob-table:not(.glob-tags)').getBoundingClientRect().bottom - 0.5,
+          tagRows.length);
+    const tagName = sr.querySelector('.glob-tag-row[data-eid="light.hall"] .c-name');
+    check(`${dir} named in LIBI: a long name is cut in its cell, and every row fits`, tagName.scrollWidth > tagName.clientWidth
+          && tagRows.every(r => inside(r, scroll)) && scroll.scrollWidth <= scroll.clientWidth + 1, `${tagName.scrollWidth} / ${tagName.clientWidth}`);
+    const tagDels = [...sr.querySelectorAll('.glob-tag-del')];
+    check(`${dir} named in LIBI: 🗑 is big enough to touch and on the screen`, tagDels.length === 2
+          && tagDels.every(b => b.getBoundingClientRect().height >= 36 && inside(b, scroll)), tagDels.map(b => b.getBoundingClientRect().height).join());
+    const tagId = sr.querySelector('.glob-tags th.c-eid');
+    check(`${dir} named in LIBI: the ID column ${phone ? 'is hidden on a phone' : 'is shown'}`, (getComputedStyle(tagId).display === 'none') === phone,
+          getComputedStyle(tagId).display);
     check(`${dir} table: a row for each global variable`, sr.querySelectorAll('.glob-row').length === 3, sr.querySelectorAll('.glob-row').length);
     check(`${dir} table: no horizontal page scroll`, document.documentElement.scrollWidth <= vw, document.documentElement.scrollWidth + ' > ' + vw);
     check(`${dir} table: it fits the screen`, scroll.getBoundingClientRect().right <= vw + 0.5 && scroll.getBoundingClientRect().left >= -0.5

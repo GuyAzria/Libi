@@ -14,26 +14,25 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.91.0
+ * v3.92.0
  */
-// [CHANGED v3.90.0 | 2026-11-05] Purpose: The HACS review of 2026-11-05 - SAVE & COMPILE lists what it would delete from
-//   Home Assistant and asks first (_confirmRemovals); only what LIBI made is ever offered, and Keep lets it go instead.
-//   Before it sends anything it also asks about what was deleted or changed in Home Assistant since LIBI saw it, and what
-//   LIBI cannot draw (_askBeforeSave).
 // [CHANGED v3.91.0 | 2026-11-06] Purpose: CLAUDE.md RULES 38-39 - each change is checked again just before it is sent
 //   (libi/save_check, in _configApiSend), and one that changed since the plan is not sent; the page saves only the
 //   project as it opened it (its revision); Delete NET names the entry and says whether LIBI made it, and checks it
 //   again before it deletes; with one project and none remembered, the page opens it instead of showing another canvas
 //   under its name.
-import { LibiCore } from './libi-core.js?v=3.91.0';
-import { getStyles } from './libi-css.js?v=3.91.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.91.0';
-import { LibiOnline } from './libi-online.js?v=3.91.0';
-import { LibiAiChat } from './libi-ai.js?v=3.91.0';
+// [CHANGED v3.92.0 | 2026-11-06] Purpose: The user's request - an entity named in LIBI only is listed in the Global tab,
+//   "Named in LIBI", for every project: its name in LIBI, its type, Home Assistant's name, its id and who uses it; a row
+//   opens Rename, and 🗑 takes the name in LIBI away (nothing changes in Home Assistant).
+import { LibiCore } from './libi-core.js?v=3.92.0';
+import { getStyles } from './libi-css.js?v=3.92.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.92.0';
+import { LibiOnline } from './libi-online.js?v=3.92.0';
+import { LibiAiChat } from './libi-ai.js?v=3.92.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.91.0';
+export const LIBI_BUILD = '3.92.0';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -125,7 +124,8 @@ class LibiPanel extends HTMLElement {
         // [ADDED v3.88.0] LIBI Global: whether its list was read (loaded - only then is a recipient not in it gone), why
         // not, the changes not saved yet per recipient key ('+new' for a new one), the one being saved, and what to say.
         // [ADDED v3.88.1] editing: the one open in the editor ('' - the table); said['+table']: what the table says.
-        this._global = { loaded: false, ok: true, errors: [], drafts: {}, busy: '', said: {}, editing: '' };
+        // [CHANGED v3.92.0] nameUsers: for each entity named in LIBI only, who uses it (libi/global); null until read.
+        this._global = { loaded: false, ok: true, errors: [], drafts: {}, busy: '', said: {}, editing: '', nameUsers: null };
         // [ADDED v3.89.0] The question to replace a phone with a global variable: { key, picked, busy, said }, while it is open.
         this._globalMove = null;
         this._helperQuery = '';
@@ -1927,6 +1927,8 @@ class LibiPanel extends HTMLElement {
             if (other) res = await this._hass.connection.sendMessagePromise({ type: 'libi/local_name_set', entity_id: other, name: '' });
             const names = res && res.names;
             this.core.localNames = names && typeof names === 'object' && !Array.isArray(names) ? names : {};
+            // [ADDED v3.92.0] A name given or taken away is in the Global tab at once, with who uses it.
+            if (this._global.loaded) await this._loadGlobal();
             return true;
         } catch (err) {
             alert('Could not keep the name in LIBI: ' + (this._staleBackend(err) || (err && err.message ? err.message : err)));
@@ -1974,6 +1976,9 @@ class LibiPanel extends HTMLElement {
         }
         Object.assign(this._global, { loaded: ok, ok,
             errors: !ok && res && Array.isArray(res.errors) ? res.errors.map(String) : [] });
+        // [ADDED v3.92.0] Only libi/global says who uses the names; the answers of a save keep what it said.
+        const users = res && res.name_users;
+        if (users && typeof users === 'object' && !Array.isArray(users)) this._global.nameUsers = users;
     }
 
     // [ADDED v3.88.0] A recipient as it is being changed: its draft, else as Home Assistant holds it.
@@ -2075,6 +2080,42 @@ class LibiPanel extends HTMLElement {
     _globalDeviceName(service) {
         const p = (this.core.phones || []).find(x => !x.shared && x.service === service);
         return this.core.localName(service) || (p ? (this.core.haName(p.entity_id, this._hass) || p.name) : '') || service;
+    }
+
+    // [ADDED v3.92.0] The entities named in LIBI only (core.localNames), for the Global tab: each with its name in LIBI,
+    // its type, Home Assistant's name (a phone's, for a phone's action), whether Home Assistant still has it, and who uses
+    // it (libi/global's name_users; null until read). By name.
+    _globalNamed() {
+        const names = this.core.localNames || {};
+        const states = (this._hass && this._hass.states) || {};
+        const users = this._global.nameUsers;
+        return Object.keys(names).filter(id => names[id]).map(id => {
+            const phone = this.core.phoneOf(id);
+            const listed = users && Object.prototype.hasOwnProperty.call(users, id) && Array.isArray(users[id]) ? users[id] : null;
+            return { id, name: String(names[id]), type: varTypeOf(id, this._hass),
+                ha: this.core.haName(phone ? phone.entity_id : id, this._hass) || (phone ? phone.name : ''),
+                gone: !phone && !states[id], users: listed };
+        }).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    }
+
+    // [ADDED v3.92.0] A row of "Named in LIBI": the Rename dialog of that entity, as from its label.
+    _globalTagRename(entityId) {
+        if (!entityId) return;
+        this._renameFor = entityId;
+        this._renameFrom = 'label';
+        this._renameTo = this.core.localName(entityId) || '';
+        this._modal = 'rename_entity';
+        this._render();
+    }
+
+    // [ADDED v3.92.0] 🗑 of "Named in LIBI": the name in LIBI goes, once confirmed. Home Assistant is not changed.
+    async _globalTagForget(entityId) {
+        const name = this.core.localName(entityId);
+        if (!entityId || !name) return;
+        const phone = this.core.phoneOf(entityId);
+        const ha = this.core.haName(phone ? phone.entity_id : entityId, this._hass) || (phone ? phone.name : '');
+        if (!confirm(`Take away the name "${name}" that LIBI gives ${entityId}?\n\nEvery project shows ${ha ? `Home Assistant's name, "${ha}",` : 'its id'} for it again. Nothing changes in Home Assistant.`)) return;
+        if (await this._setLocalName(entityId, '')) this._render();
     }
 
     // [ADDED v3.89.0] Every element of a NET, those in parallel branches and in a repeat too.
@@ -2312,6 +2353,20 @@ class LibiPanel extends HTMLElement {
                 <td class="c-act"><button class="vars-del glob-row-del" data-key="${esc(r.key)}" title="Delete ${esc(r.name)}" ${g.busy || !g.ok ? 'disabled' : ''}>🗑</button></td>
             </tr>`;
         }).join('');
+        // [ADDED v3.92.0] The entities named in LIBI only - the user's request: there too, as LIBI shows them everywhere.
+        const tags = this._globalNamed();
+        const tagRows = tags.map(t => {
+            const users = t.users === null ? 'Who uses it is counted when LIBI Global is read'
+                : t.users.length ? `Used by ${t.users.map(u => `${u.domain} "${u.name}"`).join(', ')}` : 'No automation, script or scene of Home Assistant uses it';
+            return `<tr class="glob-tag-row" data-eid="${esc(t.id)}" tabindex="0" title="${esc(t.id)} - click to rename it">
+                <td class="c-name" dir="auto">${esc(t.name)}${t.gone ? '<span class="glob-flag err" title="Home Assistant no longer has it">gone</span>' : ''}</td>
+                <td><span class="type-tag type-${esc(t.type)}" title="${esc(t.type === 'HA' ? 'An ordinary Home Assistant entity' : (VAR_TYPES[t.type] || {}).title || '')}">${esc(t.type)}</span></td>
+                <td class="glob-dev" dir="auto"><div title="${esc(t.ha)}">${esc(t.ha || '—')}</div></td>
+                <td class="c-eid glob-dev"><div title="${esc(t.id)}">${esc(t.id)}</div></td>
+                <td class="glob-used" title="${esc(users)}">${t.users === null ? '…' : t.users.length}</td>
+                <td class="c-act"><button class="vars-del glob-tag-del" data-eid="${esc(t.id)}" title="Take the name in LIBI away: ${esc(t.name)} - nothing changes in Home Assistant">🗑</button></td>
+            </tr>`;
+        }).join('');
         const said = g.said['+table'];
         return `<div class="glob-view">
             <div class="glob-top">
@@ -2324,7 +2379,13 @@ class LibiPanel extends HTMLElement {
             <div class="glob-scroll">${rows ? `<table class="vars-table glob-table"><thead><tr>
                     <th>Name</th><th style="width:100px;">Type</th><th>Device</th><th class="c-eid">ID</th>
                     <th class="glob-used" style="width:70px;" title="How many automations and scripts send to it">Used by</th><th style="width:48px;"></th>
-                </tr></thead><tbody>${rows}</tbody></table>` : (g.ok ? '<div class="vars-empty">No global variable yet.</div>' : '')}</div>
+                </tr></thead><tbody>${rows}</tbody></table>` : (g.ok && !tagRows ? '<div class="vars-empty">No global variable yet.</div>' : '')}
+                ${tagRows ? `<div class="glob-sub"><span class="glob-sub-title">Named in LIBI · ${tags.length}</span>
+                    <span class="glob-note">Entities you renamed in LIBI only. Every project shows them by this name; Home Assistant keeps its own. Click a row to rename it; 🗑 takes the name in LIBI away.</span></div>
+                <table class="vars-table glob-table glob-tags"><thead><tr>
+                    <th>Name in LIBI</th><th style="width:100px;">Type</th><th>Name in Home Assistant</th><th class="c-eid">ID</th>
+                    <th class="glob-used" style="width:70px;" title="How many automations, scripts and scenes of Home Assistant use it">Used by</th><th style="width:48px;"></th>
+                </tr></thead><tbody>${tagRows}</tbody></table>` : ''}</div>
             <div class="glob-new"><button class="btn" id="globAdd" ${g.ok && !g.busy ? '' : 'disabled'}>＋ New global variable</button></div>
         </div>`;
     }
@@ -3542,7 +3603,7 @@ class LibiPanel extends HTMLElement {
                     <button class="vars-tab${this._varsTab === 'helper' ? ' on' : ''}" id="varsTabHelper">Helper</button>
                     <button class="vars-tab${this._varsTab === 'vars' ? ' on' : ''}" id="varsTabVars">Variables<span class="n">${rows.length}</span></button>
                     <button class="vars-tab${this._varsTab === 'search' ? ' on' : ''}" id="varsTabSearch">Search<span class="n">${projectCount}</span></button>
-                    <button class="vars-tab${this._varsTab === 'global' ? ' on' : ''}" id="varsTabGlobal" title="LIBI Global: the recipients of messages, for every project">Global<span class="n">${(this.core.recipients || []).length}</span></button>
+                    <button class="vars-tab${this._varsTab === 'global' ? ' on' : ''}" id="varsTabGlobal" title="LIBI Global, for every project: the recipients of messages, and the entities named in LIBI">Global<span class="n">${(this.core.recipients || []).length + this._globalNamed().length}</span></button>
                 </div>
                 <div class="spacer"></div>
                 <button class="vars-fold" id="varsFold" title="${this._varsOpen ? 'Fold the bar down' : 'Open the bar'}">${this._varsOpen ? '▼' : '▲'}</button>
@@ -4849,6 +4910,15 @@ class LibiPanel extends HTMLElement {
                 openRow(e);
             });
             all('.glob-row-del', 'click', e => { e.stopPropagation(); this._globalDelete(keyOf(e)); });
+            // [ADDED v3.92.0] Named in LIBI: a row renames, 🗑 takes the name in LIBI away.
+            const eidOf = (e) => e.currentTarget.getAttribute('data-eid') || '';
+            all('.glob-tag-row', 'click', e => { e.stopPropagation(); this._globalTagRename(eidOf(e)); });
+            all('.glob-tag-row', 'keydown', e => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                this._globalTagRename(eidOf(e));
+            });
+            all('.glob-tag-del', 'click', e => { e.stopPropagation(); this._globalTagForget(eidOf(e)); });
             all('.glob-move-open', 'click', e => { e.stopPropagation(); this._openGlobalMove(keyOf(e)); });
             all('.glob-del', 'click', e => { e.stopPropagation(); this._globalDelete(keyOf(e)); });
             on('globAdd', 'click', (e) => {

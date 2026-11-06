@@ -14,12 +14,12 @@
  */
 /**
  * LIBI Panel - Styles
- * v3.90.0
+ * v3.92.0
  */
-// [ADDED v3.89.0 | 2026-11-05] Purpose: The message over the Global table no longer takes 200px and pushes the table
-//   down (the user, after a save); the line that offers Replace…, and its dialog (.gm-*).
 // [CHANGED v3.90.0 | 2026-11-05] Purpose: The list of what a save would delete, in the question that asks first
 //   (.ask-list): it scrolls on its own, so the answers stay in view on a phone.
+// [CHANGED v3.92.0 | 2026-11-06] Purpose: "Named in LIBI" in the Global tab (.glob-sub, .glob-tags, .glob-tag-del): the
+//   entities named in LIBI only, under the recipients, sized as they are.
 export const getStyles = () => `
 :host { display: block; height: 100vh; overflow-y: hidden; background: var(--primary-background-color, #f5f5f5); color: var(--primary-text-color, #212121); font-family: var(--primary-font-family, sans-serif); box-sizing: border-box; direction: ltr !important; text-align: left; }
 /* [ADDED v3.35.0] Colour tokens. The light values are the colours the panel always used; the
@@ -469,7 +469,9 @@ export const getStyles = () => `
 .glob-table .glob-dev div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .glob-table .glob-dev div.gone { color: var(--error-color, #db4437); }
 .glob-table .glob-used { text-align: center; font-weight: 700; }
-.glob-table .glob-row-del { min-width: 36px; min-height: 36px; }
+.glob-table .glob-row-del, .glob-table .glob-tag-del { min-width: 36px; min-height: 36px; }
+.glob-sub { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-block: 14px 4px; }
+.glob-sub-title { font-size: 11px; font-weight: 800; text-transform: uppercase; color: var(--secondary-text-color, #757575); }
 .glob-flag { display: inline-block; margin-inline-start: 6px; font-size: 10px; font-weight: 800; padding: 1px 6px; border-radius: 8px; vertical-align: middle; }
 .glob-flag.warn { background: var(--libi-notice-bg); color: var(--libi-notice-head); }
 .glob-flag.err { background: var(--libi-err-bg); color: var(--error-color, #db4437); }
@@ -523,7 +525,7 @@ export const getStyles = () => `
 .gm-modal .modal-actions { flex-wrap: wrap; }
 .gm-modal .btn { min-height: 40px; }
 .gm-modal .btn[disabled] { opacity: .45; cursor: default; }
-@media (pointer: coarse) { .glob-phone, .glob-foot .btn, .glob-new .btn, .glob-name, .glob-table .glob-row-del, .glob-move-open, .gm-item { min-height: 40px; } .glob-table td { height: 40px; } .glob-phone input { width: 20px; height: 20px; } }
+@media (pointer: coarse) { .glob-phone, .glob-foot .btn, .glob-new .btn, .glob-name, .glob-table .glob-row-del, .glob-table .glob-tag-del, .glob-move-open, .gm-item { min-height: 40px; } .glob-table td { height: 40px; } .glob-phone input { width: 20px; height: 20px; } }
 
 /* An element that a variable is being dragged over. */
 .libi-el.var-drop, .pin-val.var-drop { outline: 2px dashed var(--primary-color, #03a9f4); outline-offset: 2px; background: rgba(3,169,244,.10); }

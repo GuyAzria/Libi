@@ -1,0 +1,113 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-06] Purpose: The user's request (2026-11-06) - an entity named in LIBI only is in the Global
+  tab too, "Named in LIBI", and every project shows it by that name. Each row: its name in LIBI, its type, Home
+  Assistant's name, its id, and who uses it (libi/global's name_users); a name from the user's file is text, never HTML.
+  A row opens Rename; 🗑 takes the name in LIBI away once confirmed, and nothing is sent to Home Assistant either way.
+  Desktop width; test_panel_global_phone.html and _tablet.html check the layout (layoutChecks).
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi global names test</title></head>
+<body style="margin:0; width:1400px; height:860px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { makeHass, makePanel, sleep, S23 } from './global_fixture.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const until = async (cond, ms = 3000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await sleep(10); return cond(); };
+const asked = [];
+let confirmAnswer = false;
+window.confirm = (q) => { asked.push(String(q)); return confirmAnswer; };
+window.alert = () => {};
+window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+try {
+  const { hass, sent, api, state } = makeHass();
+  // A second name, from the user's file, that tries to be HTML; its entity is no longer in Home Assistant.
+  state.names['light.hall'] = '<img src=x onerror="window.__x=1">Hall';
+  state.nameUsers['light.hall'] = [];
+  hass.states['light.kitchen'] = { entity_id: 'light.kitchen', state: 'on', attributes: { friendly_name: 'Kitchen ceiling' } };
+  const panel = await makePanel(hass);
+  const sr = panel.shadowRoot;
+  const core = panel.core;
+  const openTab = async () => { panel._varsTab = 'global'; panel._varsOpen = true; Object.assign(panel._global, { editing: '', said: {} }); panel._render(); await sleep(30); };
+  const row = (eid) => sr.querySelector(`.glob-tag-row[data-eid="${eid}"]`);
+  const cells = (eid) => [...row(eid).querySelectorAll('td')].map(td => td.textContent.trim());
+  const sends = () => sent.filter(m => /^(libi\/global_|libi\/compile|libi\/save)/.test(m.type));
+
+  // ---- Listed, under the recipients
+  await openTab();
+  check('the names given in LIBI are listed in the Global tab, under the global variables', sr.querySelectorAll('.glob-tag-row').length === 2
+        && sr.querySelectorAll('.glob-row').length === 2 && sr.querySelector('.glob-sub-title').textContent === 'Named in LIBI · 2',
+        sr.querySelector('.glob-view') && sr.querySelector('.glob-view').textContent.slice(0, 300));
+  check('each with its name in LIBI, its type, Home Assistant\'s name, its id and how many use it',
+        JSON.stringify(cells(S23).slice(0, 5)) === JSON.stringify(['S23 guy', 'HA', 'SM-S918B', S23, '1']), JSON.stringify(cells(S23)));
+  check('who uses it is named over the number', row(S23).querySelector('.glob-used').title === 'Used by automation "Smoke alarm"', row(S23).querySelector('.glob-used').title);
+  check('a name from the user\'s file is text, never HTML', !row('light.hall').querySelector('img') && window.__x === undefined
+        && row('light.hall').querySelector('.c-name').textContent.startsWith('<img src=x'), row('light.hall').innerHTML);
+  check('one Home Assistant no longer has is marked gone, and used by none', !!row('light.hall').querySelector('.glob-flag.err')
+        && row('light.hall').querySelector('.glob-used').textContent === '0', row('light.hall').innerHTML);
+  check('the tab counts them with the recipients', sr.getElementById('varsTabGlobal').querySelector('.n').textContent === '4');
+
+  // ---- A row opens Rename; In LIBI only gives the new name, shown here and in the tab at once
+  row(S23).click();
+  await until(() => sr.getElementById('renameInput'));
+  check('a row opens Rename for that entity, with its name in LIBI', panel._modal === 'rename_entity' && panel._renameFor === S23
+        && sr.getElementById('renameInput').value === 'S23 guy' && !!sr.getElementById('renameLocal'), panel._modal);
+  let n = sent.length;
+  sr.getElementById('renameInput').value = 'Guy S23';
+  sr.getElementById('renameInput').dispatchEvent(new Event('input'));
+  sr.getElementById('renameLocal').click();
+  await until(() => sent.slice(n).some(m => m.type === 'libi/global'));
+  await sleep(30);
+  check('In LIBI only keeps the new name, and the tab is read again', JSON.stringify(sent.slice(n).filter(m => m.type === 'libi/local_name_set'))
+        === JSON.stringify([{ type: 'libi/local_name_set', entity_id: S23, name: 'Guy S23' }]) && sent.slice(n).some(m => m.type === 'libi/global'),
+        JSON.stringify(sent.slice(n)));
+  check('the row shows it, and so does everything else LIBI shows', row(S23) && cells(S23)[0] === 'Guy S23' && core.friendlyName(S23, hass) === 'Guy S23',
+        row(S23) && cells(S23)[0]);
+  check('nothing is sent to Home Assistant, nor saved', api.length === 0 && sends().length === 0, JSON.stringify([api, sends()]));
+
+  // ---- 🗑: asked; Cancel keeps it; OK takes the name in LIBI away, and nothing else
+  await openTab();
+  confirmAnswer = false;
+  n = sent.length;
+  row(S23).querySelector('.glob-tag-del').click();
+  await sleep(50);
+  check('🗑 asks first, and says nothing changes in Home Assistant', asked[0] === `Take away the name "Guy S23" that LIBI gives ${S23}?\n\nEvery project shows Home Assistant's name, "SM-S918B", for it again. Nothing changes in Home Assistant.`,
+        asked[0]);
+  check('Cancel keeps it', !sent.slice(n).some(m => m.type === 'libi/local_name_set') && !!row(S23) && panel._modal !== 'rename_entity');
+  confirmAnswer = true;
+  row(S23).querySelector('.glob-tag-del').click();
+  await until(() => !row(S23));
+  check('OK takes only the name in LIBI away', JSON.stringify(sent.slice(n).filter(m => m.type === 'libi/local_name_set'))
+        === JSON.stringify([{ type: 'libi/local_name_set', entity_id: S23, name: '' }]) && !row(S23) && core.friendlyName(S23, hass) === 'SM-S918B',
+        JSON.stringify(sent.slice(n)));
+  check('the recipient that sends to that phone is untouched, and nothing is sent to Home Assistant', sr.querySelectorAll('.glob-row').length === 2
+        && api.length === 0 && sends().length === 0, JSON.stringify([api, sends()]));
+
+  // ---- In every project
+  state.names['light.kitchen'] = 'Kitchen';
+  await panel._projectOpen('q');
+  await openTab();
+  check('another project shows the same names: one list for every project', !!row('light.kitchen') && cells('light.kitchen')[0] === 'Kitchen'
+        && cells('light.kitchen')[2] === 'Kitchen ceiling' && core.friendlyName('light.kitchen', hass) === 'Kitchen', row('light.kitchen') && cells('light.kitchen').join('|'));
+  check('used by is not counted yet for a name LIBI Global has not read', row('light.kitchen').querySelector('.glob-used').textContent === '…'
+        || row('light.kitchen').querySelector('.glob-used').textContent === '0', row('light.kitchen').querySelector('.glob-used').textContent);
+
+  // ---- No name given in LIBI: the section is not there
+  state.names = {};
+  await panel._loadLocalNames();
+  await openTab();
+  check('with no name given in LIBI, there is no Named in LIBI', !sr.querySelector('.glob-tags') && !sr.querySelector('.glob-sub'));
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

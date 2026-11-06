@@ -11,11 +11,13 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v1.0.0 | 2026-11-05] Purpose: LIBI Global against a real Home Assistant - a recipient of messages is a script,
-#   saved through Home Assistant's config API, that sends to the phones ticked for it; changing its phones changes where
-#   every NET that sends to it sends, and no automation is written again (the user's request, 2026-11-05).
+# LIBI Global against a real Home Assistant - a recipient of messages is a script, saved through Home Assistant's config
+#   API, that sends to the phones ticked for it; changing its phones changes where every NET that sends to it sends, and
+#   no automation is written again (the user's request, 2026-11-05).
 # [ADDED v1.1.0 | 2026-11-05] Purpose: libi/global_move_plan and libi/global_move_done - the automations that send
 #   straight to a recipient's phone send through it once confirmed, and what is not moved (LIBI 3.89.0).
+# [ADDED v1.2.0 | 2026-11-06] Purpose: libi/global says who uses each entity named in LIBI only (name_users), for the
+#   Global tab's "Named in LIBI" - the user's request (LIBI 3.92.0).
 """LIBI Global: libi/global, libi/global_plan and libi/global_done, as the panel calls them, and the script running;
 libi/global_move_plan and libi/global_move_done, the phone replaced with its recipient."""
 import copy
@@ -552,3 +554,33 @@ def test_only_a_step_the_recipient_passes_on_as_it_is_moves():
     moved, count, _kept = recipients.move_entry("script", config, GUY, RECIPIENT)
     assert count == 1 and moved["sequence"][0]["parallel"][0]["action"] == RECIPIENT
     assert config["sequence"][0]["parallel"][0]["action"] == GUY
+
+
+async def test_global_says_who_uses_each_name_given_in_libi(hass, libi, writes, hass_ws_client):
+    """The user's request (2026-11-06): an entity named in LIBI only is in the Global tab too, with who uses it - the
+    automations, scripts and scenes of Home Assistant that hold its whole id. Reads only."""
+    hall = {"id": "hall", "alias": "Hall light", "triggers": [{"trigger": "state", "entity_id": "binary_sensor.door",
+                                                                "to": "on"}],
+            "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.hall"}}]}
+    other = dict(copy.deepcopy(hall), id="other", alias="Another light",
+                 actions=[{"action": "light.turn_on", "target": {"entity_id": "light.hall_2"}}])
+    await home_assistant_files(hass, libi, automations=[hall, other],
+                               scripts={"evening": {"alias": "Evening", "sequence": [
+                                   {"action": "light.turn_off", "data": {"entity_id": "light.hall"}}]}},
+                               scenes=[{"id": "dinner", "name": "Dinner", "entities": {"light.hall": "on"}}])
+    client = await hass_ws_client(hass)
+    for entity_id, name in (("light.hall", "Hall"), ("light.nowhere", "Nowhere")):
+        assert (await send(client, {"type": "libi/local_name_set", "entity_id": entity_id, "name": name}))["success"]
+    writes.clear()
+    res = (await send(client, {"type": "libi/global"}))["result"]
+    assert res["ok"] is True, res
+    assert res["name_users"] == {
+        "light.hall": [{"domain": "automation", "key": "hall", "name": "Hall light"},
+                       {"domain": "scene", "key": "dinner", "name": "Dinner"},
+                       {"domain": "script", "key": "evening", "name": "Evening"}],
+        "light.nowhere": []}, res["name_users"]
+    assert writes == []
+    # A names file that cannot be read lists no one, and Global still opens.
+    (libi / "libi" / "local_names.json").write_text("{ not json", encoding="utf-8")
+    res = (await send(client, {"type": "libi/global"}))["result"]
+    assert res["ok"] is True and res["name_users"] == {}, res

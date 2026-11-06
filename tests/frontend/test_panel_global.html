@@ -1,15 +1,16 @@
 <!doctype html>
 <!--
   LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
-  [ADDED v1.0.0 | 2026-11-05] Purpose: LIBI Global, the tab next to Variables (the user's choice, 2026-11-05): the
-  recipients of messages, each the phones ticked for it. A MOVE NOTIFY / TTS block sends to a recipient picked in Send to
+  LIBI Global, the tab next to Variables (the user's choice, 2026-11-05): the recipients of messages, each the phones ticked for it. A MOVE NOTIFY / TTS block sends to a recipient picked in Send to
   and shows its name; one that is gone is red. In the tab a recipient is made, its phones changed, and it is deleted - each
   as SAVE & COMPILE saves: libi/global_plan, Home Assistant's config API, libi/global_done - and what Home Assistant
   refused, or what did not change, is said. Names from the user's files are text, never HTML.
-  [ADDED v1.1.0 | 2026-11-05] Purpose: The tab is a table - name, type, device, id - and a row or New opens one editor;
-  a save closes it and the table says so, a refusal keeps it open with why; a Save that cannot be pressed looks it.
+  The tab is a table - name, type, device, id - and a row or New opens one editor; a save closes it and the table says
+  so, a refusal keeps it open with why; a Save that cannot be pressed looks it.
   [ADDED v1.2.0 | 2026-11-05] Purpose: After a save, LIBI asks to replace the phone with it where a NET of the page still
   sends straight to that phone (LIBI 3.89.0; the whole of it is test_panel_global_move.html).
+  [CHANGED v1.3.0 | 2026-11-06] Purpose: The tab's number counts the names given in LIBI too, which it lists (LIBI 3.92.0;
+  the whole of it is test_panel_global_names.html).
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi global test</title></head>
 <body style="margin:0; width:1400px; height:860px;">
@@ -58,8 +59,8 @@ try {
   check('LIBI Global is read when the panel starts', sent.some(m => m.type === 'libi/global') && core.recipients.length === 2,
         JSON.stringify(core.recipients));
   const tab = sr.getElementById('varsTabGlobal');
-  check('the bar has a Global tab next to Variables, with the number of recipients', !!tab
-        && tab.previousElementSibling && tab.previousElementSibling.id === 'varsTabSearch' && tab.querySelector('.n').textContent === '2',
+  check('the bar has a Global tab next to Variables, with the number of recipients and of names given in LIBI', !!tab
+        && tab.previousElementSibling && tab.previousElementSibling.id === 'varsTabSearch' && tab.querySelector('.n').textContent === '3',
         tab && tab.outerHTML);
 
   // ---- On the ladder: a recipient by its name; one that is gone is red
@@ -103,8 +104,10 @@ try {
 
   // ---- The tab is a table: name, type, device, id (the user's request, 2026-11-05)
   check('the tab is a table, no editor open', !!sr.querySelector('.glob-table') && !sr.querySelector('.glob-card'));
-  check('its columns: name, type, device, id, used by', [...sr.querySelectorAll('.glob-table thead th')].map(th => th.textContent).join('|')
-        === 'Name|Type|Device|ID|Used by|', [...sr.querySelectorAll('.glob-table thead th')].map(th => th.textContent).join('|'));
+  check('its columns: name, type, device, id, used by', [...sr.querySelectorAll('.glob-table:not(.glob-tags) thead th')].map(th => th.textContent).join('|')
+        === 'Name|Type|Device|ID|Used by|', [...sr.querySelectorAll('.glob-table:not(.glob-tags) thead th')].map(th => th.textContent).join('|'));
+  check('and those of Named in LIBI under it', [...sr.querySelectorAll('.glob-tags thead th')].map(th => th.textContent).join('|')
+        === 'Name in LIBI|Type|Name in Home Assistant|ID|Used by|', [...sr.querySelectorAll('.glob-tags thead th')].map(th => th.textContent).join('|'));
   check('a row each: the global variable, its type, its device by name and the device\'s id, who sends to it',
         JSON.stringify(cells('libi_send_to_guy').slice(0, 5)) === JSON.stringify(['Guy', 'RECIPIENT', 'S23 guy', S23, '1']), JSON.stringify(cells('libi_send_to_guy')));
   check('a name from the user\'s files is text, never HTML', !sr.querySelector('.glob-view img') && window.__x === undefined

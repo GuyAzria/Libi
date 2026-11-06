@@ -11,13 +11,12 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [CHANGED v3.90.0 | 2026-11-05] Purpose: The HACS review of 2026-11-05 - a save removes only what LIBI created itself
-#   (the project's "made"), and the panel asks first; an entry opened from Home Assistant that leaves the canvas leaves
-#   the project and stays as it is. A NET never takes a key Home Assistant holds for someone else: the next free one.
 # [CHANGED v3.91.0 | 2026-11-06] Purpose: CLAUDE.md RULES 38-41 - a NET is the automation it names only when this
 #   project owns it or opened it into that NET; two NETs never save to one entry; a key moved aside stays with its NET;
 #   libi/save_check checks every change again just before it is sent, and only a create it confirmed counts as made;
 #   a page older than the project's last save (revision) saves nothing.
+# [CHANGED v3.92.0 | 2026-11-06] Purpose: libi/global also says, for each entity named in LIBI only, which automations,
+#   scripts and scenes of Home Assistant use it (name_users) - the user's request: those names in the Global tab.
 import asyncio
 import copy
 import hashlib
@@ -2031,8 +2030,34 @@ def _global_state_of(hass: HomeAssistant, files: dict, errors: list[str], owners
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_global(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    """[ADDED v3.88.0] LIBI Global: the recipients as scripts.yaml holds them, and the phones. Nothing is written."""
-    connection.send_result(msg["id"], await _global_state(hass))
+    """[ADDED v3.88.0] LIBI Global: the recipients as scripts.yaml holds them, and the phones. Nothing is written.
+    [CHANGED v3.92.0] And who uses each entity named in LIBI only (name_users): the Global tab lists those names too."""
+    files, errors, owners, _unreadable = await hass.async_add_executor_job(_read_global_sync, hass)
+    state = _global_state_of(hass, files, errors, owners)
+    names = None if errors else await hass.async_add_executor_job(_read_local_names_sync, hass)
+    state["name_users"] = _name_users(files, names) if names else {}
+    connection.send_result(msg["id"], state)
+
+
+def _name_users(files: dict, names: dict) -> dict[str, list[dict]]:
+    """[ADDED v3.92.0] For each entity named in LIBI only, the automations, scripts and scenes of Home Assistant's files
+    that use it - its whole id in them, so light.hall is not in light.hall_2 - each by its name as the user knows it."""
+    entries: list[tuple[str, str, str, str]] = []
+    for domain in ("automation", "scene"):
+        for item in files.get(domain) or []:
+            if isinstance(item, dict):
+                key = str(item.get("id") or "")
+                entries.append((domain, key, str(item.get("alias") or item.get("name") or key),
+                                json.dumps(item, ensure_ascii=False, default=str)))
+    for key, item in (files.get("script") or {}).items():
+        if isinstance(item, dict):
+            entries.append(("script", str(key), str(item.get("alias") or key), json.dumps(item, ensure_ascii=False, default=str)))
+    out: dict[str, list[dict]] = {}
+    for entity_id in names:
+        whole = re.compile(r"(?<![a-z0-9_.])" + re.escape(entity_id) + r"(?![a-z0-9_])")
+        out[entity_id] = [{"domain": domain, "key": key, "name": name[:100]}
+                          for domain, key, name, text in entries if whole.search(text)]
+    return out
 
 
 @websocket_api.websocket_command({
