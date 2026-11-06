@@ -14,25 +14,25 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.92.0
+ * v3.93.0
  */
-// [CHANGED v3.91.0 | 2026-11-06] Purpose: CLAUDE.md RULES 38-39 - each change is checked again just before it is sent
-//   (libi/save_check, in _configApiSend), and one that changed since the plan is not sent; the page saves only the
-//   project as it opened it (its revision); Delete NET names the entry and says whether LIBI made it, and checks it
-//   again before it deletes; with one project and none remembered, the page opens it instead of showing another canvas
-//   under its name.
 // [CHANGED v3.92.0 | 2026-11-06] Purpose: The user's request - an entity named in LIBI only is listed in the Global tab,
 //   "Named in LIBI", for every project: its name in LIBI, its type, Home Assistant's name, its id and who uses it; a row
 //   opens Rename, and 🗑 takes the name in LIBI away (nothing changes in Home Assistant).
-import { LibiCore } from './libi-core.js?v=3.92.0';
-import { getStyles } from './libi-css.js?v=3.92.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.92.0';
-import { LibiOnline } from './libi-online.js?v=3.92.0';
-import { LibiAiChat } from './libi-ai.js?v=3.92.0';
+// [CHANGED v3.93.0 | 2026-11-06] Purpose: Online as a PLC's online view and tracer - the user's request: the Online bar
+//   (Simulate or Real, FORCE TRUE / FALSE on the block chosen), a monitor over each NET (the clock, the automation in
+//   Home Assistant and its last run, every variable's value), Home Assistant's traces read every 3 seconds and drawn on
+//   the blocks, and Run in Home Assistant - asked first, never for a lock, an alarm or a cover, never over changes not
+//   saved. Leaving Online, Real, another project: nothing forced is left.
+import { LibiCore } from './libi-core.js?v=3.93.0';
+import { getStyles } from './libi-css.js?v=3.93.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.93.0';
+import { LibiOnline, NEVER_RUN_REAL } from './libi-online.js?v=3.93.0';
+import { LibiAiChat } from './libi-ai.js?v=3.93.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.92.0';
+export const LIBI_BUILD = '3.93.0';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -256,6 +256,7 @@ class LibiPanel extends HTMLElement {
             try {
                 const res = await this._hass.connection.sendMessagePromise({ type: 'libi/project_open', slug: remembered.slug });
                 this.core.nets = res.nets || [];
+                this._onlineProject(res);
                 this._project = { slug: res.slug, name: res.name };
                 this._revision = this._revisionOf(res);
                 this._versions = res.versions || {};
@@ -387,6 +388,8 @@ class LibiPanel extends HTMLElement {
             return { saved: false, failed: said(err) };
         }
         if (typeof r.revision === 'number') this._revision = r.revision;
+        // [ADDED v3.93.0] The key each NET was saved under: Online finds its automation, and its trace, by it.
+        if (r.keys && typeof r.keys === 'object') this.online.keys = this._automationKeys(r.keys);
         // [CHANGED v3.34.0] Only a save the backend confirms makes the project match what is saved; [CHANGED v3.85.0] and
         // one in which Home Assistant refused nothing.
         r.complete = r.saved !== false && !failure;
@@ -455,6 +458,22 @@ class LibiPanel extends HTMLElement {
         return old
             ? 'LIBI was updated, but Home Assistant still runs the previous version. Restart Home Assistant (Settings ▸ System ▸ Restart), then try again.'
             : '';
+    }
+
+    /** [ADDED v3.93.0] Another project, or none: Online has nothing forced or simulated from the one before, and the
+     *  keys of this one's NETs. */
+    _onlineProject(res) {
+        this.online.reset();
+        this.online.keys = this._automationKeys(res && res.keys);
+    }
+
+    /** [ADDED v3.93.0] The project's keys (libi/project_open, libi/save_done) as NET id -> the id of its automation. */
+    _automationKeys(keys) {
+        const out = {};
+        for (const [nid, rec] of Object.entries(keys && typeof keys === 'object' ? keys : {})) {
+            if (rec && rec.domain === 'automation' && typeof rec.key === 'string') out[nid] = rec.key;
+        }
+        return out;
     }
 
     /** [ADDED v3.91.0] The revision of a project as the backend gave it - the one this page saves with - or null. */
@@ -1079,7 +1098,7 @@ class LibiPanel extends HTMLElement {
                 </div>
             </div>
             <div class="main-content">
-                <div class="canvas">${this.core.nets.length ? '' : `
+                <div class="canvas">${this.online.enabled ? this._onlineBarHtml() : ''}${this.core.nets.length ? '' : `
                     <div class="canvas-empty">
                         <div class="canvas-empty-text">No automation on the canvas yet</div>
                         <button class="ha-text-btn add-net-btn" id="addNetTop">➕ ADD NET</button>
@@ -1173,16 +1192,241 @@ class LibiPanel extends HTMLElement {
         if (!this.online) return;
         try {
             this.online.paint(this.shadowRoot, this.core.nets, this._hass);
+            this._paintOnlineBar();
         } catch (err) {
             console.warn('[libi] online paint failed', err);
         }
         if (this.online.enabled) {
             clearInterval(this._onlineTimer);
-            this._onlineTimer = setInterval(() => this._paintOnline(), 1000);
+            this._onlineTimer = setInterval(() => {
+                // [ADDED v3.93.0] Home Assistant's traces every 3 seconds; the blocks every second.
+                this._onlineTicks = (this._onlineTicks || 0) + 1;
+                if (this._onlineTicks % 3 === 0) this._pollTraces();
+                this._paintOnline();
+            }, 1000);
         } else {
             clearInterval(this._onlineTimer);
             this._onlineTimer = null;
         }
+    }
+
+    /** [ADDED v3.93.0] The Online bar over the NETs - the user's request: Simulate (FORCE, and a run in the panel only)
+     *  or Real (Home Assistant's own runs), the clock, and FORCE TRUE / FALSE on the block chosen. */
+    _onlineBarHtml() {
+        const sim = this.online.mode === 'simulate';
+        const el = this._onlineChosen();
+        const forceable = sim && el && this._onlineForceable(el.el);
+        const forced = el ? this.online.forcedOf(el.netId, el.el.id) : null;
+        const what = el ? `NET ${this.core.nets.findIndex(n => n.id === el.netId) + 1} ▸ ${this.online.describe(el.el)}` : '';
+        const n = this.online.forceCount();
+        return `<div class="online-bar" role="toolbar" aria-label="Online">
+            <span class="online-title">● ONLINE</span>
+            <span class="online-clock" dir="ltr"></span>
+            <span class="online-seg" role="group" aria-label="Simulate or Real">
+                <button class="online-mode${sim ? ' on' : ''}" data-mode="simulate" title="FORCE blocks and run the NET here only: nothing is sent to Home Assistant">Simulate</button>
+                <button class="online-mode${sim ? '' : ' on'}" data-mode="real" title="What Home Assistant really runs, and Run in Home Assistant">Real</button>
+            </span>
+            ${sim ? `<span class="online-sel" dir="auto" title="${this._esc(what)}">${el ? this._esc(what) : 'Click a block to FORCE it'}</span>
+            <button class="btn online-force${forced === true ? ' on' : ''}" data-force="true" ${forceable ? '' : 'disabled'} title="The block gives TRUE; a trigger forced TRUE starts a simulated run">FORCE TRUE</button>
+            <button class="btn online-force${forced === false ? ' on' : ''}" data-force="false" ${forceable ? '' : 'disabled'} title="The block gives FALSE">FORCE FALSE</button>
+            <button class="btn online-force" data-force="release" ${forceable && forced !== null ? '' : 'disabled'}>Release</button>
+            <button class="btn" id="onlineRelease" ${n ? '' : 'disabled'}>Release all (${n})</button>`
+            : '<span class="online-note">Real: what Home Assistant runs, from its traces. FORCE works in Simulate.</span>'}
+        </div>`;
+    }
+
+    /** [ADDED v3.93.0] The clock of the Online bar, every second. */
+    _paintOnlineBar() {
+        const clock = this.shadowRoot && this.shadowRoot.querySelector('.online-clock');
+        if (!clock) return;
+        const d = new Date(this.online.now());
+        clock.textContent = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    }
+
+    /** [ADDED v3.93.0] The block chosen on the canvas, with its NET and rung, or null. */
+    _onlineChosen() {
+        const sel = this._inspectedEl;
+        if (!sel || !sel.netId || !sel.elId) return null;
+        const net = this.core.nets.find(n => n.id === sel.netId);
+        const el = net ? this.online.findEl(net, sel.elId) : null;
+        return el ? { netId: net.id, rungId: sel.rungId, net, el } : null;
+    }
+
+    /** [ADDED v3.93.0] What can be forced: what a rung tests - a contact, a comparison, a trigger. An action is what a
+     *  run does; it is not forced. */
+    _onlineForceable(el) {
+        return !!el && (el.isTrigger || this.online.kindOf(el) === 'cond');
+    }
+
+    /** [ADDED v3.93.0] FORCE TRUE / FALSE, or released, on the block chosen - in Simulate only. A trigger forced TRUE
+     *  starts a simulated run of its rung. Nothing is sent to Home Assistant. */
+    _onlineForce(value) {
+        const c = this._onlineChosen();
+        if (!c || this.online.mode !== 'simulate' || !this._onlineForceable(c.el)) return;
+        this.online.force(c.netId, c.el.id, value);
+        const rung = (c.net.rungs || []).find(r => r.id === c.rungId);
+        const head = rung ? this.core.triggerHead(rung) : null;
+        const isHead = head && (head.id === c.el.id || (head.type === 'parallel' && c.el.isTrigger));
+        if (value === true && isHead) this.online.startSim(c.net, rung.id, this._hass);
+        this._render();
+        this._paintOnline();
+    }
+
+    /** [ADDED v3.93.0] The newest run of every NET's automation in Home Assistant's trace (trace/list, then trace/get of
+     *  it when it is new or still running). A NET that has no automation, or no trace, has no run. */
+    async _pollTraces() {
+        if (!this.online.enabled || !this._hass || !this._hass.connection || this._pollingTraces) return;
+        this._pollingTraces = true;
+        const ws = (m) => this._hass.connection.sendMessagePromise(m);
+        try {
+            // One trace/list for every automation; a Home Assistant that wants the item too is asked per automation.
+            let every = null;
+            try {
+                const all = await ws({ type: 'trace/list', domain: 'automation' });
+                every = Array.isArray(all) ? all : null;
+            } catch (err) {
+                every = null;
+            }
+            for (const net of this.core.nets || []) {
+                const item = this.core.netLevel(net) === 'automation' ? this.online.traceItemOf(net) : '';
+                if (!item) { this.online.setRun(net.id, null); continue; }
+                let listed;
+                if (every) {
+                    listed = every.filter(t => t && String(t.item_id) === item);
+                } else {
+                    try {
+                        listed = await ws({ type: 'trace/list', domain: 'automation', item_id: item });
+                    } catch (err) {
+                        this.online.setRun(net.id, null);
+                        continue;
+                    }
+                }
+                const start = (t) => String((t && t.timestamp && t.timestamp.start) || '');
+                const newest = (Array.isArray(listed) ? listed : []).reduce((a, b) => (!a || start(b) > start(a) ? b : a), null);
+                if (!newest) { this.online.setRun(net.id, null); continue; }
+                const had = this.online.runs.get(net.id);
+                if (had && had.list.run_id === newest.run_id && had.list.state === newest.state && newest.state !== 'running') continue;
+                try {
+                    const get = await ws({ type: 'trace/get', domain: 'automation', item_id: item, run_id: newest.run_id });
+                    this.online.setRun(net.id, { list: newest, get });
+                } catch (err) {
+                    this.online.setRun(net.id, { list: newest, get: null });
+                }
+            }
+        } finally {
+            this._pollingTraces = false;
+        }
+    }
+
+    /** [ADDED v3.93.0] What a real run of an automation can reach, read from Home Assistant's config API as it is now:
+     *  every domain.object it names (names), the entities of this Home Assistant its actions name (entities), and what
+     *  could not be read (unread) - the automation, or a script it calls, followed two calls deep. */
+    async _realRunReach(automationId) {
+        const names = new Set();
+        const driven = new Set();
+        const unread = [];
+        const seen = new Set();
+        const read = async (domain, key, depth) => {
+            if (seen.has(`${domain}.${key}`)) return;
+            seen.add(`${domain}.${key}`);
+            let config;
+            try {
+                config = await this._hass.callApi('GET', `config/${domain}/config/${encodeURIComponent(key)}`);
+            } catch (err) {
+                unread.push(`${domain} ${key}`);
+                return;
+            }
+            const tokens = (value) => [...JSON.stringify(value || {}).matchAll(/\b([a-z_]+)\.([a-z0-9_]+)\b/g)].map(m => `${m[1]}.${m[2]}`);
+            const found = tokens(config);
+            found.forEach(n => names.add(n));
+            const c = config && typeof config === 'object' ? config : {};
+            // What it switches: the targets of the actions it calls - a condition calls none, so what it reads is not one.
+            const walk = (v) => {
+                if (Array.isArray(v)) { v.forEach(walk); return; }
+                if (!v || typeof v !== 'object') return;
+                const call = v.action || v.service;
+                if (typeof call === 'string' && call.includes('.')) tokens({ target: v.target, entity_id: v.entity_id, data: v.data }).forEach(n => driven.add(n));
+                Object.values(v).forEach(walk);
+            };
+            walk(c.actions || c.action || c.sequence || []);
+            for (const n of found) {
+                const [d, k] = n.split('.');
+                if (d === 'script' && !['turn_on', 'turn_off', 'toggle', 'reload'].includes(k) && depth < 2) await read('script', k, depth + 1);
+            }
+        };
+        if (automationId) await read('automation', automationId, 0);
+        else unread.push('the automation');
+        const states = (this._hass && this._hass.states) || {};
+        return { names: [...names], entities: [...driven].filter(n => states[n]), unread };
+    }
+
+    /** [ADDED v3.93.0] The entities a NET's actions drive: what a real run switches. */
+    _netTargets(net) {
+        const out = new Set();
+        const walk = (els) => (els || []).forEach(el => {
+            const t = el.type || '';
+            if (t.startsWith('coil') && el.label) out.add(String(el.label));
+            if ((t === 'move' || t === 'notify' || t.startsWith('math')) && el.target) out.add(String(el.target));
+            (el.branches || []).forEach(walk);
+            walk(el.sequence);
+        });
+        (net.rungs || []).forEach(r => walk(r.elements));
+        return [...out].filter(id => /^[a-z_]+\.[a-z0-9_]+$/.test(id));
+    }
+
+    /** [ADDED v3.93.0] Whether a NET has changes not saved: it is compared with what the last load or save had. */
+    _netUnsaved(netId) {
+        const skip = new Set(['structuralError', 'collapsed', 'source', 'source_note']);
+        const one = (n) => JSON.stringify(n, (key, value) => (skip.has(key) ? undefined : value));
+        const now = (this.core.nets || []).find(n => n.id === netId);
+        let saved = null;
+        try { saved = (JSON.parse(this._savedSnapshot || '[]') || []).find(n => n && n.id === netId) || null; } catch (err) { saved = null; }
+        return !now || !saved || one(now) !== one(saved);
+    }
+
+    /** [ADDED v3.93.0] Run in Home Assistant - the Online bar's Real. The automation Home Assistant has, as it is saved,
+     *  run with Home Assistant's own automation.trigger, once the user confirms - checking its conditions or skipping
+     *  them. Never for a lock, an alarm or a cover (RULE 9), never over changes not saved, never for one turned off. */
+    async _onlineRealRun(netId) {
+        const net = (this.core.nets || []).find(n => n.id === netId);
+        if (!net || this.online.mode !== 'real') return;
+        const ent = this.online.findAutomationEntity(this._hass, net);
+        if (!ent) { alert('This NET is not in Home Assistant yet: press SAVE & COMPILE first, or try it in Simulate.'); return; }
+        if (this._netUnsaved(netId)) {
+            alert('This NET has changes that are not saved. Home Assistant would run the automation it has, not this drawing: press SAVE & COMPILE first, or try it in Simulate.');
+            return;
+        }
+        if (ent.state !== 'on') { alert('It is turned off in Home Assistant, so it does not run. Turn it on first.'); return; }
+        // What Home Assistant would run is the automation it has, and the scripts that calls - read from it now, not
+        // taken from the drawing (RULE 9, RULE 11).
+        const reach = await this._realRunReach(String((ent.attributes || {}).id || ''));
+        if (reach.unread.length) {
+            alert(`LIBI could not read ${reach.unread.join(', ')} from Home Assistant, so it cannot tell what a real run would do, and does not run it. Try it in Simulate.`);
+            return;
+        }
+        const risky = [...new Set([...this._netTargets(net), ...reach.names].filter(id => NEVER_RUN_REAL.includes(id.split('.')[0])))];
+        if (risky.length) {
+            alert(`LIBI does not run this automation for real: it drives ${risky.join(', ')}. Try it in Simulate, or run it from Home Assistant's own editor.`);
+            return;
+        }
+        const drives = reach.entities.filter(id => id !== ent.entity_id);
+        const ids = (net.rungs || []).some(r => (r.elements || []).some(e => e.trigId !== undefined));
+        const name = net.name || ent.entity_id;
+        const answer = await this._ask(`Run "${name}" in Home Assistant?`,
+            `This really runs the automation: what it switches, switches${drives.length ? ` (${drives.join(', ')})` : ''}.${ids
+                ? ' Home Assistant starts it without a trigger, so a rung that runs only for its own trigger does not run: to see those, make the trigger happen, or try it in Simulate.' : ''}`,
+            [{ id: 'check', label: 'Run, checking its conditions', kind: 'btn-primary' },
+             { id: 'skip', label: 'Run, skipping its conditions', kind: 'btn-danger' },
+             { id: 'cancel', label: 'Cancel', kind: 'btn-ghost' }]);
+        if (answer !== 'check' && answer !== 'skip') return;
+        try {
+            await this._hass.callService('automation', 'trigger', { entity_id: ent.entity_id, skip_condition: answer === 'skip' });
+        } catch (err) {
+            alert('Home Assistant did not run it: ' + (err && err.message ? err.message : String(err)));
+            return;
+        }
+        await this._pollTraces();
+        this._paintOnline();
     }
 
     _renderSidebar() {
@@ -3127,6 +3371,7 @@ class LibiPanel extends HTMLElement {
                     <span class="chevron" style="font-size:12px; color:var(--secondary-text-color, #888);">${net.collapsed ? '▼' : '▲'}</span>
                 </div>
             </div>
+            ${this.online.enabled ? `<div class="net-monitor" data-nid="${this._esc(net.id)}"></div>` : ''}
             <div class="net-body" style="flex-direction:column;">
                 <div class="net-toolbar">
                     <button class="ha-text-btn load-net-btn" data-nid="${net.id}" title="Load HA Automation">📥 LOAD YAML / AUTO</button>
@@ -4274,6 +4519,7 @@ class LibiPanel extends HTMLElement {
         try {
             const res = await this._hass.connection.sendMessagePromise({ type: 'libi/project_open', slug });
             this.core.nets = res.nets || [];
+            this._onlineProject(res);
             this.core.repairAST();
             this.core.resetHistory ? this.core.resetHistory() : this.core.pushHistory();
             this._project = { slug: res.slug, name: res.name };
@@ -4304,6 +4550,7 @@ class LibiPanel extends HTMLElement {
         try {
             const res = await this._hass.connection.sendMessagePromise({ type: 'libi/project_create', name });
             this.core.nets = [];
+            this._onlineProject(res);
             this.core.pushHistory();
             this._project = { slug: res.slug, name: res.name };
             this._revision = this._revisionOf(res);
@@ -4343,6 +4590,7 @@ class LibiPanel extends HTMLElement {
         if (!(await this._leaveCheck())) return;
         this._project = null;
         this._revision = null;
+        this._onlineProject(null);
         this.core.nets = [];
         this.core.pushHistory();
         this._markSaved();
@@ -5219,11 +5467,51 @@ class LibiPanel extends HTMLElement {
         const doOnline = () => {
             this._hdrMenu = false;
             this.online.enabled = !this.online.enabled;
+            // [ADDED v3.93.0] Leaving Online leaves nothing forced or simulated behind (33a.1).
+            if (!this.online.enabled) this.online.reset();
             this._render();
             this._paintOnline();
+            if (this.online.enabled) this._pollTraces().then(() => this._paintOnline());
         };
         on('onlineBtn', 'click', doOnline);
         on('mOnline', 'click', (e) => { e.stopPropagation(); doOnline(); });
+        // [ADDED v3.93.0] The Online bar: Simulate or Real, and FORCE on the block chosen.
+        all('.online-mode', 'click', e => {
+            e.stopPropagation();
+            this.online.setMode(e.currentTarget.getAttribute('data-mode'));
+            this._render();
+            this._paintOnline();
+        });
+        all('.online-force', 'click', e => {
+            e.stopPropagation();
+            const v = e.currentTarget.getAttribute('data-force');
+            this._onlineForce(v === 'true' ? true : v === 'false' ? false : null);
+        });
+        on('onlineRelease', 'click', (e) => {
+            e.stopPropagation();
+            this.online.forces.clear();
+            this._render();
+            this._paintOnline();
+        });
+
+        // [ADDED v3.93.0] The buttons of a NET's monitor, which the Online engine writes again each second.
+        const canvas = this.shadowRoot.querySelector('.canvas');
+        if (canvas && !canvas._libiOnline) {
+            canvas._libiOnline = true;
+            canvas.addEventListener('click', (e) => {
+                const btn = e.target.closest && e.target.closest('[data-online]');
+                if (!btn) return;
+                e.stopPropagation();
+                const nid = btn.getAttribute('data-nid');
+                const net = (this.core.nets || []).find(n => n.id === nid);
+                const act = btn.getAttribute('data-online');
+                if (!net) return;
+                if (act === 'skip') this.online.skipSim(net, this._hass);
+                else if (act === 'stop') { this.online.stopSim(nid); this._render(); }
+                else if (act === 'run') { this._onlineRealRun(nid); return; }
+                this._paintOnline();
+            });
+        }
 
         on('saveBtn', 'click', () => { 
             this._saveToBackend(); 

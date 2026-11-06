@@ -11,12 +11,10 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [CHANGED v3.91.0 | 2026-11-06] Purpose: CLAUDE.md RULES 38-41 - a NET is the automation it names only when this
-#   project owns it or opened it into that NET; two NETs never save to one entry; a key moved aside stays with its NET;
-#   libi/save_check checks every change again just before it is sent, and only a create it confirmed counts as made;
-#   a page older than the project's last save (revision) saves nothing.
 # [CHANGED v3.92.0 | 2026-11-06] Purpose: libi/global also says, for each entity named in LIBI only, which automations,
 #   scripts and scenes of Home Assistant use it (name_users) - the user's request: those names in the Global tab.
+# [CHANGED v3.93.0 | 2026-11-06] Purpose: libi/project_open and libi/save_done give the key each NET has in Home
+#   Assistant (keys): the panel's Online finds the automation of a NET drawn in LIBI, and its trace, by it.
 import asyncio
 import copy
 import hashlib
@@ -953,7 +951,7 @@ def _record_save_sync(hass: HomeAssistant, slug: str, name: str, nets: list, ent
         keep_ids = {str(n.get("id")) for n in nets if isinstance(n, dict) and n.get("id")}
         versions = _update_versions_locked(hass, slug, [(e["net"], e["config"], None) for e in running], "saved",
                                            keep_ids)
-    return {"saved": True, "errors": [], "versions": versions, "released": released, "revision": revision,
+    return {"saved": True, "errors": [], "versions": versions, "released": released, "revision": revision, "keys": keys,
             "counts": {owned_key: sum(1 for e in entries if e["domain"] == domain)
                        for domain, owned_key in _OWNED_KEYS.items()}}
 
@@ -1422,6 +1420,8 @@ async def ws_handle_save_done(hass: HomeAssistant, connection: websocket_api.Act
                                        "released": released,
                                        # [ADDED v3.91.0] The project's revision now, None when it was not written.
                                        "revision": result.get("revision"),
+                                       # [ADDED v3.93.0] The key of each NET in Home Assistant now, for Online.
+                                       "keys": result.get("keys") or {},
                                        "errors": errors})
 
 
@@ -1819,6 +1819,8 @@ async def ws_handle_project_open(hass: HomeAssistant, connection: websocket_api.
         "updated": data.get("updated") or "",
         # [ADDED v3.91.0] What this page saves with: only this project as it is now (_stale).
         "revision": _revision_of(data),
+        # [ADDED v3.93.0] The key of each NET in Home Assistant, for Online: the automation of a NET drawn in LIBI.
+        "keys": data.get("keys") if isinstance(data.get("keys"), dict) else {},
     })
 
 

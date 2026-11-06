@@ -1,13 +1,14 @@
 <!doctype html>
 <!--
   LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
-  [ADDED v1.0.0 | 2026-10-29] Purpose: The automation's trigger is drawn once. The rungs below hang from it with a
+  The automation's trigger is drawn once. The rungs below hang from it with a
   drop under it, exactly as the importer draws the user's garden watering (DRAWN is its output); none of them is red,
   the wait at the end of a rung included; online they have power only while the trigger has; a rung opened among
   them hangs too; with no trigger above, a hanging rung is red and the save is refused. With two triggers, the drop
   comes down from the link that joins them. The schedule's CMP DATETIME block says its days and hours.
   [ADDED v1.1.0 | 2026-10-29] Purpose: The ladder way (one trigger per rung, a for as the TON after its trigger)
   draws with no hanging rung and no red block; the rungs below a trigger with a for come down after its TON.
+  [CHANGED v1.2.0 | 2026-11-06] Purpose: Online keeps its results per NET (LIBI 3.93.0): rungPowerOf(net, rung).
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi shared trigger test</title></head>
 <body style="margin:0; width:1280px; height:800px;">
@@ -120,20 +121,19 @@ try {
   panel._inspectedEl = null;
   panel._render(); await sleep(20);
 
-  // Online: the rungs below have power only while the trigger has. This NET alone: the online engine keys its
-  // results by rung and block id, and the importer numbers both from 1 in every NET (r1, e1 ...), so a second NET
-  // on the canvas overwrites them - a fault of its own, not of the hanging rungs.
+  // Online: the rungs below have power only while the trigger has. [CHANGED v1.1.0] The online engine keeps its
+  // results per NET since LIBI 3.93.0 (two NETs opened from Home Assistant share r1, e1 ...): rungPowerOf(net, rung).
   const online = panel.online;
   hass.states[SCHEDULE].state = 'off';
   online.update([net], hass);
-  check('online, with the schedule off, the rungs below the trigger have no power', [r2, r3, r4].every(r => online.rungPower.get(r.id) === false),
-        JSON.stringify([r2, r3, r4].map(r => online.rungPower.get(r.id))));
+  check('online, with the schedule off, the rungs below the trigger have no power', [r2, r3, r4].every(r => online.rungPowerOf(net.id, r.id) === false),
+        JSON.stringify([r2, r3, r4].map(r => online.rungPowerOf(net.id, r.id))));
   hass.states[SCHEDULE].state = 'on';
   online.update([net], hass);
-  const own = [r2, r3, r4].map(r => online.evaluateSeries(r.elements, hass, Date.now()));
+  const own = [r2, r3, r4].map(r => online.evaluateSeries(r.elements, hass, Date.now(), net.id));
   online.update([net], hass);
-  check('with it on, each has what its own blocks give', online.rungPower.get(r1.id) === true
-        && [r2, r3, r4].every((r, i) => online.rungPower.get(r.id) === own[i]), JSON.stringify(own));
+  check('with it on, each has what its own blocks give', online.rungPowerOf(net.id, r1.id) === true
+        && [r2, r3, r4].every((r, i) => online.rungPowerOf(net.id, r.id) === own[i]), JSON.stringify(own));
   hass.states[SCHEDULE].state = 'off';
 
   // A rung opened among them hangs too, so the ones below keep their trigger.

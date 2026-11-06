@@ -1,0 +1,29 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-06] Purpose: RULE 36 - Online's bar and a NET's monitor on a desktop (1280px), in both
+  directions: on the screen, nothing past it, the buttons big enough to touch, a long name cut in its own chip, the
+  marks of the last run on their blocks (online_fixture.js onlineLayoutChecks).
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi online layout (desktop)</title></head>
+<body style="margin:0;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { makeOnline, makeOnlinePanel, at, onlineLayoutChecks } from './online_fixture.js';
+const results = [];
+const check = (name, cond, detail = '') => { results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) }); };
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+try {
+  const env = makeOnline();
+  const panel = await makeOnlinePanel(env, { height: '860px' });
+  await at(env, panel, 0, { 'input_boolean.enabled': { entity_id: 'input_boolean.enabled', state: 'on', last_changed: '2026-11-06T18:55:51.4+00:00',
+    attributes: { friendly_name: 'Enabled for everyone in the house, the garden and the parking lot too, ' + 'and every room upstairs and downstairs, '.repeat(6) } } });
+  await onlineLayoutChecks(check, panel, false);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

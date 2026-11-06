@@ -60,6 +60,26 @@ The software is built upon the **IEC 61131-3** standard, the international stand
 * **A NET never takes another one's place:** a NET whose name or id is already used in Home Assistant by a script or an automation that is not this project's - one of yours, or another LIBI project's - is saved under the next free one (`script.good_night_2`), and the other one is left exactly as it is. The NET keeps that name from then on, even after the other one is gone. A copy of a NET (**Duplicate**) is a new automation of its own, and two NETs can never save to the same automation: LIBI says which two and saves nothing.
 * **Nothing is written over a change made while you decide.** Just before each change goes to Home Assistant, LIBI checks it again. If that automation, script or scene changed in the meantime - in Home Assistant's own editor, or from another LIBI page - it is not sent, nor anything after it, and LIBI says so: press **SAVE & COMPILE** again. A LIBI page opened before another page saved the same project saves nothing, and asks you to open the project again, so it never writes over that save.
 * **Changes not saved:** closing a project, opening another one or leaving LIBI with changes that are not saved asks whether to save them first.
+* **Traces - the online view of a PLC:** press **Traces** in the header (on a phone, in the menu); the **ONLINE** bar opens over the NETs.
+  * **Over each NET**, a monitor shows:
+    * the clock now
+    * whether its automation is on or off in Home Assistant, and whether it is running
+    * its last run
+    * the value of every variable it uses; one that is offline is red
+  * **Each block** shows:
+    * its state
+    * **OFFLINE** or **NOT IN HA** when its entity is unavailable or gone
+    * for a comparison, **IN1** and **IN2**, for example the clock now and the time it waits for
+    * for a TON, the time left, counting down: the *for* of a trigger, or the delay a run is in
+  * **The last real run**, from Home Assistant's own trace, is marked on each block: ▶ the trigger that started it, ✓ what held and what ran, ✗ the condition where it stopped, ⚠ an action that failed (point at the mark to read Home Assistant's reason), ⏳ the step it is in. For a NET you drew in LIBI, the run is shown in its monitor rather than on each block.
+  * **Simulate** (the default):
+    * Click a block, then **FORCE TRUE** or **FORCE FALSE** in the **ONLINE** bar at the top of the canvas.
+    * A trigger forced TRUE runs its rung inside LIBI only: each condition, each action it *would* run, each TON counting down (⏭ ends one at once).
+    * Nothing is sent to Home Assistant, and no device moves.
+  * **Real:**
+    * **Run in Home Assistant** runs the saved automation for real, after you choose *checking its conditions* or *skipping them*.
+    * It is never offered for an automation that drives a lock, an alarm or a cover, one with changes not saved, or one that is turned off.
+    * Home Assistant starts it without a trigger, so a rung that runs only for its own trigger does not run. To see such a rung, make its trigger happen, or use Simulate.
 * **The variables of a NET, or of the whole project:** click the title of a NET and the **Variables** bar at the bottom lists only the variables that NET uses; click the project's name in the header and it lists the variables of every NET in the project. Clicking an element chooses its NET too.
 * **Global - the phones a message goes to, in one place:** the **Global** tab of the **Variables** bar holds your *global variables*: a recipient such as "Guy's phone" or "Yulia and Guy", made of the phones you tick (one, or several - a message then goes to all of them at once). A **MOVE NOTIFY / TTS** block sends to the recipient picked in its **Send to**, where global variables are listed first. When you replace a phone, change it once in Global - untick the old phone, tick the new one, **Save** - and every NET of every project sends to the new phone, without saving any NET again. A message read aloud is read aloud by Android phones; an iPhone shows the spoken text.
 * **Replace a phone with its global variable:** after you save a global variable, LIBI lists every automation and script that still sends straight to its phone - those made in Home Assistant's editor too - and asks before it changes any. Untick the ones to keep and press **Replace**: only the action of those steps changes, from the phone to the global variable; the message, title and data stay as they are. A step that sends more than a message, a title and data, a NET drawn in another LIBI project, and a global variable of several phones are not replaced, and LIBI says why.
@@ -129,7 +149,7 @@ You can also ask about the nets on the page ("what does the garden net do?") or 
 > [!WARNING]
 > **The AI can make mistakes.** A draft can do something other than what you meant: the wrong time or day, a condition the wrong way round, or a device that is never switched off again. Check the automation well before it runs:
 > * Before you add a draft, read its rungs and **Your request, line by line** under it. A draft in which LIBI finds nothing wrong is saved as soon as you press **Add as NET …, save and compile**.
-> * After the save, try the automation once while you watch what it does, and look at its trace in Home Assistant (**Settings ▸ Automations & scenes ▸** the automation **▸ ⋮ ▸ Traces**).
+> * After the save, press **Traces** and watch it run once: each block shows what held, where the run stopped, and an action that failed. To see every step before anything really runs, use **Simulate** and **FORCE** the trigger.
 
 **The AI never chooses or controls a device on its own.** It only ever sees roles like "the buttons" and "the lights"; the entities are the ones *you* ticked. LIBI rejects any draft that names another entity, a device or area id, or a service outside a safe list, and Home Assistant's own validator checks it too. Nothing is written until you press **SAVE & COMPILE**, or the chat's **Add as NET …, save and compile**, and drafts that control locks, alarms, covers, valves or sirens are flagged.
 

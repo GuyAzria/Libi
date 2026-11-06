@@ -14,19 +14,20 @@
  */
 /**
  * LIBI Panel - Styles
- * v3.92.0
+ * v3.93.0
  */
-// [CHANGED v3.90.0 | 2026-11-05] Purpose: The list of what a save would delete, in the question that asks first
-//   (.ask-list): it scrolls on its own, so the answers stay in view on a phone.
 // [CHANGED v3.92.0 | 2026-11-06] Purpose: "Named in LIBI" in the Global tab (.glob-sub, .glob-tags, .glob-tag-del): the
 //   entities named in LIBI only, under the recipients, sized as they are.
+// [CHANGED v3.93.0 | 2026-11-06] Purpose: Online as a PLC's online view and tracer: the Online bar (.online-*), a
+//   NET's monitor (.net-monitor, .mon-*), a block offline or forced, its TON's time left, IN1 and IN2, and the mark of
+//   what the last run did at it (.run-mark). FORCE is magenta, as on a PLC; what is running is blue.
 export const getStyles = () => `
 :host { display: block; height: 100vh; overflow-y: hidden; background: var(--primary-background-color, #f5f5f5); color: var(--primary-text-color, #212121); font-family: var(--primary-font-family, sans-serif); box-sizing: border-box; direction: ltr !important; text-align: left; }
 /* [ADDED v3.35.0] Colour tokens. The light values are the colours the panel always used; the
    dark set applies when Home Assistant itself is in dark mode (the panel sets [dark] on the host
    from hass.themes.darkMode, which follows the user's HA theme, not the operating system). */
-:host { --libi-tint: rgba(0,0,0,.02); --libi-hover: rgba(0,0,0,.05); --libi-toolbar-bg: #fdfdfd; --libi-label-bg: #ffffff; --libi-pin-lbl: #333; --libi-pin-bg: #e3f2fd; --libi-pin-fg: #0277bd; --libi-pin-border: #03a9f4; --libi-pin-hover-bg: #b3e5fc; --libi-pin-hover-border: #0288d1; --libi-trig-bg: #fff8e1; --libi-trig-head: #d97706; --libi-trig-fg: #a16207; --libi-coe-bg: #fdecea; --libi-coe-fg: #c62828; --libi-err-bg: #ffebee; --libi-notice-bg: #fff8e1; --libi-notice-border: #ffcc80; --libi-notice-head: #e65100; --libi-notice-x: #a1887f; --libi-notice-list: #5d4037; --libi-link-bg: #ede7f6; --libi-link-fg: #5e35b1; --libi-link-border: #b39ddb; --libi-ok: #2e7d32; --libi-ok-strong: #1b5e20; --libi-ok-bg: #e8f5e9; --libi-ok-border: #a5d6a7; --libi-type-bool-bg: #e8f5e9; --libi-type-bool-fg: #2e7d32; --libi-type-int-bg: #e3f2fd; --libi-type-int-fg: #1565c0; --libi-type-float-bg: #ede7f6; --libi-type-float-fg: #5e35b1; --libi-type-text-bg: #fff8e1; --libi-type-text-fg: #ef6c00; --libi-type-time-bg: #fce4ec; --libi-type-time-fg: #ad1457; --libi-type-ha-bg: #eceff1; --libi-type-ha-fg: #546e7a; }
-:host([dark]) { --libi-tint: rgba(255,255,255,.04); --libi-hover: rgba(255,255,255,.08); --libi-toolbar-bg: rgba(255,255,255,.03); --libi-label-bg: #2b2e33; --libi-pin-lbl: #e0e0e0; --libi-pin-bg: rgba(3,169,244,.16); --libi-pin-fg: #81d4fa; --libi-pin-border: #29b6f6; --libi-pin-hover-bg: rgba(3,169,244,.28); --libi-pin-hover-border: #4fc3f7; --libi-trig-bg: rgba(249,168,37,.14); --libi-trig-head: #ffca28; --libi-trig-fg: #ffd54f; --libi-coe-bg: rgba(244,67,54,.16); --libi-coe-fg: #ef9a9a; --libi-err-bg: rgba(244,67,54,.18); --libi-notice-bg: rgba(255,152,0,.12); --libi-notice-border: rgba(255,183,77,.5); --libi-notice-head: #ffb74d; --libi-notice-x: #bcaaa4; --libi-notice-list: #d7ccc8; --libi-link-bg: rgba(126,87,194,.22); --libi-link-fg: #d1c4e9; --libi-link-border: #9575cd; --libi-ok: #81c784; --libi-ok-strong: #a5d6a7; --libi-ok-bg: rgba(46,125,50,.22); --libi-ok-border: rgba(129,199,132,.5); --libi-type-bool-bg: rgba(46,125,50,.22); --libi-type-bool-fg: #81c784; --libi-type-int-bg: rgba(33,150,243,.2); --libi-type-int-fg: #90caf9; --libi-type-float-bg: rgba(126,87,194,.22); --libi-type-float-fg: #b39ddb; --libi-type-text-bg: rgba(255,152,0,.16); --libi-type-text-fg: #ffb74d; --libi-type-time-bg: rgba(233,30,99,.18); --libi-type-time-fg: #f48fb1; --libi-type-ha-bg: rgba(144,164,174,.2); --libi-type-ha-fg: #b0bec5; }
+:host { --libi-tint: rgba(0,0,0,.02); --libi-hover: rgba(0,0,0,.05); --libi-toolbar-bg: #fdfdfd; --libi-label-bg: #ffffff; --libi-pin-lbl: #333; --libi-pin-bg: #e3f2fd; --libi-pin-fg: #0277bd; --libi-pin-border: #03a9f4; --libi-pin-hover-bg: #b3e5fc; --libi-pin-hover-border: #0288d1; --libi-trig-bg: #fff8e1; --libi-trig-head: #d97706; --libi-trig-fg: #a16207; --libi-coe-bg: #fdecea; --libi-coe-fg: #c62828; --libi-err-bg: #ffebee; --libi-notice-bg: #fff8e1; --libi-notice-border: #ffcc80; --libi-notice-head: #e65100; --libi-notice-x: #a1887f; --libi-notice-list: #5d4037; --libi-link-bg: #ede7f6; --libi-link-fg: #5e35b1; --libi-link-border: #b39ddb; --libi-ok: #2e7d32; --libi-ok-strong: #1b5e20; --libi-ok-bg: #e8f5e9; --libi-ok-border: #a5d6a7; --libi-type-bool-bg: #e8f5e9; --libi-type-bool-fg: #2e7d32; --libi-type-int-bg: #e3f2fd; --libi-type-int-fg: #1565c0; --libi-type-float-bg: #ede7f6; --libi-type-float-fg: #5e35b1; --libi-type-text-bg: #fff8e1; --libi-type-text-fg: #ef6c00; --libi-type-time-bg: #fce4ec; --libi-type-time-fg: #ad1457; --libi-type-ha-bg: #eceff1; --libi-type-ha-fg: #546e7a; --libi-force: #c2185b; --libi-force-bg: #fce4ec; --libi-active: #0277bd; --libi-active-bg: #e1f5fe; }
+:host([dark]) { --libi-tint: rgba(255,255,255,.04); --libi-hover: rgba(255,255,255,.08); --libi-toolbar-bg: rgba(255,255,255,.03); --libi-label-bg: #2b2e33; --libi-pin-lbl: #e0e0e0; --libi-pin-bg: rgba(3,169,244,.16); --libi-pin-fg: #81d4fa; --libi-pin-border: #29b6f6; --libi-pin-hover-bg: rgba(3,169,244,.28); --libi-pin-hover-border: #4fc3f7; --libi-trig-bg: rgba(249,168,37,.14); --libi-trig-head: #ffca28; --libi-trig-fg: #ffd54f; --libi-coe-bg: rgba(244,67,54,.16); --libi-coe-fg: #ef9a9a; --libi-err-bg: rgba(244,67,54,.18); --libi-notice-bg: rgba(255,152,0,.12); --libi-notice-border: rgba(255,183,77,.5); --libi-notice-head: #ffb74d; --libi-notice-x: #bcaaa4; --libi-notice-list: #d7ccc8; --libi-link-bg: rgba(126,87,194,.22); --libi-link-fg: #d1c4e9; --libi-link-border: #9575cd; --libi-ok: #81c784; --libi-ok-strong: #a5d6a7; --libi-ok-bg: rgba(46,125,50,.22); --libi-ok-border: rgba(129,199,132,.5); --libi-type-bool-bg: rgba(46,125,50,.22); --libi-type-bool-fg: #81c784; --libi-type-int-bg: rgba(33,150,243,.2); --libi-type-int-fg: #90caf9; --libi-type-float-bg: rgba(126,87,194,.22); --libi-type-float-fg: #b39ddb; --libi-type-text-bg: rgba(255,152,0,.16); --libi-type-text-fg: #ffb74d; --libi-type-time-bg: rgba(233,30,99,.18); --libi-type-time-fg: #f48fb1; --libi-type-ha-bg: rgba(144,164,174,.2); --libi-type-ha-fg: #b0bec5; --libi-force: #f48fb1; --libi-force-bg: rgba(233,30,99,.2); --libi-active: #4fc3f7; --libi-active-bg: rgba(3,169,244,.2); }
 *, *::before, *::after { box-sizing: border-box; }
 
 .panel-layout { display: flex; flex-direction: column; height: 100vh; }
@@ -545,12 +546,52 @@ export const getStyles = () => `
 .libi-el.live-unknown .el-ico, .libi-el.live-unknown .plc-block { border-style: dashed; opacity: .6; }
 .libi-el.live-fresh .el-ico, .libi-el.live-fresh .plc-block { animation: livePulse 1.2s ease-out 2; }
 @keyframes livePulse { 0% { box-shadow: 0 0 0 0 rgba(46,125,50,.55); } 100% { box-shadow: 0 0 0 12px rgba(46,125,50,0); } }
-.live-val { position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%); display: flex; gap: 6px; align-items: baseline; white-space: nowrap; pointer-events: none; z-index: 6; }
+.live-val { position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 2px; align-items: center; white-space: nowrap; pointer-events: none; z-index: 6; }
 .live-now { font-size: 11px; font-weight: 800; color: var(--libi-ok-strong); background: var(--libi-ok-bg); border: 1px solid var(--libi-ok-border); border-radius: 4px; padding: 1px 5px; }
 .live-prev { font-size: 10px; color: var(--secondary-text-color, #9e9e9e); background: var(--secondary-background-color, #f5f5f5); border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 1px 5px; }
 
 .rung.rung-live { background: rgba(46,125,50,.05); border-radius: 8px; }
 .net-live-note { font-size: 11px; color: var(--libi-ok); background: var(--libi-ok-bg); border: 1px solid var(--libi-ok-border); border-radius: 10px; padding: 2px 8px; margin-left: 8px; }
+
+/* [ADDED v3.93.0] Online as a PLC's online view and tracer. */
+.online-bar { position: sticky; top: 0; z-index: 8; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 12px; background: var(--card-background-color, #fff); border: 1px solid var(--libi-ok-border); border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,.08); min-width: 0; }
+.online-title { font-weight: 900; font-size: 12px; color: var(--libi-ok); letter-spacing: .5px; }
+.online-clock { font-family: monospace; font-weight: 800; font-size: 13px; }
+.online-seg { display: inline-flex; border: 1px solid var(--divider-color, #ccc); border-radius: 18px; overflow: hidden; }
+.online-mode { border: none; background: none; padding-inline: 14px; min-height: 34px; font-weight: 700; cursor: pointer; color: var(--primary-text-color, #212121); }
+.online-mode.on { background: var(--libi-ok-bg); color: var(--libi-ok-strong); }
+.online-sel { font-size: 12px; max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--secondary-text-color, #757575); }
+.online-note { font-size: 12px; color: var(--secondary-text-color, #757575); }
+.online-force, #onlineRelease { min-height: 34px; }
+.online-force.on { background: var(--libi-force-bg); color: var(--libi-force); border-color: var(--libi-force); }
+.net-monitor { display: flex; flex-direction: column; gap: 4px; padding: 6px 12px; background: var(--libi-tint); border-bottom: 1px solid var(--divider-color, #eee); min-width: 0; }
+.mon-line { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; min-width: 0; }
+.mon-chip { font-size: 11px; border-radius: 10px; padding: 2px 8px; border: 1px solid var(--divider-color, #ddd); background: var(--card-background-color, #fff); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-sizing: border-box; }
+.mon-clock { font-family: monospace; font-weight: 800; }
+.mon-ok { color: var(--libi-ok); border-color: var(--libi-ok-border); background: var(--libi-ok-bg); }
+.mon-err, .mon-var.bad, .mon-run.run-error { color: var(--error-color, #db4437); background: var(--libi-err-bg); border-color: var(--error-color, #db4437); }
+.mon-active, .mon-run.run-active { color: var(--libi-active); background: var(--libi-active-bg); border-color: var(--libi-active); }
+.mon-run.run-false { color: var(--libi-notice-head); background: var(--libi-notice-bg); border-color: var(--libi-notice-border); }
+.mon-muted { color: var(--secondary-text-color, #757575); }
+.mon-simstate { font-weight: 700; color: var(--libi-force); background: var(--libi-force-bg); border-color: var(--libi-force); }
+.mon-btn { min-height: 34px; font-size: 12px; }
+.libi-el.live-offline .el-ico, .libi-el.live-offline .plc-block { border-color: var(--error-color, #db4437) !important; border-style: dashed; }
+.libi-el.live-missing .el-ico, .libi-el.live-missing .plc-block { border-color: var(--error-color, #db4437) !important; opacity: .55; }
+.libi-el.live-forced .el-ico, .libi-el.live-forced .plc-block { outline: 2px solid var(--libi-force); outline-offset: 2px; }
+.live-force { font-size: 10px; font-weight: 900; color: #fff; background: var(--libi-force); border-radius: 4px; padding: 1px 5px; }
+.live-state { font-size: 10px; font-weight: 900; color: var(--error-color, #db4437); background: var(--libi-err-bg); border: 1px solid var(--error-color, #db4437); border-radius: 4px; padding: 1px 5px; }
+.live-timer { font-size: 11px; font-weight: 800; font-family: monospace; color: var(--libi-active); background: var(--libi-active-bg); border: 1px solid var(--libi-active); border-radius: 4px; padding: 1px 5px; }
+.live-sim { font-size: 10px; font-weight: 800; color: var(--libi-force); background: var(--libi-force-bg); border-radius: 4px; padding: 1px 5px; }
+.run-mark { position: absolute; top: -9px; inset-inline-end: -9px; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 900; color: #fff; z-index: 7; box-shadow: 0 1px 3px rgba(0,0,0,.3); pointer-events: auto; }
+.run-mark.run-fired, .run-mark.run-true, .run-mark.run-done { background: var(--libi-ok); }
+.run-mark.run-false { background: var(--libi-notice-head); }
+.run-mark.run-error { background: var(--error-color, #db4437); }
+.run-mark.run-active { background: var(--libi-active); animation: livePulse 1.2s ease-out infinite; }
+.run-mark.run-skip, .run-mark.run-idle { background: var(--disabled-text-color, #9e9e9e); }
+.libi-el.run-active .el-ico, .libi-el.run-active .plc-block { box-shadow: 0 0 0 3px var(--libi-active-bg); border-color: var(--libi-active); }
+.libi-el.run-error .el-ico, .libi-el.run-error .plc-block { border-color: var(--error-color, #db4437) !important; }
+@media (pointer: coarse) { .online-mode, .online-force, #onlineRelease, .mon-btn { min-height: 40px; } }
+@media (max-width: 768px) { .online-bar { position: static; } .online-sel { max-width: 100%; flex-basis: 100%; } }
 
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2000; display: flex; align-items: center; justify-content: center; }
 .modal { background: var(--card-background-color, #fff); padding: 24px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); width: 450px; max-width: 90vw; display: flex; flex-direction: column; gap: 16px; max-height: 80vh; direction: ltr; }

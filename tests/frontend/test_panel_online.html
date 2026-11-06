@@ -1,0 +1,177 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-06] Purpose: Online as a PLC's online view and tracer - the user's request - on real runs of a
+  real Home Assistant (trace_fixture.js). Every NET is shown with its own states, though two NETs opened from Home
+  Assistant share block ids (until LIBI 3.92.0 one was drawn with the other's: a lamp shown off right after it was
+  turned on). The last real run is drawn on each block: the trigger that started it, a condition true or false, an
+  action done or failed with Home Assistant's reason, the delay it is in counting down; the for of a trigger counts down
+  from the entity's last change. A block offline or not in Home Assistant says so; a comparison shows IN1 (the clock now)
+  and IN2 (the time it waits for); each NET's monitor shows the clock, the automation, its last run and every variable.
+  A NET drawn in LIBI finds its automation by the key LIBI saved it under. Nothing is sent to Home Assistant.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi online test</title></head>
+<body style="margin:0;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { CAPTURE, makeOnline, makeOnlinePanel, at, block, markOf, badges, monitor, chips, clockOf, sleep } from './online_fixture.js';
+import { tracePath } from '../../custom_components/libi/frontend/libi-online.js?v=3.93.0';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+try {
+  const env = makeOnline();
+  const panel = await makeOnlinePanel(env);
+  const sr = panel.shadowRoot;
+  const has = (nid, eid, cls) => !!block(panel, nid, eid) && block(panel, nid, eid).classList.contains(cls);
+
+  // ---- Where a block is in Home Assistant's trace: each pair as a real Home Assistant traced it (2026-11-06) - an or, an
+  // if with its else, a parallel, a repeat, a choose with its default - from where the importer found the block.
+  const PATHS = [
+    ['triggers[0]', {}, 'trigger/0'], ['conditions[0].or[1]', {}, 'condition/0/conditions/1'],
+    ['actions[0].opt[0].cond[0]', { groupKind: 'if' }, 'action/0/if/condition/0'], ['actions[0].opt[0].seq[0]', { groupKind: 'if' }, 'action/0/then/0'],
+    ['actions[0].opt[1].seq[0]', { groupKind: 'if', isDefault: true }, 'action/0/else/0'],
+    ['actions[1].parallel[0]', {}, 'action/1/parallel/0/sequence/0'], ['actions[1].parallel[1][0]', {}, 'action/1/parallel/1/sequence/0'],
+    ['actions[2].repeat[0]', {}, 'action/2/repeat/sequence/0'],
+    ['actions[3].opt[0].cond[0]', { groupKind: 'choose' }, 'action/3/choose/0/conditions/0'],
+    ['actions[3].opt[0].seq[0]', { groupKind: 'choose' }, 'action/3/choose/0/sequence/0'],
+    ['actions[3].opt[1].seq[0]', { groupKind: 'choose', isDefault: true }, 'action/3/default/0'],
+    ['', {}, ''], ['actions[0].weird[0]', {}, '']];
+  const wrong = PATHS.filter(([src, rung, path]) => tracePath(src, rung) !== path).map(([src, rung, path]) => `${src} -> ${tracePath(src, rung)} (not ${path})`);
+  check("each block finds its step in Home Assistant's trace: or, if/else, parallel, repeat, choose/default", wrong.length === 0, wrong.join('; '));
+
+  // ---- Garden running: the valve on, its delay counting down
+  await at(env, panel, 0);
+  check('the Online bar is there, with the clock', !!sr.querySelector('.online-bar') && /^\d\d:\d\d:\d\d$/.test(sr.querySelector('.online-clock').textContent),
+        sr.querySelector('.online-clock') && sr.querySelector('.online-clock').textContent);
+  check('each NET has its own states, though their block ids repeat (e3 is Garden\'s trigger and Bell\'s contact)',
+        has('n1', 'e3', 'live-on') && has('n3', 'e3', 'live-off') && has('n1', 'e5', 'live-on') && has('n2', 'e4', 'live-off'),
+        JSON.stringify(['n1/e3', 'n3/e3', 'n1/e5', 'n2/e4'].map(k => { const [n, e] = k.split('/'); return [k, [...block(panel, n, e).classList].filter(c => c.startsWith('live-'))]; })));
+  check('the rung that runs is lit, and only that NET\'s', !!sr.querySelector('.rung[data-nid="n1"][data-rid="r1"].rung-live')
+        && !sr.querySelector('.rung[data-nid="n3"][data-rid="r1"].rung-live'), 'rungs');
+  check('the run on the blocks: the trigger that started it, the condition true, the valve done, the delay it is in, the rest not reached',
+        JSON.stringify(['e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9'].map(e => markOf(panel, 'n1', e))) === JSON.stringify(['run-fired', 'run-true', 'run-done', 'run-active', 'run-skip', 'run-idle', 'run-skip']),
+        JSON.stringify(['e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9'].map(e => markOf(panel, 'n1', e))));
+  const m0 = CAPTURE.moments[0];
+  const step = m0.runs.garden.get.trace['action/0/choose/0/sequence/1'][0];
+  const left = clockOf(step.result.delay - (Date.parse(m0.now) - Date.parse(step.timestamp)) / 1000);
+  check('the delay counts down on its block, from the step Home Assistant is in', badges(panel, 'n1', 'e6').includes(`⏳ ${left}`) && left === '00:00:02',
+        JSON.stringify([badges(panel, 'n1', 'e6'), left]));
+  check('the monitor: the clock, on in Home Assistant, running, and the run', chips(panel, 'n1')[0].startsWith('NOW ')
+        && chips(panel, 'n1').includes('ON in Home Assistant') && chips(panel, 'n1').includes('running')
+        && chips(panel, 'n1').some(c => c.startsWith('last run: running since')), JSON.stringify(chips(panel, 'n1')));
+  check('and the value of every variable it uses', ['input_boolean.go', 'input_boolean.enabled', 'input_boolean.valve', 'input_boolean.stop']
+        .every(id => [...monitor(panel, 'n1').querySelectorAll('.mon-var')].some(c => c.title === id)), JSON.stringify(chips(panel, 'n1')));
+
+  // ---- Garden by start, its option's condition false
+  await at(env, panel, 2);
+  check('a condition false is marked where the run stopped, and what comes after is not reached',
+        markOf(panel, 'n1', 'e4') === 'run-false' && markOf(panel, 'n1', 'e5') === 'run-skip' && markOf(panel, 'n1', 'e3') === 'run-fired',
+        JSON.stringify(['e3', 'e4', 'e5'].map(e => markOf(panel, 'n1', e))));
+  // ---- Garden by stop: the other rung's trigger
+  const gets = () => env.sent.filter(m => m.type === 'trace/get').length;
+  await at(env, panel, 3);
+  check('another trigger: its rung is the one that ran', markOf(panel, 'n1', 'e8') === 'run-fired' && markOf(panel, 'n1', 'e9') === 'run-done'
+        && markOf(panel, 'n1', 'e3') === 'run-idle', JSON.stringify(['e3', 'e8', 'e9'].map(e => markOf(panel, 'n1', e))));
+  const before = gets();
+  await panel._pollTraces();
+  check('a run read once is not read again until it changes', gets() === before, `${before} -> ${gets()}`);
+  const lists = () => env.sent.filter(m => m.type === 'trace/list');
+  let n = lists().length;
+  await panel._pollTraces();
+  check('one trace/list reads every automation', lists().length === n + 1 && lists()[lists().length - 1].item_id === undefined,
+        JSON.stringify(lists().slice(n)));
+  env.state.listAllFails = true;
+  n = lists().length;
+  panel.online.runs.clear();
+  await panel._pollTraces(); panel._paintOnline();
+  check('a Home Assistant that wants the item is asked per automation, and the runs are the same',
+        lists().slice(n + 1).map(m => m.item_id).sort().join() === 'bell,garden,porch' && markOf(panel, 'n1', 'e8') === 'run-fired',
+        JSON.stringify(lists().slice(n)));
+  env.state.listAllFails = false;
+
+  // ---- Porch: the door on, the for of its trigger counting down, no run yet
+  await at(env, panel, 4);
+  const m4 = CAPTURE.moments[4];
+  const forLeft = clockOf(3 - (Date.parse(m4.now) - Date.parse(m4.states['input_boolean.door'].last_changed)) / 1000);
+  check('the for of a trigger counts down from the entity\'s last change, as Home Assistant counts it',
+        badges(panel, 'n2', 'e5').includes(`⏳ ${forLeft}`) && has('n2', 'e4', 'live-on') && !markOf(panel, 'n2', 'e2'),
+        JSON.stringify([badges(panel, 'n2', 'e5'), forLeft, markOf(panel, 'n2', 'e2')]));
+  check('a NET with no run yet says nothing of one', !chips(panel, 'n2').some(c => c.startsWith('last run')), JSON.stringify(chips(panel, 'n2')));
+  await at(env, panel, 5);
+  check('the for ran out: the trigger fired, the lamp on', markOf(panel, 'n2', 'e4') === 'run-fired' && markOf(panel, 'n2', 'e2') === 'run-done'
+        && has('n2', 'e2', 'live-on') && badges(panel, 'n2', 'e5').includes('Q ✓'), JSON.stringify([markOf(panel, 'n2', 'e4'), badges(panel, 'n2', 'e5')]));
+
+  // ---- Bell: its action failed
+  await at(env, panel, 6);
+  const err = block(panel, 'n3', 'e2').querySelector('.run-mark');
+  check('a failed action is marked, with Home Assistant\'s reason', markOf(panel, 'n3', 'e2') === 'run-error'
+        && err.title === 'Last run in Home Assistant: Action notify.does_not_exist not found', err && err.title);
+  check('and the monitor says the run failed, and why', !!monitor(panel, 'n3').querySelector('.mon-run.run-error')
+        && monitor(panel, 'n3').querySelector('.mon-run.run-error').textContent.endsWith('error: Action notify.does_not_exist not found'),
+        JSON.stringify(chips(panel, 'n3')));
+
+  // ---- Offline, and not in Home Assistant
+  const states = JSON.parse(JSON.stringify(CAPTURE.moments[6].states));
+  states['input_boolean.enabled'].state = 'unavailable';
+  delete states['input_boolean.stop'];
+  env.hass.states = states;
+  panel._paintOnline(); await sleep(20);
+  check('a block whose entity is unavailable says OFFLINE', has('n1', 'e4', 'live-offline') && badges(panel, 'n1', 'e4').includes('OFFLINE'),
+        JSON.stringify(badges(panel, 'n1', 'e4')));
+  check('one Home Assistant no longer has says NOT IN HA', has('n1', 'e8', 'live-missing') && badges(panel, 'n1', 'e8').includes('NOT IN HA'),
+        JSON.stringify(badges(panel, 'n1', 'e8')));
+  check('and its variable is red in the monitor', [...monitor(panel, 'n1').querySelectorAll('.mon-var.bad')].map(c => c.title).sort().join()
+        === 'input_boolean.enabled,input_boolean.stop', [...monitor(panel, 'n1').querySelectorAll('.mon-var.bad')].map(c => c.textContent).join());
+
+  // ---- A comparison: IN1 the clock now, IN2 the time it waits for; a NET drawn in LIBI, found by its key
+  const LEAVE = { id: 'n9', name: 'Leave work', level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r1', comment: '', elements: [
+    { id: 'e1', type: 'cmp_ge', sourceA: 'time', sourceB: 'input_datetime.leave', isTrigger: true },
+    { id: 'e2', type: 'coil_s', label: 'input_boolean.lamp' }] }] };
+  panel.core.nets.push(JSON.parse(JSON.stringify(LEAVE)));
+  panel._markSaved(); panel._render();
+  await at(env, panel, 6, { 'input_datetime.leave': { entity_id: 'input_datetime.leave', state: '06:00:00', last_changed: CAPTURE.moments[6].now,
+    attributes: { friendly_name: 'Leave work at' } } });
+  const d = new Date(Date.parse(CAPTURE.moments[6].now));
+  const nowText = clockOf(d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds());
+  check('a comparison shows IN1, the clock now, and IN2, the time it waits for', JSON.stringify(badges(panel, 'n9', 'e1')) === JSON.stringify([`IN1 ${nowText}`, 'IN2 06:00:00']),
+        JSON.stringify(badges(panel, 'n9', 'e1')));
+  const after6 = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds() >= 6 * 3600;
+  check('and whether it holds now', has('n9', 'e1', after6 ? 'live-on' : 'live-off'), [...block(panel, 'n9', 'e1').classList].join(' '));
+  check('a NET drawn in LIBI and not saved is not in Home Assistant yet', chips(panel, 'n9').includes('not in Home Assistant yet'), JSON.stringify(chips(panel, 'n9')));
+  panel.online.keys = { n9: 'porch' };
+  await at(env, panel, 6);
+  check('saved, it is found by the key LIBI saved it under; its run is shown in its monitor, not on its blocks',
+        chips(panel, 'n9').includes('ON in Home Assistant') && chips(panel, 'n9').some(c => c.startsWith('last run:'))
+        && chips(panel, 'n9').includes('drawn in LIBI: the run is shown here, not on each block') && !markOf(panel, 'n9', 'e2'),
+        JSON.stringify(chips(panel, 'n9')));
+
+  // ---- A name from the user's Home Assistant is text, never HTML
+  const named = JSON.parse(JSON.stringify(CAPTURE.moments[6].states));
+  named['input_boolean.go'].attributes.friendly_name = '<img src=x onerror="window.__x=1">Go';
+  env.hass.states = named;
+  panel._paintOnline(); await sleep(20);
+  check('a name in the monitor is text, never HTML', !monitor(panel, 'n1').querySelector('img') && window.__x === undefined
+        && chips(panel, 'n1').some(c => c.startsWith('<img src=x')), JSON.stringify(chips(panel, 'n1')));
+
+  // ---- Nothing was sent to Home Assistant, nor saved
+  check('Online sends nothing to Home Assistant: no service, no config API, no save', env.services.length === 0 && env.api.length === 0
+        && !env.sent.some(m => /^libi\/(compile|save)/.test(m.type)), JSON.stringify([env.services, env.api]));
+  // ---- Off: nothing of it is left on the canvas
+  sr.getElementById('onlineBtn').click();
+  await sleep(30);
+  check('Online off: no bar, no monitor, no mark is left', !sr.querySelector('.online-bar') && !sr.querySelector('.net-monitor') && !sr.querySelector('.run-mark')
+        && !sr.querySelector('.libi-el.live-on'), 'left over');
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

@@ -1527,3 +1527,20 @@ async def test_no_way_off_the_canvas_deletes_an_automation_opened_from_home_assi
     assert {a["id"]: a for a in _automations(libi)}["a1"] == saved
     assert "a1" not in _project(libi)["owned"]["automations"] and "a1" not in _project(libi)["made"]["automations"]
     assert hass.states.get("automation.lamp") is not None
+
+
+async def test_the_key_of_each_net_is_given_to_the_panel(hass, libi, hass_ws_client, hass_client):
+    """[ADDED 2026-11-06, v3.93.0] Online finds the automation of a NET drawn in LIBI, and its trace, by the key LIBI saved
+    it under - n1_2 when another project has n1 - from libi/save_done and libi/project_open."""
+    await home_assistant_files(hass, libi)
+    drawn = _net(hass)
+    drawn.pop("ha_id", None)
+    drawn["id"] = "n1"
+    client, http = await hass_ws_client(hass), await hass_client()
+    await save(client, http, [drawn], slug="p")
+    _plan, done = await save(client, http, [json.loads(json.dumps(drawn).replace("light.x", "light.q"))], slug="q")
+    assert done["keys"] == {"n1": {"domain": "automation", "key": "n1_2", "base": "n1"}}, done
+    opened = (await send(client, {"type": "libi/project_open", "slug": "q"}))["result"]
+    assert opened["keys"] == done["keys"], opened
+    fresh = (await send(client, {"type": "libi/project_create", "name": "Fresh"}))["result"]
+    assert (await send(client, {"type": "libi/project_open", "slug": fresh["slug"]}))["result"]["keys"] == {}
