@@ -14,25 +14,28 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.93.0
+ * v3.94.0
  */
-// [CHANGED v3.92.0 | 2026-11-06] Purpose: The user's request - an entity named in LIBI only is listed in the Global tab,
-//   "Named in LIBI", for every project: its name in LIBI, its type, Home Assistant's name, its id and who uses it; a row
-//   opens Rename, and 🗑 takes the name in LIBI away (nothing changes in Home Assistant).
 // [CHANGED v3.93.0 | 2026-11-06] Purpose: Online as a PLC's online view and tracer - the user's request: the Online bar
 //   (Simulate or Real, FORCE TRUE / FALSE on the block chosen), a monitor over each NET (the clock, the automation in
 //   Home Assistant and its last run, every variable's value), Home Assistant's traces read every 3 seconds and drawn on
 //   the blocks, and Run in Home Assistant - asked first, never for a lock, an alarm or a cover, never over changes not
 //   saved. Leaving Online, Real, another project: nothing forced is left.
-import { LibiCore } from './libi-core.js?v=3.93.0';
-import { getStyles } from './libi-css.js?v=3.93.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.93.0';
-import { LibiOnline, NEVER_RUN_REAL } from './libi-online.js?v=3.93.0';
-import { LibiAiChat } from './libi-ai.js?v=3.93.0';
+// [CHANGED v3.94.0 | 2026-11-07] Purpose: The user's screenshot (2026-11-07) - they could not find FORCE, nor fire the
+//   trigger they wanted in Real. In Online a click on a block opens its own menu, by the block: FORCE TRUE / FALSE and
+//   Release in Simulate; in Real, FORCE TRUE on a trigger runs the automation in Home Assistant as if that trigger fired
+//   (libi/online_fire, asked first), and a condition offers Simulate. What a real run can reach is checked by LIBI's
+//   backend from Home Assistant, areas and devices too. Traces is read only - the user's rule, the same day: while it is
+//   on, a click follows the run or FORCEs, nothing edits (TRACE_ALLOWED, _traceGuard); editing comes back with it off.
+import { LibiCore } from './libi-core.js?v=3.94.0';
+import { getStyles } from './libi-css.js?v=3.94.0';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.94.0';
+import { LibiOnline } from './libi-online.js?v=3.94.0';
+import { LibiAiChat } from './libi-ai.js?v=3.94.0';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.93.0';
+export const LIBI_BUILD = '3.94.0';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -87,10 +90,43 @@ export function varTypeOf(entityId, hass) {
     return 'HA';
 }
 
+// [ADDED v3.94.0] Traces is read only - the user's rule (2026-11-07): while it is on, a click follows the run or FORCEs a
+// block, and nothing edits - no element chosen or changed, no Inspector, nothing moved, added or deleted, no undo, no
+// save, no project opened, no AI draft. Editing comes back when Traces is turned off. One guard (_traceGuard) sits in
+// front of every handler of the panel, and lets through only what is allowed here, so a way to edit added later is
+// closed in Traces too (CLAUDE.md RULE 39). DENIED wins over ALLOWED: a "+" inside a parallel block is in the block.
+const TRACE_DENIED = [
+    '.wire-ins', '.pal-btn', '.net-name-input', '.net-level-select', '.load-net-btn', '#addRungBtn', '.rung-comment-input',
+    '.link-cut', '.versions-net-btn', '.ver-badge', '.ver-use', '.duplicate-net-btn', '.delete-net-btn',
+].join(', ');
+const TRACE_ALLOWED = [
+    // Traces itself: on and off, Simulate or Real, Release all; a block's Online menu and what it offers (FORCE, a real
+    // run); a NET's monitor and its buttons; the question a real run asks.
+    '#onlineBtn', '#mOnline', '.online-bar', '.libi-el', '#fmOverlay', '#fmBox', '.net-monitor', '.ask-answer', '.ask-modal',
+    // Looking: fold a NET or all of them, choose a NET for the Variables bar, a NET's YAML and dashboard card and the
+    // menus that offer them, the logs, the sizes and tabs of the sidebar and the Variables bar, the search of variables.
+    '#haMenuBtn', '#hdrMenuBtn', '#mCollapse', '#collapseAllBtn', '#logsBtn', '#closeModalBtn', '[data-tog]',
+    '.net-name[data-sel]', '.net-kebab', '.show-yaml-btn', '.card-net-btn', '#closeYamlSidebar', '#copyNetCard',
+    '.rung-note-num', '.net-notice-x', '#sidebarToggle', '#sidebarGrip', '#varsFold', '#varsGrip', '#varsTabHelper',
+    '#varsTabVars', '#varsTabSearch', '#varsTabGlobal', '#varsScopeNet', '#varsScopeAll', '#varsScopeProject',
+    '#projectChip', '.vars-filter', '#varsQuery', '#varsClear',
+    // A command, not an edit: the NET's automation on or off in Home Assistant.
+    '.net-state-toggle',
+].join(', ');
+// The fields that still take input in Traces.
+const TRACE_FIELDS = '#varsQuery, .net-state-toggle';
+const TRACE_EVENTS = ['click', 'dblclick', 'contextmenu', 'pointerdown', 'mousedown', 'dragstart', 'dragenter', 'dragover',
+    'drop', 'input', 'change', 'beforeinput', 'paste', 'cut', 'keydown'];
+// What a user means to use - a blocked one says why nothing happened (_traceToast).
+const TRACE_INTERACTIVE = 'button, input, select, textarea, a, label, [draggable], [role="button"], [tabindex], [data-action], '
+    + '[data-prop], .libi-el, .el-lbl, .pin-val, .helper-row, .glob-row, .glob-tag-row, .auto-item, .project-item, .level-item';
+
 class LibiPanel extends HTMLElement {
     constructor() {
         super(); 
         this.attachShadow({ mode: 'open' }); 
+        // [ADDED v3.94.0] Traces is read only: one guard, before every handler of the panel (_traceGuard).
+        for (const type of TRACE_EVENTS) this.shadowRoot.addEventListener(type, (e) => this._traceGuard(e), true);
         this.core = new LibiCore();
         this.online = new LibiOnline();
         this.online.core = this.core;  // [ADDED v3.71.0] which rungs hang from a trigger, and from which
@@ -197,6 +233,8 @@ class LibiPanel extends HTMLElement {
     connectedCallback() { 
         this.tabIndex = 0; 
         this._keyHandler = (e) => {
+            // [ADDED v3.94.0] No undo or redo in Traces: it is read only.
+            if (this.online && this.online.enabled) return;
             if (e.ctrlKey && e.key.toLowerCase() === 'z') {
                 e.preventDefault();
                 if (e.shiftKey) { if (this.core.redo()) this._render(); }
@@ -895,6 +933,8 @@ class LibiPanel extends HTMLElement {
                 if (bIdx > 0) actions.push({ action: 'delete_branch', icon: `<small>${emptyBranch ? 'DELETE DOT' : 'DELETE BRANCH'}</small>`, danger: true, title: 'Remove this branch' });
                 else actions.push({ action: 'delete_block', icon: '<small>DELETE BLOCK</small>', danger: true, title: 'Remove the whole parallel block' });
             }
+        } else if (fm.type === 'element' && fm.online) {
+            return this.online.enabled ? this._renderOnlineMenu(fm) : '';
         } else if (fm.type === 'element') {
             const el = this.core.findEl(fm.netId, fm.rungId, fm.elId);
             if (!el) return '';
@@ -932,6 +972,94 @@ class LibiPanel extends HTMLElement {
         const bounds = this._calculateMenuBounds(fm);
         
         return `<div class="fm-overlay" id="fmOverlay"></div>${bounds.arrowStyle}<div class="palette" style="left:${x}px; top:${bounds.yPos}px; --arrow-x:${arrow}px; ${bounds.transformStyle}" id="fmBox">${rows.join('')}</div>`;
+    }
+
+    /** [ADDED v3.94.0] Traces is read only (TRACE_ALLOWED). In the capture phase of the whole panel, before any of its
+     *  handlers: in Traces, a click, a key, a drag or an input that is not allowed there stops here - a menu that was
+     *  open closes, as any click closes it, and a control the user meant to use says why nothing happened. A drag never
+     *  starts and nothing is dropped. Out of Traces it does nothing. */
+    _traceGuard(e) {
+        if (!this.online || !this.online.enabled) return;
+        const type = e.type;
+        let denied = false, allowed = false, field = false, fieldOk = false, interactive = false;
+        for (const n of (e.composedPath ? e.composedPath() : [e.target])) {
+            if (n === this.shadowRoot) break;
+            if (!(n instanceof Element)) continue;
+            denied = denied || n.matches(TRACE_DENIED);
+            allowed = allowed || n.matches(TRACE_ALLOWED) || (n.id === 'modalOverlay' && n === e.target);
+            field = field || n.matches('input, select, textarea, [contenteditable="true"]');
+            fieldOk = fieldOk || n.matches(TRACE_FIELDS);
+            interactive = interactive || n.matches(TRACE_INTERACTIVE);
+        }
+        allowed = allowed && !denied;
+        let block;
+        // Nothing in Traces is dragged or dropped, and nothing has a right-click menu (the block's opens Rename).
+        if (type === 'dragstart' || type === 'dragenter' || type === 'dragover' || type === 'drop' || type === 'contextmenu') block = true;
+        else if (type === 'pointerdown' || type === 'mousedown') block = denied || (field && !fieldOk);
+        else if (type === 'click' || type === 'dblclick') block = !allowed;
+        else if (type === 'keydown') block = !fieldOk && (field || (!allowed && ['Enter', ' ', 'Delete', 'Backspace'].includes(e.key)));
+        else block = !fieldOk;  // input, change, beforeinput, paste, cut
+        if (!block) return;
+        e.stopPropagation();
+        // A dragover let through would allow the drop; a right click keeps the browser's own menu.
+        if (e.cancelable && type !== 'dragenter' && type !== 'dragover' && type !== 'contextmenu') e.preventDefault();
+        if (type === 'click') this._closePopups();
+        if (interactive && ['click', 'dblclick', 'contextmenu', 'dragstart', 'drop', 'keydown'].includes(type)) this._traceToast();
+    }
+
+    /** [ADDED v3.94.0] Why nothing happened: Traces is on, and it is read only. */
+    _traceToast() {
+        const sr = this.shadowRoot;
+        let toast = sr.getElementById('traceToast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'traceToast';
+            toast.className = 'trace-toast';
+            toast.setAttribute('role', 'status');
+            sr.appendChild(toast);
+        }
+        toast.textContent = 'Traces is on, so nothing can be edited. Turn Traces off to edit.';
+        toast.classList.add('show');
+        clearTimeout(this._traceToastTimer);
+        this._traceToastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
+    }
+
+    /** [ADDED v3.94.0] In Traces every field that is not allowed there is read only (a list or a box: disabled), and
+     *  nothing can be dragged; out of Traces the fields it locked are as they were - the AI chat keeps its own fields
+     *  across a redraw, so they are marked, and only those are given back. */
+    _applyTraceLock() {
+        const sr = this.shadowRoot;
+        if (!this.online || !this.online.enabled) {
+            sr.querySelectorAll('[data-trace-lock]').forEach(f => {
+                if (f.getAttribute('data-trace-lock') === 'disabled') f.disabled = false;
+                else f.readOnly = false;
+                f.removeAttribute('data-trace-lock');
+            });
+            return;
+        }
+        sr.querySelectorAll('input, select, textarea').forEach(f => {
+            if (f.matches(TRACE_FIELDS) || f.hasAttribute('data-trace-lock')) return;
+            const box = f.tagName === 'SELECT' || ['checkbox', 'radio', 'range', 'color', 'file'].includes(f.type);
+            if (box ? f.disabled : f.readOnly) return;
+            if (box) f.disabled = true;
+            else f.readOnly = true;
+            f.setAttribute('data-trace-lock', box ? 'disabled' : 'readonly');
+        });
+        sr.querySelectorAll('[draggable="true"]').forEach(x => x.setAttribute('draggable', 'false'));
+    }
+
+    /** [CHANGED v3.94.0] A click anywhere closes the right-click menu, a NET's menu and the header's menu - one place
+     *  for the panel's own click and for a click Traces does not allow. */
+    _closePopups() {
+        const sr = this.shadowRoot;
+        if (this._ctx) { this._ctx = null; this._render(); return; }
+        sr.querySelectorAll('.net-menu-dropdown.show').forEach(d => d.classList.remove('show'));
+        // [ADDED v3.13.0] The overflow menu of the header closes the same way the net menus do.
+        if (this._hdrMenu) {
+            this._hdrMenu = false;
+            const hm = sr.getElementById('hdrMenu');
+            if (hm) hm.classList.remove('show');
+        }
     }
 
     // [ADDED v3.86.1] A page that cannot be drawn says so on the screen. It stayed blank, with the error in the browser's
@@ -1052,7 +1180,7 @@ class LibiPanel extends HTMLElement {
         const keep = this._scrollPlaces();
         this.shadowRoot.innerHTML = `
         <style>${getStyles()}</style>
-        <div class="panel-layout">
+        <div class="panel-layout${this.online.enabled ? ' trace-lock' : ''}">
             <div class="header">
                 <!-- [ADDED v3.45.0] On a phone Home Assistant shows no bar of its own above a custom panel, so the
                      panel carries the button that opens HA's sidebar - the same hass-toggle-menu event HA's own
@@ -1130,6 +1258,7 @@ class LibiPanel extends HTMLElement {
         this._injectNativePickers(); 
         this._paintOnline();
         this.aiChat.attach(this.shadowRoot.getElementById('aiChatMount'));
+        this._applyTraceLock();
         this._restoreScrollPlaces(keep);
         this._placeCtxMenu();
     }
@@ -1211,27 +1340,21 @@ class LibiPanel extends HTMLElement {
     }
 
     /** [ADDED v3.93.0] The Online bar over the NETs - the user's request: Simulate (FORCE, and a run in the panel only)
-     *  or Real (Home Assistant's own runs), the clock, and FORCE TRUE / FALSE on the block chosen. */
+     *  or Real (Home Assistant's own runs), and the clock. [CHANGED v3.94.0] FORCE is on the menu of the block clicked;
+     *  the bar says what a click does in each mode. */
     _onlineBarHtml() {
         const sim = this.online.mode === 'simulate';
-        const el = this._onlineChosen();
-        const forceable = sim && el && this._onlineForceable(el.el);
-        const forced = el ? this.online.forcedOf(el.netId, el.el.id) : null;
-        const what = el ? `NET ${this.core.nets.findIndex(n => n.id === el.netId) + 1} ▸ ${this.online.describe(el.el)}` : '';
         const n = this.online.forceCount();
         return `<div class="online-bar" role="toolbar" aria-label="Online">
             <span class="online-title">● ONLINE</span>
             <span class="online-clock" dir="ltr"></span>
             <span class="online-seg" role="group" aria-label="Simulate or Real">
                 <button class="online-mode${sim ? ' on' : ''}" data-mode="simulate" title="FORCE blocks and run the NET here only: nothing is sent to Home Assistant">Simulate</button>
-                <button class="online-mode${sim ? '' : ' on'}" data-mode="real" title="What Home Assistant really runs, and Run in Home Assistant">Real</button>
+                <button class="online-mode${sim ? '' : ' on'}" data-mode="real" title="Home Assistant's real runs: FORCE TRUE on a trigger runs the automation for real">Real</button>
             </span>
-            ${sim ? `<span class="online-sel" dir="auto" title="${this._esc(what)}">${el ? this._esc(what) : 'Click a block to FORCE it'}</span>
-            <button class="btn online-force${forced === true ? ' on' : ''}" data-force="true" ${forceable ? '' : 'disabled'} title="The block gives TRUE; a trigger forced TRUE starts a simulated run">FORCE TRUE</button>
-            <button class="btn online-force${forced === false ? ' on' : ''}" data-force="false" ${forceable ? '' : 'disabled'} title="The block gives FALSE">FORCE FALSE</button>
-            <button class="btn online-force" data-force="release" ${forceable && forced !== null ? '' : 'disabled'}>Release</button>
+            ${sim ? `<span class="online-note">Click a block, then FORCE TRUE or FALSE. Nothing is sent to Home Assistant.</span>
             <button class="btn" id="onlineRelease" ${n ? '' : 'disabled'}>Release all (${n})</button>`
-            : '<span class="online-note">Real: what Home Assistant runs, from its traces. FORCE works in Simulate.</span>'}
+            : '<span class="online-note">Click a trigger, then FORCE TRUE: Home Assistant runs the automation for real. Under each block: what the run did.</span>'}
         </div>`;
     }
 
@@ -1243,13 +1366,52 @@ class LibiPanel extends HTMLElement {
         clock.textContent = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
     }
 
-    /** [ADDED v3.93.0] The block chosen on the canvas, with its NET and rung, or null. */
-    _onlineChosen() {
-        const sel = this._inspectedEl;
-        if (!sel || !sel.netId || !sel.elId) return null;
-        const net = this.core.nets.find(n => n.id === sel.netId);
-        const el = net ? this.online.findEl(net, sel.elId) : null;
-        return el ? { netId: net.id, rungId: sel.rungId, net, el } : null;
+    /** [ADDED v3.94.0] A block's own menu in Online, by the block clicked - the user's screenshot (2026-11-07): FORCE was
+     *  in the bar, in Simulate only, and not found. What the block gives now and what the run did there, then what can be
+     *  done with it: FORCE TRUE / FALSE and Release in Simulate; in Real, FORCE TRUE on a trigger runs the automation in
+     *  Home Assistant (asked first), and a condition - Home Assistant checks it itself - offers Simulate. Every text from
+     *  the NET or Home Assistant is escaped. */
+    _renderOnlineMenu(fm) {
+        const net = this.core.nets.find(n => n.id === fm.netId);
+        const el = net ? this.online.findEl(net, fm.elId) : null;
+        if (!el) return '';
+        const rung = (net.rungs || []).find(r => r.id === fm.rungId) || null;
+        const sim = this.online.mode === 'simulate';
+        const forceable = this._onlineForceable(el);
+        const forced = this.online.forcedOf(net.id, el.id);
+        const res = this.online.resultOf(net.id, el.id);
+        const mark = rung ? this.online.markOf(net, rung, el) : null;
+        const no = this.core.nets.indexOf(net) + 1;
+        const word = (v) => (v === true ? 'TRUE' : v === false ? 'FALSE' : 'unknown');
+        const lines = [`<div class="onl-what" dir="auto">NET ${no} ▸ ${this._esc(this.online.describe(el))}${el.isTrigger ? ' · trigger' : ''}</div>`];
+        if (forceable && res) lines.push(`<div class="onl-line">Now: <b>${word(res.power)}</b>${forced !== null ? ` · FORCE ${word(forced)}` : ''}</div>`);
+        // The simulated run's, when this NET has one; else Home Assistant's last run (markOf).
+        const simulated = sim && this.online.sims.has(net.id);
+        if (mark) lines.push(`<div class="onl-line" dir="auto">${simulated ? 'Simulated run' : 'Last run in Home Assistant'}: ${this._esc(mark.text)}</div>`);
+        const buttons = [];
+        let note = '';
+        if (sim && forceable) {
+            buttons.push(['force-true', el.isTrigger ? 'FORCE TRUE ▶ run it' : 'FORCE TRUE', forced === true ? 'on' : '']);
+            buttons.push(['force-false', 'FORCE FALSE', forced === false ? 'on' : '']);
+            if (forced !== null) buttons.push(['release', 'Release', '']);
+            note = el.isTrigger ? 'FORCE TRUE runs its rung here, step by step. Nothing is sent to Home Assistant.' : 'Nothing is sent to Home Assistant.';
+        } else if (sim) {
+            note = 'An action is not forced: it runs when its rung reaches it. FORCE its trigger TRUE to run the rung.';
+        } else if (el.isTrigger) {
+            buttons.push(['fire', 'FORCE TRUE ▶ run it in Home Assistant', 'onl-real']);
+            note = 'Home Assistant runs the automation for real, as if this trigger happened now. You are asked first.';
+        } else if (forceable) {
+            buttons.push(['simulate', 'Switch to Simulate', '']);
+            note = 'In a real run Home Assistant checks this itself. To FORCE it, use Simulate.';
+        } else {
+            note = 'An action runs when its rung reaches it: FORCE TRUE its trigger.';
+        }
+        const acts = buttons.map(([act, label, cls]) => `<button class="btn onl-btn ${cls}" data-onl="${act}">${this._esc(label)}</button>`).join('');
+        const x = Math.min(Math.max(fm.x, 170), window.innerWidth - 170);
+        const arrow = Math.max(12, Math.min(300, 160 + (fm.x - x)));
+        const bounds = this._calculateMenuBounds(fm);
+        return `<div class="fm-overlay" id="fmOverlay"></div>${bounds.arrowStyle}<div class="palette online-menu" role="dialog" aria-label="Online" style="left:${x}px; top:${bounds.yPos}px; --arrow-x:${arrow}px; ${bounds.transformStyle}" id="fmBox">
+            ${lines.join('')}${acts ? `<div class="onl-acts">${acts}</div>` : ''}<div class="onl-note">${this._esc(note)}</div></div>`;
     }
 
     /** [ADDED v3.93.0] What can be forced: what a rung tests - a contact, a comparison, a trigger. An action is what a
@@ -1258,16 +1420,17 @@ class LibiPanel extends HTMLElement {
         return !!el && (el.isTrigger || this.online.kindOf(el) === 'cond');
     }
 
-    /** [ADDED v3.93.0] FORCE TRUE / FALSE, or released, on the block chosen - in Simulate only. A trigger forced TRUE
-     *  starts a simulated run of its rung. Nothing is sent to Home Assistant. */
-    _onlineForce(value) {
-        const c = this._onlineChosen();
-        if (!c || this.online.mode !== 'simulate' || !this._onlineForceable(c.el)) return;
-        this.online.force(c.netId, c.el.id, value);
-        const rung = (c.net.rungs || []).find(r => r.id === c.rungId);
+    /** [ADDED v3.93.0] FORCE TRUE / FALSE, or released, on a block - in Simulate only. A trigger forced TRUE starts a
+     *  simulated run of its rung. Nothing is sent to Home Assistant. [CHANGED v3.94.0] On the block of the menu. */
+    _onlineForce(netId, rungId, elId, value) {
+        const net = (this.core.nets || []).find(n => n.id === netId);
+        const el = net ? this.online.findEl(net, elId) : null;
+        if (!el || this.online.mode !== 'simulate' || !this._onlineForceable(el)) return;
+        this.online.force(net.id, el.id, value);
+        const rung = (net.rungs || []).find(r => r.id === rungId);
         const head = rung ? this.core.triggerHead(rung) : null;
-        const isHead = head && (head.id === c.el.id || (head.type === 'parallel' && c.el.isTrigger));
-        if (value === true && isHead) this.online.startSim(c.net, rung.id, this._hass);
+        const isHead = head && (head.id === el.id || (head.type === 'parallel' && el.isTrigger));
+        if (value === true && isHead) this.online.startSim(net, rung.id, this._hass);
         this._render();
         this._paintOnline();
     }
@@ -1318,60 +1481,16 @@ class LibiPanel extends HTMLElement {
         }
     }
 
-    /** [ADDED v3.93.0] What a real run of an automation can reach, read from Home Assistant's config API as it is now:
-     *  every domain.object it names (names), the entities of this Home Assistant its actions name (entities), and what
-     *  could not be read (unread) - the automation, or a script it calls, followed two calls deep. */
-    async _realRunReach(automationId) {
-        const names = new Set();
-        const driven = new Set();
-        const unread = [];
-        const seen = new Set();
-        const read = async (domain, key, depth) => {
-            if (seen.has(`${domain}.${key}`)) return;
-            seen.add(`${domain}.${key}`);
-            let config;
-            try {
-                config = await this._hass.callApi('GET', `config/${domain}/config/${encodeURIComponent(key)}`);
-            } catch (err) {
-                unread.push(`${domain} ${key}`);
-                return;
-            }
-            const tokens = (value) => [...JSON.stringify(value || {}).matchAll(/\b([a-z_]+)\.([a-z0-9_]+)\b/g)].map(m => `${m[1]}.${m[2]}`);
-            const found = tokens(config);
-            found.forEach(n => names.add(n));
-            const c = config && typeof config === 'object' ? config : {};
-            // What it switches: the targets of the actions it calls - a condition calls none, so what it reads is not one.
-            const walk = (v) => {
-                if (Array.isArray(v)) { v.forEach(walk); return; }
-                if (!v || typeof v !== 'object') return;
-                const call = v.action || v.service;
-                if (typeof call === 'string' && call.includes('.')) tokens({ target: v.target, entity_id: v.entity_id, data: v.data }).forEach(n => driven.add(n));
-                Object.values(v).forEach(walk);
-            };
-            walk(c.actions || c.action || c.sequence || []);
-            for (const n of found) {
-                const [d, k] = n.split('.');
-                if (d === 'script' && !['turn_on', 'turn_off', 'toggle', 'reload'].includes(k) && depth < 2) await read('script', k, depth + 1);
-            }
-        };
-        if (automationId) await read('automation', automationId, 0);
-        else unread.push('the automation');
-        const states = (this._hass && this._hass.states) || {};
-        return { names: [...names], entities: [...driven].filter(n => states[n]), unread };
-    }
-
-    /** [ADDED v3.93.0] The entities a NET's actions drive: what a real run switches. */
-    _netTargets(net) {
-        const out = new Set();
-        const walk = (els) => (els || []).forEach(el => {
-            const t = el.type || '';
-            if (t.startsWith('coil') && el.label) out.add(String(el.label));
-            if ((t === 'move' || t === 'notify' || t.startsWith('math')) && el.target) out.add(String(el.target));
-            (el.branches || []).forEach(walk);
-            walk(el.sequence);
-        });
-        (net.rungs || []).forEach(r => walk(r.elements));
-        return [...out].filter(id => /^[a-z_]+\.[a-z0-9_]+$/.test(id));
+    /** [ADDED v3.94.0] Which trigger of Home Assistant's automation a trigger block is, for libi/online_fire: its place
+     *  in the YAML (src) and its id when it has one; its id alone; or, for a NET drawn in LIBI, the NET and the block -
+     *  LIBI's backend finds its place as the compiler gives it. Nothing for a run with no trigger. */
+    _onlineTriggerOf(net, el) {
+        if (!el) return {};
+        const own = String(el.src || '').match(/^triggers\[(\d+)\]/);
+        const id = el.trigId !== undefined && el.trigId !== null && el.trigId !== '' ? String(el.trigId) : null;
+        if (own) return id !== null ? { trigger: Number(own[1]), trigger_id: id } : { trigger: Number(own[1]) };
+        if (id !== null) return { trigger_id: id };
+        return { net: JSON.parse(JSON.stringify(net)), element_id: el.id };
     }
 
     /** [ADDED v3.93.0] Whether a NET has changes not saved: it is compared with what the last load or save had. */
@@ -1384,10 +1503,13 @@ class LibiPanel extends HTMLElement {
         return !now || !saved || one(now) !== one(saved);
     }
 
-    /** [ADDED v3.93.0] Run in Home Assistant - the Online bar's Real. The automation Home Assistant has, as it is saved,
-     *  run with Home Assistant's own automation.trigger, once the user confirms - checking its conditions or skipping
-     *  them. Never for a lock, an alarm or a cover (RULE 9), never over changes not saved, never for one turned off. */
-    async _onlineRealRun(netId) {
+    /** [ADDED v3.93.0] A real run, in Online's Real. [CHANGED v3.94.0] FORCE TRUE on a trigger block (elId) runs the
+     *  automation in Home Assistant as if that trigger fired - its rung runs, which automation.trigger never ran - and
+     *  the monitor's Run without a trigger is Home Assistant's own Run. LIBI's backend (libi/online_fire) says what the
+     *  run would be, from what Home Assistant has, or why it is not run - a lock, an alarm or a cover it can reach, one
+     *  turned off; the user is asked; then the backend runs it if the automation is still what the user was shown. Never
+     *  over changes not saved: Home Assistant would run what it has, not this drawing. */
+    async _onlineRealRun(netId, elId = null) {
         const net = (this.core.nets || []).find(n => n.id === netId);
         if (!net || this.online.mode !== 'real') return;
         const ent = this.online.findAutomationEntity(this._hass, net);
@@ -1396,35 +1518,29 @@ class LibiPanel extends HTMLElement {
             alert('This NET has changes that are not saved. Home Assistant would run the automation it has, not this drawing: press SAVE & COMPILE first, or try it in Simulate.');
             return;
         }
-        if (ent.state !== 'on') { alert('It is turned off in Home Assistant, so it does not run. Turn it on first.'); return; }
-        // What Home Assistant would run is the automation it has, and the scripts that calls - read from it now, not
-        // taken from the drawing (RULE 9, RULE 11).
-        const reach = await this._realRunReach(String((ent.attributes || {}).id || ''));
-        if (reach.unread.length) {
-            alert(`LIBI could not read ${reach.unread.join(', ')} from Home Assistant, so it cannot tell what a real run would do, and does not run it. Try it in Simulate.`);
-            return;
-        }
-        const risky = [...new Set([...this._netTargets(net), ...reach.names].filter(id => NEVER_RUN_REAL.includes(id.split('.')[0])))];
-        if (risky.length) {
-            alert(`LIBI does not run this automation for real: it drives ${risky.join(', ')}. Try it in Simulate, or run it from Home Assistant's own editor.`);
-            return;
-        }
-        const drives = reach.entities.filter(id => id !== ent.entity_id);
-        const ids = (net.rungs || []).some(r => (r.elements || []).some(e => e.trigId !== undefined));
-        const name = net.name || ent.entity_id;
-        const answer = await this._ask(`Run "${name}" in Home Assistant?`,
-            `This really runs the automation: what it switches, switches${drives.length ? ` (${drives.join(', ')})` : ''}.${ids
-                ? ' Home Assistant starts it without a trigger, so a rung that runs only for its own trigger does not run: to see those, make the trigger happen, or try it in Simulate.' : ''}`,
-            [{ id: 'check', label: 'Run, checking its conditions', kind: 'btn-primary' },
-             { id: 'skip', label: 'Run, skipping its conditions', kind: 'btn-danger' },
-             { id: 'cancel', label: 'Cancel', kind: 'btn-ghost' }]);
-        if (answer !== 'check' && answer !== 'skip') return;
-        try {
-            await this._hass.callService('automation', 'trigger', { entity_id: ent.entity_id, skip_condition: answer === 'skip' });
-        } catch (err) {
-            alert('Home Assistant did not run it: ' + (err && err.message ? err.message : String(err)));
-            return;
-        }
+        const el = elId ? this.online.findEl(net, elId) : null;
+        const ask = { type: 'libi/online_fire', entity_id: ent.entity_id, ...this._onlineTriggerOf(net, el) };
+        const ws = (m) => this._hass.connection.sendMessagePromise(m);
+        const failed = (err) => alert('LIBI could not reach Home Assistant, so nothing was run: ' + (err && err.message ? err.message : String(err)));
+        let plan;
+        try { plan = await ws(ask); } catch (err) { failed(err); return; }
+        if (!plan || !plan.ok) { alert((plan && plan.reason) || 'Home Assistant did not say what the run would be, so it was not run.'); return; }
+        const trig = plan.trigger;
+        const which = trig ? `trigger ${trig.idx + 1}${trig.id && trig.id !== String(trig.idx) ? ` (${trig.id})` : ''}` : '';
+        const drives = (plan.drives || []).length ? ` (${plan.drives.join(', ')})` : '';
+        const answers = [{ id: 'run', label: 'Run it', kind: 'btn-primary' }];
+        if (plan.conditions) answers.push({ id: 'skip', label: "Run it, skipping the automation's own conditions", kind: 'btn-danger' });
+        answers.push({ id: 'cancel', label: 'Cancel', kind: 'btn-ghost' });
+        const answer = await this._ask(trig ? `FORCE TRUE: run "${plan.name}" in Home Assistant?` : `Run "${plan.name}" in Home Assistant without a trigger?`,
+            (trig ? `Home Assistant runs it for real, as if ${which} happened now` : 'Home Assistant runs it for real, with no trigger: a rung that runs only for its own trigger does not run')
+            + `. What it switches, switches${drives}. Home Assistant checks the conditions of each rung, as in a real run.`
+            + (trig ? ' What the trigger itself would tell (trigger.to_state and the like) is empty.' : ''), answers);
+        if (answer !== 'run' && answer !== 'skip') return;
+        let done;
+        try { done = await ws({ ...ask, fire: true, before: plan.before, skip_condition: answer === 'skip' }); } catch (err) { failed(err); return; }
+        if (!done || !done.ok || !done.fired) { alert((done && done.reason) || 'Home Assistant did not run it.'); return; }
+        // The run is Home Assistant's: its trace says what it did, block by block.
+        await new Promise(r => setTimeout(r, 300));
         await this._pollTraces();
         this._paintOnline();
     }
@@ -1440,6 +1556,10 @@ class LibiPanel extends HTMLElement {
             return `<div class="sidebar-hdr">${card ? 'Dashboard card' : 'Net YAML'}: ${this._esc(net.name)}</div><div class="sidebar-body" style="padding:0; display:flex; flex-direction:column; background:#1e1e1e;">${hint}<textarea class="yaml-preview-box" readonly>${this._esc(this._previewYamlContent)}</textarea><div style="padding: 16px;">${copy}<button class="btn btn-ghost" id="closeYamlSidebar" style="width:100%; color:white; border-color:var(--secondary-text-color, #555);">${card ? 'Close' : 'Close YAML Preview'}</button></div></div>`;
         }
 
+        // [ADDED v3.94.0] The Inspector edits, so in Traces it waits until Traces is turned off.
+        if (this.online && this.online.enabled) {
+            return `<div class="sidebar-hdr">Inspector</div><div class="sidebar-body"><div class="trace-locked-note" role="note"><b>Traces is on: nothing can be edited.</b><span>Click a block for its menu: FORCE, and what the run did there.</span><span>Turn Traces off to edit.</span></div></div>`;
+        }
         if (!this._inspectedEl) {
             return `<div class="sidebar-hdr">Inspector</div><div class="sidebar-body"><p style="color:var(--secondary-text-color, #757575);">Select any element on the canvas to view and edit its properties.</p></div>`;
         }
@@ -5017,6 +5137,8 @@ class LibiPanel extends HTMLElement {
             }
             // Clicking the name written above a block opens the chooser for that block.
             all('.el-lbl', 'click', e => {
+                // [CHANGED v3.94.0] In Online the click is the block's: its Online menu (FORCE), not the chooser.
+                if (this.online && this.online.enabled) return;
                 const block = e.currentTarget.closest('.libi-el');
                 if (!block) return;
                 e.stopPropagation();
@@ -5422,16 +5544,7 @@ class LibiPanel extends HTMLElement {
             this._render();
         });
         
-        sr.addEventListener('click', () => { 
-            if (this._ctx) { this._ctx = null; this._render(); return; }
-            sr.querySelectorAll('.net-menu-dropdown.show').forEach(d => d.classList.remove('show')); 
-            // [ADDED v3.13.0] The overflow menu of the header closes the same way the net menus do.
-            if (this._hdrMenu) {
-                this._hdrMenu = false;
-                const hm = sr.getElementById('hdrMenu');
-                if (hm) hm.classList.remove('show');
-            }
-        });
+        sr.addEventListener('click', () => this._closePopups());
 
         // [CHANGED v3.45.0] The same four actions from the header and, on a phone, from the menu.
         const doUndo = () => { this._hdrMenu = false; if (this.core.undo()) this._render(); else this._render(); };
@@ -5469,6 +5582,12 @@ class LibiPanel extends HTMLElement {
             this.online.enabled = !this.online.enabled;
             // [ADDED v3.93.0] Leaving Online leaves nothing forced or simulated behind (33a.1).
             if (!this.online.enabled) this.online.reset();
+            // [ADDED v3.94.0] A block's menu is Online's or the editor's: it does not survive the switch (33a.1). Nor
+            // the right-click menu, the entity chooser, or a window that edits - Traces is read only.
+            this._floatingMenu = null;
+            this._ctx = null;
+            this._ep = null;
+            if (this.online.enabled && this._modal && this._modal !== 'ask' && this._modal !== 'logs') this._modal = null;
             this._render();
             this._paintOnline();
             if (this.online.enabled) this._pollTraces().then(() => this._paintOnline());
@@ -5482,10 +5601,21 @@ class LibiPanel extends HTMLElement {
             this._render();
             this._paintOnline();
         });
-        all('.online-force', 'click', e => {
+        // [ADDED v3.94.0] The menu of a block in Online.
+        all('.onl-btn', 'click', e => {
             e.stopPropagation();
-            const v = e.currentTarget.getAttribute('data-force');
-            this._onlineForce(v === 'true' ? true : v === 'false' ? false : null);
+            const act = e.currentTarget.getAttribute('data-onl');
+            const fm = this._floatingMenu;
+            this._floatingMenu = null;
+            if (!fm) { this._render(); return; }
+            if (act === 'force-true' || act === 'force-false' || act === 'release') {
+                this._onlineForce(fm.netId, fm.rungId, fm.elId, act === 'force-true' ? true : act === 'force-false' ? false : null);
+                return;
+            }
+            if (act === 'simulate') this.online.setMode('simulate');
+            this._render();
+            this._paintOnline();
+            if (act === 'fire') this._onlineRealRun(fm.netId, fm.elId);
         });
         on('onlineRelease', 'click', (e) => {
             e.stopPropagation();
@@ -5830,10 +5960,18 @@ class LibiPanel extends HTMLElement {
                 focusProp: focusProp 
             }; 
             this._inspectedNetYaml = null; 
-            // [ADDED v3.12.0] New content in the sidebar means the sidebar should be showing.
-            this._wakeSidebar();
-            
-            if (e.target.closest('.el-ico') || e.target.closest('.plc-block')) { 
+            // [ADDED v3.12.0] New content in the sidebar means the sidebar should be showing. [CHANGED v3.94.0] Not in
+            // Online: the block's own menu is the answer there, and on a phone the sidebar would cover it.
+            const online = !!(this.online && this.online.enabled);
+            if (!online) this._wakeSidebar();
+
+            // [CHANGED v3.94.0] In Online a click anywhere on a block opens its Online menu (FORCE), not the editing one.
+            if (online) {
+                const rect = parent.getBoundingClientRect();
+                this._floatingMenu = { type: 'element', online: true, netId: parent.getAttribute('data-nid'), rungId: parent.getAttribute('data-rid'),
+                    elId: parent.getAttribute('data-eid'), x: rect.left + rect.width / 2, y: rect.top, bottom: rect.bottom };
+                this._inspectedEl.focusProp = null;
+            } else if (e.target.closest('.el-ico') || e.target.closest('.plc-block')) { 
                 const rect = parent.getBoundingClientRect(); 
                 this._floatingMenu = { 
                     type: 'element', 

@@ -11,10 +11,10 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.85.0 | 2026-11-04] Purpose: same_config - two configs that mean the same, compared as the round trip
-#   compares them: Home Assistant's config API writes the current spelling of what it saves (trigger is triggers).
 # [ADDED v3.88.0 | 2026-11-05] Purpose: A MOVE TTS to a recipient of LIBI Global is written as to a phone - the data the
 #   phone's app reads, which the recipient's script passes to each of its phones - not as tts.speak on a speaker.
+# [ADDED v3.94.0 | 2026-11-07] Purpose: trigger_place - where the trigger an element of a NET is sits in the automation
+#   it compiles to, so Online's Real fires that trigger of a NET drawn in LIBI.
 # [ADDED v1.69.0] Output perfectly formed logic for standard triggers, retrieving native YAML dictionary if present via raw_trigger.
 # [ADDED v3.5.0 | 2026-08-24] Purpose: A net now carries a level. automation compiles to the
 #   automation schema exactly as before, script compiles to alias plus sequence, and scene
@@ -1296,6 +1296,29 @@ def _collect_triggers(net):
                 out.pop("for", None)  # taken away, or a kind of trigger with no for (a time, a sun)
         triggers.append(out)
     return triggers, trig_ids
+
+
+def trigger_place(net, element_id):
+    """[ADDED v3.94.0] Where the trigger an element of a NET is sits in the automation the NET compiles to: its place in
+    triggers and the trigger as compiled, or None when the element is no trigger of the NET. Online's Real fires the
+    trigger at that place (online.py), once Home Assistant's automation has the same trigger there."""
+    rungs = merge_linked_rungs(net or {})
+    order = []
+    hit = None
+    for rung in rungs:
+        for el, _nxt in _walk_pairs(rung.get("elements", [])):
+            if not el.get("isTrigger"):
+                continue
+            key = _trigger_key(el)
+            if key not in order:
+                order.append(key)
+            if hit is None and el.get("id") == element_id:
+                hit = key
+    if hit is None:
+        return None
+    triggers, _ids = _collect_triggers({"rungs": rungs})
+    idx = order.index(hit)
+    return idx, triggers[idx]
 
 
 def _walk_pairs(elements):

@@ -11,10 +11,11 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [CHANGED v3.92.0 | 2026-11-06] Purpose: libi/global also says, for each entity named in LIBI only, which automations,
-#   scripts and scenes of Home Assistant use it (name_users) - the user's request: those names in the Global tab.
 # [CHANGED v3.93.0 | 2026-11-06] Purpose: libi/project_open and libi/save_done give the key each NET has in Home
 #   Assistant (keys): the panel's Online finds the automation of a NET drawn in LIBI, and its trace, by it.
+# [ADDED v3.94.0 | 2026-11-07] Purpose: libi/online_fire - Online's Real runs an automation in Home Assistant as if the
+#   trigger FORCE TRUE was pressed on fired (online.py), after the user confirmed; never one that can reach a lock, an
+#   alarm or a cover.
 import asyncio
 import copy
 import hashlib
@@ -38,7 +39,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util.file import write_utf8_file_atomic
 
-from . import ai, recipients
+from . import ai, online, recipients
 from .const import RECIPIENT_PREFIX
 from .libi_to_yaml import ast_to_yaml, verify_round_trip, net_level, same_config, slugify
 from .yaml_to_libi import called_actions, yaml_to_ast
@@ -1249,7 +1250,7 @@ def async_register_websockets(hass: HomeAssistant) -> None:
         ws_handle_ai_status, ws_handle_ai_plan, ws_handle_ai_build,
         ws_handle_net_versions, ws_handle_net_helpers, ws_handle_local_names, ws_handle_local_name_set,
         ws_handle_phones, ws_handle_global, ws_handle_global_plan, ws_handle_global_done,
-        ws_handle_global_move_plan, ws_handle_global_move_done,
+        ws_handle_global_move_plan, ws_handle_global_move_done, ws_handle_online_fire,
     ):
         websocket_api.async_register_command(hass, handler)
     _LOGGER.debug("[libi] WebSocket commands registered")
@@ -1647,6 +1648,37 @@ async def ws_handle_save_check(hass: HomeAssistant, connection: websocket_api.Ac
     connection.send_result(msg["id"], await hass.async_add_executor_job(
         _save_check_sync, hass, slug, msg["revision"], msg["domain"], msg["key"], msg["before"], msg["new"],
         msg["stamp"]))
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "libi/online_fire",
+    vol.Required("entity_id"): vol.All(str, vol.Match(r"^automation\.[a-z0-9_]+$")),
+    vol.Optional("trigger", default=None): vol.Any(None, vol.All(int, vol.Range(min=0, max=9999))),
+    vol.Optional("trigger_id", default=None): vol.Any(None, vol.All(str, vol.Length(max=255))),
+    vol.Optional("net", default=None): vol.Any(None, dict),
+    vol.Optional("element_id", default=None): vol.Any(None, vol.All(str, vol.Length(max=255))),
+    vol.Optional("skip_condition", default=False): bool,
+    vol.Optional("fire", default=False): bool,
+    vol.Optional("before", default=""): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_handle_online_fire(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """[ADDED v3.94.0] Online's Real (online.py): without fire, what a run of the automation as if the trigger fired
+    would be - or why LIBI does not run it - for the panel to ask the user. With fire, after the user confirmed: the plan
+    is made again, and the run starts only when it is still the automation the user was shown (before). An
+    administrator's action, as running an automation is in Home Assistant's own editor."""
+    answer, entity, variables = online.fire_plan(hass, msg["entity_id"], msg["trigger"], msg["trigger_id"],
+                                                 msg["net"], msg["element_id"])
+    if not answer["ok"] or not msg["fire"]:
+        connection.send_result(msg["id"], answer)
+        return
+    if msg["before"] != answer["before"]:
+        connection.send_result(msg["id"], {"ok": False, "stale": True, "reason": (
+            "The automation changed in Home Assistant since you were asked, so it was not run. Try again.")})
+        return
+    online.fire(hass, entity, variables, msg["skip_condition"], connection.context(msg))
+    connection.send_result(msg["id"], {**answer, "fired": True})
 
 
 # [ADDED v3.77.0] ------------------------------------------------------- the local variables of a NET

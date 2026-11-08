@@ -61,6 +61,7 @@ The software is built upon the **IEC 61131-3** standard, the international stand
 * **Nothing is written over a change made while you decide.** Just before each change goes to Home Assistant, LIBI checks it again. If that automation, script or scene changed in the meantime - in Home Assistant's own editor, or from another LIBI page - it is not sent, nor anything after it, and LIBI says so: press **SAVE & COMPILE** again. A LIBI page opened before another page saved the same project saves nothing, and asks you to open the project again, so it never writes over that save.
 * **Changes not saved:** closing a project, opening another one or leaving LIBI with changes that are not saved asks whether to save them first.
 * **Traces - the online view of a PLC:** press **Traces** in the header (on a phone, in the menu); the **ONLINE** bar opens over the NETs.
+  * **Read only:** while Traces is on, a click only follows the run or FORCEs a block. Nothing can be edited - no element added, changed, moved or deleted, no Inspector, no undo, no save, no project opened, no AI draft - and a click on one of those says so. Turn Traces off to edit. The automation's on/off switch still works.
   * **Over each NET**, a monitor shows:
     * the clock now
     * whether its automation is on or off in Home Assistant, and whether it is running
@@ -71,15 +72,19 @@ The software is built upon the **IEC 61131-3** standard, the international stand
     * **OFFLINE** or **NOT IN HA** when its entity is unavailable or gone
     * for a comparison, **IN1** and **IN2**, for example the clock now and the time it waits for
     * for a TON, the time left, counting down: the *for* of a trigger, or the delay a run is in
-  * **The last real run**, from Home Assistant's own trace, is marked on each block: ▶ the trigger that started it, ✓ what held and what ran, ✗ the condition where it stopped, ⚠ an action that failed (point at the mark to read Home Assistant's reason), ⏳ the step it is in. For a NET you drew in LIBI, the run is shown in its monitor rather than on each block.
+  * **The last real run**, from Home Assistant's own trace, is written under each block: **RUN ▶ started the run** (the trigger that started it), **RUN ✓ true** / **RUN ✓ done**, **RUN ✗ false: stopped here**, **RUN ⚠ error**, **RUN ⏳ 00:01:20** (the step it is in, counting down), **RUN – not reached**. A run started with no trigger says so in the monitor. For a NET you drew in LIBI, the run is shown in its monitor rather than on each block.
+  * **Click a block** to open its menu, next to the block: what it gives now, what the run did there (with Home Assistant's reason for an error), and what you can do with it.
   * **Simulate** (the default):
-    * Click a block, then **FORCE TRUE** or **FORCE FALSE** in the **ONLINE** bar at the top of the canvas.
-    * A trigger forced TRUE runs its rung inside LIBI only: each condition, each action it *would* run, each TON counting down (⏭ ends one at once).
+    * In the block's menu, **FORCE TRUE** or **FORCE FALSE**; **Release** frees it, and **Release all** in the **ONLINE** bar frees every block.
+    * A trigger forced TRUE runs its rung inside LIBI only: each condition, each action it *would* run, each TON counting down (⏭ ends one at once). Lines under the blocks start with **SIM**.
     * Nothing is sent to Home Assistant, and no device moves.
   * **Real:**
-    * **Run in Home Assistant** runs the saved automation for real, after you choose *checking its conditions* or *skipping them*.
-    * It is never offered for an automation that drives a lock, an alarm or a cover, one with changes not saved, or one that is turned off.
-    * Home Assistant starts it without a trigger, so a rung that runs only for its own trigger does not run. To see such a rung, make its trigger happen, or use Simulate.
+    * Click a trigger, then **FORCE TRUE ▶ run it in Home Assistant**: Home Assistant runs the saved automation for real, as if that trigger happened now, so the rung of that trigger runs. You are asked first; when the automation has conditions of its own, you can also skip them. The result appears under each block, from Home Assistant's trace.
+    * Home Assistant checks the conditions of each rung itself. To force one, use Simulate (a condition's menu has **Switch to Simulate**).
+    * LIBI does not run an automation for real when it can reach a lock, an alarm or a cover - named in it, in a script it calls, or in an area, device, floor or label it targets - or when it picks what it switches with a template. Nor one with changes not saved, or one that is turned off.
+    * What the trigger itself would tell (`trigger.to_state` and the like) is empty in such a run.
+    * Another automation that starts because of what the run switched is not checked: it runs as it would if you had switched that yourself.
+    * **Run without a trigger**, over each NET, is Home Assistant's own Run: a rung that runs only for its own trigger does not run.
 * **The variables of a NET, or of the whole project:** click the title of a NET and the **Variables** bar at the bottom lists only the variables that NET uses; click the project's name in the header and it lists the variables of every NET in the project. Clicking an element chooses its NET too.
 * **Global - the phones a message goes to, in one place:** the **Global** tab of the **Variables** bar holds your *global variables*: a recipient such as "Guy's phone" or "Yulia and Guy", made of the phones you tick (one, or several - a message then goes to all of them at once). A **MOVE NOTIFY / TTS** block sends to the recipient picked in its **Send to**, where global variables are listed first. When you replace a phone, change it once in Global - untick the old phone, tick the new one, **Save** - and every NET of every project sends to the new phone, without saving any NET again. A message read aloud is read aloud by Android phones; an iPhone shows the spoken text.
 * **Replace a phone with its global variable:** after you save a global variable, LIBI lists every automation and script that still sends straight to its phone - those made in Home Assistant's editor too - and asks before it changes any. Untick the ones to keep and press **Replace**: only the action of those steps changes, from the phone to the global variable; the message, title and data stay as they are. A step that sends more than a message, a title and data, a NET drawn in another LIBI project, and a global variable of several phones are not replaced, and LIBI says why.
@@ -134,6 +139,7 @@ Download `libi.zip` from the [latest release](https://github.com/GuyAzria/Libi/r
 * The version history of each project is stored next to it, as `<project>.versions.json` (up to 30 versions per NET; the one that runs is always kept). Deleting a project deletes its history; the automations stay in Home Assistant.
 * Each **global variable** (LIBI ▸ Global) is a script in `scripts.yaml`, `script.libi_send_to_<name>`, named `LIBI Global: <name>` in Home Assistant, and saved through the same config API. Its phones are kept only there; LIBI keeps no copy. If you change it in Home Assistant's script editor, LIBI shows it as edited, and **Save** in LIBI writes it again as LIBI writes it. A global variable that an automation still sends to is not deleted.
 * **Replace** (in Global) changes only the automations and scripts you tick, after you confirm, and in them only the action of the steps that sent straight to the phone. Home Assistant writes the old `service:` key of those steps as `action:`, as its own editor does.
+* **Traces** writes nothing. Its **Real** mode runs a saved automation in Home Assistant only after you confirm, and never one that can reach a lock, an alarm or a cover. The run is in that automation's trace in Home Assistant, which says *LIBI: FORCE TRUE*.
 * A name you give an entity **in LIBI only** (Rename ▸ *In LIBI only*, for example for an entity Home Assistant cannot rename because it has no unique ID) is stored in `config/libi/local_names.json`, one file for every project. LIBI shows it wherever it shows that entity; Home Assistant never sees it.
 
 ## **🤖 AI Chat (beta)**

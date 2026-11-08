@@ -14,13 +14,16 @@
  */
 /**
  * LIBI Panel - Styles
- * v3.93.0
+ * v3.94.0
  */
-// [CHANGED v3.92.0 | 2026-11-06] Purpose: "Named in LIBI" in the Global tab (.glob-sub, .glob-tags, .glob-tag-del): the
-//   entities named in LIBI only, under the recipients, sized as they are.
 // [CHANGED v3.93.0 | 2026-11-06] Purpose: Online as a PLC's online view and tracer: the Online bar (.online-*), a
 //   NET's monitor (.net-monitor, .mon-*), a block offline or forced, its TON's time left, IN1 and IN2, and the mark of
 //   what the last run did at it (.run-mark). FORCE is magenta, as on a PLC; what is running is blue.
+// [CHANGED v3.94.0 | 2026-11-07] Purpose: The user's screenshot: the run's mark is a line in words under the block
+//   (.live-run), no longer a circle half outside it (.run-mark is gone), and the lines start below the Trigger label
+//   (.below-tag), which covered IN1. A block's Online menu (.online-menu, .onl-*). The bar sticks to the very top of the
+//   canvas (the canvas's padding showed the NET above it). Traces is read only (.trace-lock): what edits is dimmed or
+//   hidden, a click on it says why (.trace-toast), and the Inspector waits (.trace-locked-note).
 export const getStyles = () => `
 :host { display: block; height: 100vh; overflow-y: hidden; background: var(--primary-background-color, #f5f5f5); color: var(--primary-text-color, #212121); font-family: var(--primary-font-family, sans-serif); box-sizing: border-box; direction: ltr !important; text-align: left; }
 /* [ADDED v3.35.0] Colour tokens. The light values are the colours the panel always used; the
@@ -554,16 +557,14 @@ export const getStyles = () => `
 .net-live-note { font-size: 11px; color: var(--libi-ok); background: var(--libi-ok-bg); border: 1px solid var(--libi-ok-border); border-radius: 10px; padding: 2px 8px; margin-left: 8px; }
 
 /* [ADDED v3.93.0] Online as a PLC's online view and tracer. */
-.online-bar { position: sticky; top: 0; z-index: 8; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 12px; background: var(--card-background-color, #fff); border: 1px solid var(--libi-ok-border); border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,.08); min-width: 0; }
+.online-bar { position: sticky; top: -20px; z-index: 8; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 12px; background: var(--card-background-color, #fff); border: 1px solid var(--libi-ok-border); border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,.08); min-width: 0; }
 .online-title { font-weight: 900; font-size: 12px; color: var(--libi-ok); letter-spacing: .5px; }
 .online-clock { font-family: monospace; font-weight: 800; font-size: 13px; }
 .online-seg { display: inline-flex; border: 1px solid var(--divider-color, #ccc); border-radius: 18px; overflow: hidden; }
 .online-mode { border: none; background: none; padding-inline: 14px; min-height: 34px; font-weight: 700; cursor: pointer; color: var(--primary-text-color, #212121); }
 .online-mode.on { background: var(--libi-ok-bg); color: var(--libi-ok-strong); }
-.online-sel { font-size: 12px; max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--secondary-text-color, #757575); }
-.online-note { font-size: 12px; color: var(--secondary-text-color, #757575); }
-.online-force, #onlineRelease { min-height: 34px; }
-.online-force.on { background: var(--libi-force-bg); color: var(--libi-force); border-color: var(--libi-force); }
+.online-note { font-size: 12px; color: var(--secondary-text-color, #757575); min-width: 0; flex: 1 1 260px; }
+#onlineRelease { min-height: 34px; }
 .net-monitor { display: flex; flex-direction: column; gap: 4px; padding: 6px 12px; background: var(--libi-tint); border-bottom: 1px solid var(--divider-color, #eee); min-width: 0; }
 .mon-line { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; min-width: 0; }
 .mon-chip { font-size: 11px; border-radius: 10px; padding: 2px 8px; border: 1px solid var(--divider-color, #ddd); background: var(--card-background-color, #fff); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-sizing: border-box; }
@@ -582,16 +583,32 @@ export const getStyles = () => `
 .live-state { font-size: 10px; font-weight: 900; color: var(--error-color, #db4437); background: var(--libi-err-bg); border: 1px solid var(--error-color, #db4437); border-radius: 4px; padding: 1px 5px; }
 .live-timer { font-size: 11px; font-weight: 800; font-family: monospace; color: var(--libi-active); background: var(--libi-active-bg); border: 1px solid var(--libi-active); border-radius: 4px; padding: 1px 5px; }
 .live-sim { font-size: 10px; font-weight: 800; color: var(--libi-force); background: var(--libi-force-bg); border-radius: 4px; padding: 1px 5px; }
-.run-mark { position: absolute; top: -9px; inset-inline-end: -9px; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 900; color: #fff; z-index: 7; box-shadow: 0 1px 3px rgba(0,0,0,.3); pointer-events: auto; }
-.run-mark.run-fired, .run-mark.run-true, .run-mark.run-done { background: var(--libi-ok); }
-.run-mark.run-false { background: var(--libi-notice-head); }
-.run-mark.run-error { background: var(--error-color, #db4437); }
-.run-mark.run-active { background: var(--libi-active); animation: livePulse 1.2s ease-out infinite; }
-.run-mark.run-skip, .run-mark.run-idle { background: var(--disabled-text-color, #9e9e9e); }
+.live-val.below-tag { top: calc(100% + 25px); }
+.live-run { font-size: 10px; font-weight: 900; border-radius: 4px; padding: 1px 5px; border: 1px solid; }
+.live-run.run-fired, .live-run.run-true, .live-run.run-done { color: var(--libi-ok-strong); background: var(--libi-ok-bg); border-color: var(--libi-ok); }
+.live-run.run-false { color: var(--libi-notice-head); background: var(--libi-notice-bg); border-color: var(--libi-notice-border); }
+.live-run.run-error { color: var(--error-color, #db4437); background: var(--libi-err-bg); border-color: var(--error-color, #db4437); }
+.live-run.run-active { color: var(--libi-active); background: var(--libi-active-bg); border-color: var(--libi-active); font-family: monospace; font-size: 11px; }
+.live-run.run-skip, .live-run.run-idle { color: var(--secondary-text-color, #757575); background: var(--secondary-background-color, #f5f5f5); border-color: var(--divider-color, #e0e0e0); font-weight: 700; }
+.online-menu { width: 320px; max-width: calc(100vw - 24px); box-sizing: border-box; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.onl-what { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.onl-line { font-size: 12px; overflow-wrap: anywhere; }
+.onl-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.online-menu .onl-btn { min-height: 38px; flex: 1 1 auto; border: 1px solid var(--libi-force); color: var(--libi-force); background: var(--card-background-color, #fff); }
+.online-menu .onl-btn.on { background: var(--libi-force); color: #fff; }
+.online-menu .onl-btn.onl-real { border-color: var(--error-color, #db4437); color: #fff; background: var(--error-color, #db4437); }
+.onl-note { font-size: 11px; color: var(--secondary-text-color, #757575); }
+.trace-lock .wire-ins, .trace-lock #addRungBtn, .trace-lock #addNetTop, .trace-lock #addNetBottom { visibility: hidden; pointer-events: none; }
+.trace-lock #undoBtn, .trace-lock #redoBtn, .trace-lock #saveBtn, .trace-lock #mUndo, .trace-lock #mRedo, .trace-lock #projNewBtn, .trace-lock #projOpenBtn, .trace-lock #projCloseBtn, .trace-lock #projDeleteBtn, .trace-lock #clearAllBtn, .trace-lock .load-net-btn, .trace-lock .net-level-select, .trace-lock .versions-net-btn, .trace-lock .duplicate-net-btn, .trace-lock .delete-net-btn, .trace-lock .ai-mount, .trace-lock #railAiBtn { opacity: .38; cursor: not-allowed; }
+.trace-lock .libi-el { cursor: pointer; }
+.trace-toast { position: fixed; top: 72px; left: 50%; transform: translateX(-50%); z-index: 3000; width: max-content; max-width: calc(100vw - 32px); box-sizing: border-box; padding: 10px 16px; border-radius: 10px; background: var(--libi-force); color: #fff; font-size: 13px; font-weight: 700; text-align: center; box-shadow: 0 4px 14px rgba(0,0,0,.25); opacity: 0; pointer-events: none; transition: opacity .2s; }
+.trace-toast.show { opacity: 1; }
+.trace-locked-note { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--libi-force); border-radius: 10px; background: var(--libi-force-bg); color: var(--primary-text-color, #212121); font-size: 13px; line-height: 1.4; }
+.trace-locked-note b { color: var(--libi-force); }
 .libi-el.run-active .el-ico, .libi-el.run-active .plc-block { box-shadow: 0 0 0 3px var(--libi-active-bg); border-color: var(--libi-active); }
 .libi-el.run-error .el-ico, .libi-el.run-error .plc-block { border-color: var(--error-color, #db4437) !important; }
-@media (pointer: coarse) { .online-mode, .online-force, #onlineRelease, .mon-btn { min-height: 40px; } }
-@media (max-width: 768px) { .online-bar { position: static; } .online-sel { max-width: 100%; flex-basis: 100%; } }
+@media (pointer: coarse) { .online-mode, #onlineRelease, .mon-btn, .online-menu .onl-btn { min-height: 40px; } }
+@media (max-width: 768px) { .online-bar { position: static; } }
 
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2000; display: flex; align-items: center; justify-content: center; }
 .modal { background: var(--card-background-color, #fff); padding: 24px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); width: 450px; max-width: 90vw; display: flex; flex-direction: column; gap: 16px; max-height: 80vh; direction: ltr; }

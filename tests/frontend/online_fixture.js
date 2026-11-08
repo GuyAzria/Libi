@@ -5,8 +5,11 @@
  *   trace/list and trace/get answer as Home Assistant's do, and which records every service call and config API call;
  *   and the panel on it, with the captured NETs, Online on. Not a test page itself: the runner runs test_*.html only.
  *   trace/list without an item answers every automation's runs (state.listAllFails: as a Home Assistant that wants the
- *   item); the config API's GET answers the automation's config as the capture has it, or state.configs[path] (an Error
- *   is thrown, as Home Assistant answers one it does not have).
+ *   item).
+ * [CHANGED v1.1.0 | 2026-11-07] Purpose: libi/online_fire answers as LIBI's backend does (tests/test_online_fire.py runs
+ *   the real one): state.fire(message) - by default a run it would start, of the trigger asked for, and with fire set
+ *   and the before it gave, started. The run's line under a block (.live-run) is what markOf reads; openMenu and
+ *   menuText are a block's Online menu.
  */
 import '../../custom_components/libi/frontend/libi-panel.js';
 import { CAPTURE } from './trace_fixture.js';
@@ -20,28 +23,32 @@ export const clockOf = (seconds) => {
   return `${p(Math.floor(s / 3600))}:${p(Math.floor((s % 3600) / 60))}:${p(s % 60)}`;
 };
 
+/** What LIBI's backend answers libi/online_fire with, for an automation it would run. */
+export function firePlan(m) {
+  const trigger = m.trigger !== undefined && m.trigger !== null ? { idx: m.trigger, id: m.trigger_id || String(m.trigger), kind: 'state', alias: '' }
+    : m.trigger_id ? { idx: 0, id: m.trigger_id, kind: 'state', alias: '' }
+    : m.element_id ? { idx: 0, id: '0', kind: 'time', alias: '' } : null;
+  const plan = { ok: true, entity_id: m.entity_id, name: 'Garden', trigger, conditions: 1, drives: ['input_boolean.valve'], before: 'b1' };
+  if (!m.fire) return plan;
+  return m.before === plan.before ? { ...plan, fired: true }
+    : { ok: false, stale: true, reason: 'The automation changed in Home Assistant since you were asked, so it was not run. Try again.' };
+}
+
 export function makeOnline() {
   const sent = [], services = [], api = [];
-  const configs = {};
-  for (const m of CAPTURE.moments) for (const [item, run] of Object.entries(m.runs)) configs[`config/automation/config/${item}`] = run.get.config;
-  const state = { moment: CAPTURE.moments[0], extra: {}, keys: {}, listAllFails: false, configs };
+  const state = { moment: CAPTURE.moments[0], extra: {}, keys: {}, listAllFails: false, fire: firePlan };
   const hass = {
     states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en', user: { is_admin: true },
     localize: (k) => k,
     callService: async (domain, service, data) => { services.push([domain, service, JSON.parse(JSON.stringify(data || {}))]); },
-    callApi: async (method, path, body) => {
-      api.push([method, path, body]);
-      if (method !== 'GET') return {};
-      const found = state.configs[path];
-      if (!found || found instanceof Error) throw (found || new Error('Resource not found'));
-      return JSON.parse(JSON.stringify(found));
-    },
+    callApi: async (method, path, body) => { api.push([method, path, body]); return {}; },
     connection: {
       sendMessagePromise: async (m) => {
         sent.push(JSON.parse(JSON.stringify(m)));
         if (m.type === 'libi/ai_status') return { configured: false };
         if (m.type === 'libi/project_list') return { projects: [] };
         if (m.type === 'libi/project_open') return { slug: m.slug, name: 'Q', nets: [], stats: {}, versions: {}, revision: 1, keys: {} };
+        if (m.type === 'libi/online_fire') return state.fire(m);
         if (m.type === 'trace/list') {
           if (m.item_id === undefined) {
             if (state.listAllFails) throw Object.assign(new Error('some but not all values in the same group of inclusion'), { code: 'invalid_format' });
@@ -94,13 +101,21 @@ export async function at(env, panel, index, extra = {}) {
 
 /** A block on the canvas, by NET and block id. */
 export const block = (panel, nid, eid) => panel.shadowRoot.querySelector(`.libi-el[data-nid="${nid}"][data-eid="${eid}"]`);
-export const markOf = (panel, nid, eid) => { const m = block(panel, nid, eid); const t = m && m.querySelector('.run-mark'); return t ? [...t.classList].find(c => c.startsWith('run-') && c !== 'run-mark') : ''; };
+/** The kind of the run's line under a block (run-fired, run-skip ...), '' when it has none. */
+export const markOf = (panel, nid, eid) => { const m = block(panel, nid, eid); const t = m && m.querySelector('.live-run'); return t ? [...t.classList].find(c => c.startsWith('run-')) : ''; };
+export const runLine = (panel, nid, eid) => { const m = block(panel, nid, eid); const t = m && m.querySelector('.live-run'); return t ? t.textContent : ''; };
 export const badges = (panel, nid, eid) => { const m = block(panel, nid, eid); return m ? [...m.querySelectorAll('.live-val span')].map(s => s.textContent) : []; };
 export const monitor = (panel, nid) => panel.shadowRoot.querySelector(`.net-monitor[data-nid="${nid}"]`);
 export const chips = (panel, nid) => { const m = monitor(panel, nid); return m ? [...m.querySelectorAll('.mon-chip')].map(c => c.textContent) : []; };
+/** A click on a block, as the user clicks it: in Online it opens the block's menu. */
+export const openMenu = async (panel, nid, eid) => { block(panel, nid, eid).click(); await sleep(20); return panel.shadowRoot.querySelector('.online-menu'); };
+export const menuText = (panel) => { const m = panel.shadowRoot.querySelector('.online-menu'); return m ? m.textContent.replace(/\s+/g, ' ').trim() : ''; };
+export const menuButtons = (panel) => [...panel.shadowRoot.querySelectorAll('.online-menu .onl-btn')].map(b => b.getAttribute('data-onl'));
+export const closeMenu = async (panel) => { const o = panel.shadowRoot.getElementById('fmOverlay'); if (o) o.click(); await sleep(20); };
 
-/** RULE 36: the Online bar and a NET's monitor at the width of this page's window, in both directions: nothing past the
- *  screen, the buttons big enough to touch, a long name cut in its own chip. */
+/** RULE 36: the Online bar, a NET's monitor and a block's menu at the width of this page's window, in both directions:
+ *  nothing past the screen, the buttons big enough to touch, a long name cut in its own chip, the run's lines under the
+ *  Trigger label, not on it. */
 export async function onlineLayoutChecks(check, panel, phone) {
   const sr = panel.shadowRoot;
   const inside = (el, box) => { const r = el.getBoundingClientRect(), b = box.getBoundingClientRect(); return r.left >= b.left - 0.5 && r.right <= b.right + 0.5; };
@@ -123,8 +138,33 @@ export async function onlineLayoutChecks(check, panel, phone) {
     const long = [...mon.querySelectorAll('.mon-var')].find(c => c.textContent.includes('the garden and the parking lot'));
     check(`${dir}: a long variable name is cut in its own chip`, !!long && long.scrollWidth > long.clientWidth + 1 && inside(long, mon),
           long ? `${long.scrollWidth} / ${long.clientWidth}` : 'no long chip');
-    const marks = [...sr.querySelectorAll('.libi-el[data-nid="n1"] .run-mark')];
-    check(`${dir}: the marks of the last run are drawn on their blocks`, marks.length >= 4, marks.length);
+    const lines = [...sr.querySelectorAll('.libi-el[data-nid="n1"] .live-run')];
+    check(`${dir}: what the last run did is a line under each block`, lines.length >= 4 && lines.every(l => l.textContent.startsWith('RUN ')), lines.length);
+    const trig = block(panel, 'n1', 'e3');
+    const tag = trig.querySelector('.trigger-bottom-lbl');
+    const val = trig.querySelector('.live-val');
+    check(`${dir}: the lines of a trigger start below its Trigger label, not on it`, !!tag && !!val
+          && val.getBoundingClientRect().top >= tag.getBoundingClientRect().bottom - 0.5,
+          tag && val && JSON.stringify([tag.getBoundingClientRect().bottom, val.getBoundingClientRect().top]));
+    // Rung 1's lines end above rung 2 (its block and the name over it), and every line is inside the NET's drawing.
+    const bottoms = (rid) => [...sr.querySelectorAll(`.libi-el[data-nid="n1"][data-rid="${rid}"] .live-val`)].map(v => v.getBoundingClientRect().bottom);
+    const next = block(panel, 'n1', 'e8');
+    const nextTop = Math.min(...[next, ...next.querySelectorAll('*')].map(x => x.getBoundingClientRect()).filter(r => r.width > 0 && r.height > 0).map(r => r.top));
+    const wire = next.closest('.rung-wire');
+    const every = [...bottoms('r1'), ...bottoms('r2')];
+    check(`${dir}: there is room for them: rung 1's lines end above rung 2, and none goes past the NET's drawing`,
+          bottoms('r1').length >= 4 && Math.max(...bottoms('r1')) <= nextTop + 0.5 && !!wire && Math.max(...every) <= wire.getBoundingClientRect().bottom + 0.5,
+          JSON.stringify([Math.max(...bottoms('r1')), nextTop, Math.max(...every), wire && wire.getBoundingClientRect().bottom]));
+    // A block's menu, opened by a click on it: on the screen, its buttons big enough to touch.
+    trig.scrollIntoView({ block: 'center' });
+    await sleep(20);
+    const menu = await openMenu(panel, 'n1', 'e3');
+    const r = menu && menu.getBoundingClientRect();
+    const mb = menu ? [...menu.querySelectorAll('.onl-btn')] : [];
+    check(`${dir}: a block's menu is on the screen, its buttons big enough to touch`, !!menu && r.left >= -0.5 && r.right <= vw + 0.5
+          && r.top >= -0.5 && r.bottom <= window.innerHeight + 0.5 && mb.length >= 2 && mb.every(b => b.getBoundingClientRect().height >= 38 && inside(b, menu)),
+          menu && JSON.stringify([r.left, r.right, r.top, r.bottom, vw, window.innerHeight, mb.map(b => Math.round(b.getBoundingClientRect().height))]));
+    await closeMenu(panel);
   }
   document.documentElement.setAttribute('dir', 'ltr');
 }

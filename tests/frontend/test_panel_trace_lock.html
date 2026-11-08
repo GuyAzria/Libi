@@ -1,0 +1,187 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-07] Purpose: Traces is read only - the user's rule (2026-11-07): while Traces is on, a click
+  follows the run or FORCEs a block, nothing edits; editing comes back when Traces is turned off. Every way to edit is
+  tried in Traces (CLAUDE.md RULE 39): a block's editing menu and the Inspector, the "+" points, Add Rung, the NET's
+  name, kind, Load, Versions, Duplicate and Delete, Undo / Redo (buttons and Ctrl+Z), Save, Clear all, projects, the
+  right-click Rename, dragging a block, dropping a variable on a pin, the AI chat - and none changes anything, each says
+  why; what Traces is for still works (the block's Online menu, Simulate / Real, the monitor, folding a NET, the YAML, the
+  automation's on/off switch, the Variables bar's tabs); and once Traces is off, editing works again.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi traces read only</title></head>
+<body style="margin:0;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { makeOnline, makeOnlinePanel, at, block, sleep, openMenu, closeMenu } from './online_fixture.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const told = [];
+window.alert = (m) => { told.push(String(m)); }; window.confirm = () => true; window.prompt = () => 'x';
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+try {
+  const env = makeOnline();
+  const panel = await makeOnlinePanel(env);
+  const sr = panel.shadowRoot;
+  const $ = (sel) => sr.querySelector(sel);
+  // Editing, as the user leaves it: a change in the history, then Traces turned on with its own button.
+  panel.online.enabled = false;
+  panel._render(); await sleep(20);
+  await at(env, panel, 0);
+  panel.core.pushHistory();
+  panel.core.nets[0].name = 'Garden 2';
+  panel.core.pushHistory();
+  panel._render(); await sleep(20);
+  const kept = document.createElement('textarea'); kept.className = 'kept-free'; panel.aiChat.root.appendChild(kept);
+  const keptRo = document.createElement('input'); keptRo.className = 'kept-ro'; keptRo.readOnly = true; panel.aiChat.root.appendChild(keptRo);
+  $('#onlineBtn').click(); await sleep(40);
+  check("a field the AI chat keeps across a redraw is read only in Traces", kept.readOnly && keptRo.readOnly);
+  check('Traces is on', panel.online.enabled && !!$('.panel-layout.trace-lock'));
+
+  const snap = () => JSON.stringify({
+    nets: panel.core.nets, modal: panel._modal || null, ep: !!panel._ep, ctx: !!panel._ctx, project: panel._project && panel._project.slug,
+    menu: panel._floatingMenu ? (panel._floatingMenu.online ? 'online' : panel._floatingMenu.type) : null,
+    sent: env.sent.filter(m => !/^trace\//.test(m.type)).length, services: env.services.length, api: env.api.length,
+  });
+  const toastShown = () => { const t = sr.getElementById('traceToast'); return !!t && t.classList.contains('show') && t.textContent === 'Traces is on, so nothing can be edited. Turn Traces off to edit.'; };
+  const hideToast = () => { const t = sr.getElementById('traceToast'); if (t) t.classList.remove('show'); };
+  const tryClick = async (name, sel, { toast = true } = {}) => {
+    const el = $(sel);
+    if (!el) { check(`${name}: (${sel} is on the page)`, false, 'not found'); return; }
+    hideToast();
+    const before = snap();
+    el.click(); await sleep(30);
+    check(`${name}: nothing changes in Traces${toast ? ', and it says why' : ''}`, snap() === before && (!toast || toastShown()),
+          JSON.stringify([before === snap() ? 'same' : snap(), toastShown()]));
+  };
+
+  // ---- A block: its Online menu, not the editing one; the Inspector waits
+  await openMenu(panel, 'n1', 'e4');
+  check('a click on a block opens its Online menu, not the editing one', !!$('.online-menu') && !$('.palette .pal-btn'));
+  check('the Inspector does not edit: it says Traces is on', !!$('.trace-locked-note') && !$('#propType') && !$('#propDelete')
+        && $('.trace-locked-note').textContent.includes('Turn Traces off to edit.'), $('.sidebar-body') && $('.sidebar-body').textContent);
+  await closeMenu(panel);
+  block(panel, 'n1', 'e4').querySelector('.el-lbl, .pin-val').click(); await sleep(30);
+  check('its name opens the same Online menu, not the entity chooser', !!$('.online-menu') && !panel._ep && panel._modal !== 'entity_picker');
+  await closeMenu(panel);
+
+  // ---- Every way to edit: blocked
+  check('the "+" points between blocks are hidden', getComputedStyle($('.wire-ins')).visibility === 'hidden');
+  await tryClick('a "+" point (add an element)', '.wire-ins');
+  await tryClick('Add Rung', '#addRungBtn');
+  await tryClick('LOAD YAML / AUTO', '.load-net-btn');
+  await tryClick('Versions', '.versions-net-btn');
+  await tryClick('Duplicate Net', '.duplicate-net-btn');
+  await tryClick('Delete NET', '.delete-net-btn');
+  await tryClick('Undo', '#undoBtn');
+  await tryClick('Redo', '#redoBtn');
+  await tryClick('SAVE & COMPILE', '#saveBtn');
+  await tryClick('Clear all nets', '#clearAllBtn');
+  await tryClick('New project', '#projNewBtn');
+  await tryClick('Open project', '#projOpenBtn');
+  await tryClick('Undo in the phone menu', '#mUndo');
+  for (const sel of ['#addNetTop', '#addNetBottom', '#varsCreate', '#helperCreate', '#globAdd']) if ($(sel)) await tryClick(sel, sel);
+  const aiButton = $('.ai-mount button');
+  if (aiButton) await tryClick('the AI chat', '.ai-mount button');
+
+  const name = $('.net-name-input');
+  check("the NET's name is read only", name.readOnly);
+  hideToast();
+  let before = snap();
+  name.value = 'Renamed'; name.dispatchEvent(new Event('change', { bubbles: true, composed: true })); await sleep(30);
+  check("a change of the NET's name is not taken", snap() === before && panel.core.nets[0].name === 'Garden 2', panel.core.nets[0].name);
+  const kind = $('.net-level-select');
+  check("the NET's kind cannot be changed", kind.disabled);
+  kind.value = 'script'; kind.dispatchEvent(new Event('change', { bubbles: true, composed: true })); await sleep(30);
+  check("a change of the NET's kind is not taken", snap() === before && (panel.core.nets[0].level || 'automation') === 'automation');
+  name.focus();
+  name.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, composed: true, cancelable: true }));
+  check('typing in a field is stopped', snap() === before);
+
+  sr.getElementById('varsTabVars').click(); await sleep(30);
+  const newVar = sr.getElementById('varsNewName');
+  check('the box that creates a variable is there, read only', !!newVar && newVar.readOnly);
+  panel._varsNewName = 'made_in_traces';
+  before = snap();
+  newVar.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true })); await sleep(60);
+  check('Enter in it creates nothing in Traces', snap() === before && !env.sent.some(m => /\/create$/.test(m.type)), JSON.stringify(env.sent.slice(-2)));
+  panel._varsNewName = '';
+  hideToast();
+  block(panel, 'n1', 'e4').querySelector('.el-lbl').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, composed: true, cancelable: true, clientX: 200, clientY: 300 }));
+  await sleep(30);
+  check('a right click on a name opens no Rename menu, and says why', !panel._ctx && !$('#ctxMenu .ctx-item, #ctxRename') && toastShown());
+
+  const node = block(panel, 'n1', 'e5');
+  check('a block cannot be dragged', node.getAttribute('draggable') === 'false');
+  const drag = new DragEvent('dragstart', { bubbles: true, composed: true, cancelable: true, dataTransfer: new DataTransfer() });
+  node.dispatchEvent(drag);
+  check('a drag never starts', drag.defaultPrevented && snap() === before);
+  const pin = sr.querySelector('.libi-el[data-nid="n1"] .pin-val[data-prop]');
+  check('a pin to drop on is there', !!pin);
+  panel._draggedVar = 'input_boolean.lamp';
+  const data = new DataTransfer(); data.setData('text/plain', 'input_boolean.lamp'); data.setData('application/x-libi-var', 'input_boolean.lamp');
+  for (const t of ['dragenter', 'dragover', 'drop']) pin.dispatchEvent(new DragEvent(t, { bubbles: true, composed: true, cancelable: true, dataTransfer: data }));
+  await sleep(30);
+  check('nothing dropped on a block is taken', snap() === before, snap());
+  panel._draggedVar = null;
+
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })); await sleep(30);
+  check('Ctrl+Z undoes nothing in Traces', panel.core.nets[0].name === 'Garden 2' && snap() === before, panel.core.nets[0].name);
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true, cancelable: true })); await sleep(30);
+  check('nor Ctrl+Y', snap() === before);
+
+  // ---- What Traces is for still works
+  $('.online-mode[data-mode="real"]').click(); await sleep(20);
+  check('Simulate / Real', panel.online.mode === 'real');
+  $('.online-mode[data-mode="simulate"]').click(); await sleep(20);
+  await openMenu(panel, 'n1', 'e4');
+  $('.onl-btn[data-onl="force-true"]').click(); await sleep(20);
+  check('FORCE from the block\'s menu', panel.online.forcedOf('n1', 'e4') === true);
+  check('Release all', !$('#onlineRelease').disabled);
+  $('#onlineRelease').click(); await sleep(20);
+  check('and Release all works', panel.online.forceCount() === 0);
+  $('.net-kebab').click(); await sleep(20);
+  check('a NET\'s menu opens', !!sr.querySelector('.net-menu-dropdown.show'));
+  $('.show-yaml-btn').click(); await sleep(60);
+  check('its YAML can be read', panel._inspectedNetYaml === 'n1' || env.sent.some(m => m.type === 'libi/preview_yaml'), JSON.stringify(env.sent.map(m => m.type).slice(-3)));
+  panel._inspectedNetYaml = null; panel._render(); await sleep(20);
+  const toggle = $('.net-state-toggle');
+  check("the automation's on/off switch is there", !!toggle && !toggle.disabled);
+  toggle.click(); await sleep(30);
+  check("the automation's on/off switch works (a command, not an edit)", env.services.some(c => c[0] === 'automation' && c[1] === 'toggle'), JSON.stringify(env.services));
+  for (const id of ['varsTabVars', 'varsTabSearch', 'varsTabGlobal']) {
+    const tab = sr.getElementById(id);
+    if (!tab) continue;
+    tab.click(); await sleep(20);
+  }
+  check('the Variables bar\'s tabs can be looked at', panel._varsTab === 'global' || panel._varsTab === 'search' || panel._varsTab === 'vars', panel._varsTab);
+  const folded = !!panel.core.nets[1].collapsed;
+  sr.querySelector('.net-hdr[data-tog="n2"]').click(); await sleep(20);
+  check('a NET can be folded', !!panel.core.nets[1].collapsed !== folded);
+  sr.querySelector('.net-hdr[data-tog="n2"]').click(); await sleep(20);
+
+  // ---- Traces off: editing is back
+  $('#onlineBtn').click(); await sleep(40);
+  check('Traces off: what the AI chat keeps is given back as it was', !kept.readOnly && keptRo.readOnly && !kept.hasAttribute('data-trace-lock'));
+  check('Traces off: no lock left', !panel.online.enabled && !$('.trace-lock') && !$('[data-trace-lock]') && !$('.net-name-input').readOnly
+        && !$('.net-level-select').disabled && block(panel, 'n1', 'e5').getAttribute('draggable') === 'true');
+  block(panel, 'n1', 'e4').querySelector('.plc-block, .el-ico').click(); await sleep(30);
+  check('a click on a block edits again: its editing menu and the Inspector', !!$('.palette .pal-btn') && !!$('#propType'));
+  panel._floatingMenu = null; panel._render(); await sleep(20);
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })); await sleep(30);
+  check('Ctrl+Z undoes again', panel.core.nets[0].name === 'Garden', panel.core.nets[0].name);
+  const rungs = panel.core.nets[0].rungs.length;
+  $('#addRungBtn').click(); await sleep(30);
+  check('Add Rung adds again', panel.core.nets[0].rungs.length === rungs + 1);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

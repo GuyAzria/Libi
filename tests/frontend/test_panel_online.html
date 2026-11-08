@@ -9,12 +9,16 @@
   from the entity's last change. A block offline or not in Home Assistant says so; a comparison shows IN1 (the clock now)
   and IN2 (the time it waits for); each NET's monitor shows the clock, the automation, its last run and every variable.
   A NET drawn in LIBI finds its automation by the key LIBI saved it under. Nothing is sent to Home Assistant.
+  [CHANGED v1.1.0 | 2026-11-07] Purpose: The run is said in words under each block (RUN ▶ started the run, RUN – not
+  reached) - a circle on its corner was read as a button that did nothing (the user's screenshot) - and a click on a
+  block opens its menu, which says it in full (Home Assistant's reason for an error). A run started with no trigger says
+  so. A name from the YAML is text in the menu too.
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi online test</title></head>
 <body style="margin:0;">
 <pre id="out">RUNNING</pre>
 <script type="module">
-import { CAPTURE, makeOnline, makeOnlinePanel, at, block, markOf, badges, monitor, chips, clockOf, sleep } from './online_fixture.js';
+import { CAPTURE, makeOnline, makeOnlinePanel, at, block, markOf, runLine, badges, monitor, chips, clockOf, sleep, openMenu, menuText, closeMenu } from './online_fixture.js';
 import { tracePath } from '../../custom_components/libi/frontend/libi-online.js?v=3.93.0';
 
 const results = [];
@@ -61,7 +65,7 @@ try {
   const m0 = CAPTURE.moments[0];
   const step = m0.runs.garden.get.trace['action/0/choose/0/sequence/1'][0];
   const left = clockOf(step.result.delay - (Date.parse(m0.now) - Date.parse(step.timestamp)) / 1000);
-  check('the delay counts down on its block, from the step Home Assistant is in', badges(panel, 'n1', 'e6').includes(`⏳ ${left}`) && left === '00:00:02',
+  check('the delay counts down on its block, from the step Home Assistant is in', badges(panel, 'n1', 'e6').includes(`RUN ⏳ ${left}`) && left === '00:00:02',
         JSON.stringify([badges(panel, 'n1', 'e6'), left]));
   check('the monitor: the clock, on in Home Assistant, running, and the run', chips(panel, 'n1')[0].startsWith('NOW ')
         && chips(panel, 'n1').includes('ON in Home Assistant') && chips(panel, 'n1').includes('running')
@@ -69,11 +73,20 @@ try {
   check('and the value of every variable it uses', ['input_boolean.go', 'input_boolean.enabled', 'input_boolean.valve', 'input_boolean.stop']
         .every(id => [...monitor(panel, 'n1').querySelectorAll('.mon-var')].some(c => c.title === id)), JSON.stringify(chips(panel, 'n1')));
 
+  check('what the run did is said in words under each block, not a circle on its corner',
+        runLine(panel, 'n1', 'e3') === 'RUN ▶ started the run' && runLine(panel, 'n1', 'e4') === 'RUN ✓ true' && runLine(panel, 'n1', 'e5') === 'RUN ✓ done'
+        && runLine(panel, 'n1', 'e7') === 'RUN – not reached' && runLine(panel, 'n1', 'e8') === 'RUN · another trigger' && !sr.querySelector('.run-mark'),
+        JSON.stringify(['e3', 'e4', 'e5', 'e7', 'e8'].map(e => runLine(panel, 'n1', e))));
+  check('a click on a block opens its menu, which says it in full', (await openMenu(panel, 'n1', 'e7')) !== null
+        && menuText(panel).includes('Last run in Home Assistant: not reached in this run'), menuText(panel));
+  await closeMenu(panel);
+  check('the menu closes', !sr.querySelector('.online-menu'));
+
   // ---- Garden by start, its option's condition false
   await at(env, panel, 2);
   check('a condition false is marked where the run stopped, and what comes after is not reached',
-        markOf(panel, 'n1', 'e4') === 'run-false' && markOf(panel, 'n1', 'e5') === 'run-skip' && markOf(panel, 'n1', 'e3') === 'run-fired',
-        JSON.stringify(['e3', 'e4', 'e5'].map(e => markOf(panel, 'n1', e))));
+        markOf(panel, 'n1', 'e4') === 'run-false' && markOf(panel, 'n1', 'e5') === 'run-skip' && markOf(panel, 'n1', 'e3') === 'run-fired'
+        && runLine(panel, 'n1', 'e4') === 'RUN ✗ false: stopped here', JSON.stringify(['e3', 'e4', 'e5'].map(e => markOf(panel, 'n1', e))));
   // ---- Garden by stop: the other rung's trigger
   const gets = () => env.sent.filter(m => m.type === 'trace/get').length;
   await at(env, panel, 3);
@@ -110,9 +123,10 @@ try {
 
   // ---- Bell: its action failed
   await at(env, panel, 6);
-  const err = block(panel, 'n3', 'e2').querySelector('.run-mark');
-  check('a failed action is marked, with Home Assistant\'s reason', markOf(panel, 'n3', 'e2') === 'run-error'
-        && err.title === 'Last run in Home Assistant: Action notify.does_not_exist not found', err && err.title);
+  await openMenu(panel, 'n3', 'e2');
+  check('a failed action is marked, and its menu gives Home Assistant\'s reason', markOf(panel, 'n3', 'e2') === 'run-error'
+        && runLine(panel, 'n3', 'e2') === 'RUN ⚠ error' && menuText(panel).includes('Last run in Home Assistant: Action notify.does_not_exist not found'), menuText(panel));
+  await closeMenu(panel);
   check('and the monitor says the run failed, and why', !!monitor(panel, 'n3').querySelector('.mon-run.run-error')
         && monitor(panel, 'n3').querySelector('.mon-run.run-error').textContent.endsWith('error: Action notify.does_not_exist not found'),
         JSON.stringify(chips(panel, 'n3')));
@@ -152,6 +166,15 @@ try {
         && chips(panel, 'n9').includes('drawn in LIBI: the run is shown here, not on each block') && !markOf(panel, 'n9', 'e2'),
         JSON.stringify(chips(panel, 'n9')));
 
+  // ---- A run Home Assistant started with no trigger says so: no rung of a trigger of its own ran
+  const manual = JSON.parse(JSON.stringify(CAPTURE.moments[3].runs.garden));
+  manual.get.trace = Object.fromEntries(Object.entries(manual.get.trace).filter(([k]) => !k.startsWith('trigger/')).concat([['trigger', [{ path: 'trigger' }]]]));
+  panel.online.setRun('n1', manual);
+  check('a run started with no trigger says so in the monitor', panel.online.runSummary('n1').text.endsWith(' - started with no trigger'),
+        panel.online.runSummary('n1').text);
+  panel.online.setRun('n1', JSON.parse(JSON.stringify(CAPTURE.moments[3].runs.garden)));
+  check('one started by its trigger does not', !panel.online.runSummary('n1').text.includes('no trigger'), panel.online.runSummary('n1').text);
+
   // ---- A name from the user's Home Assistant is text, never HTML
   const named = JSON.parse(JSON.stringify(CAPTURE.moments[6].states));
   named['input_boolean.go'].attributes.friendly_name = '<img src=x onerror="window.__x=1">Go';
@@ -159,6 +182,16 @@ try {
   panel._paintOnline(); await sleep(20);
   check('a name in the monitor is text, never HTML', !monitor(panel, 'n1').querySelector('img') && window.__x === undefined
         && chips(panel, 'n1').some(c => c.startsWith('<img src=x')), JSON.stringify(chips(panel, 'n1')));
+  const hostile = panel.core.nets[0].rungs[0].elements[1];
+  const was = hostile.label;
+  hostile.label = '<img src=x onerror="window.__y=1">';
+  panel._render(); panel._paintOnline(); await sleep(20);
+  await openMenu(panel, 'n1', 'e4');
+  check('a name in a block\'s menu is text, never HTML', !sr.querySelector('.online-menu img') && window.__y === undefined
+        && menuText(panel).includes('<img src=x'), menuText(panel));
+  await closeMenu(panel);
+  hostile.label = was;
+  panel._render();
 
   // ---- Nothing was sent to Home Assistant, nor saved
   check('Online sends nothing to Home Assistant: no service, no config API, no save', env.services.length === 0 && env.api.length === 0
@@ -166,7 +199,7 @@ try {
   // ---- Off: nothing of it is left on the canvas
   sr.getElementById('onlineBtn').click();
   await sleep(30);
-  check('Online off: no bar, no monitor, no mark is left', !sr.querySelector('.online-bar') && !sr.querySelector('.net-monitor') && !sr.querySelector('.run-mark')
+  check('Online off: no bar, no monitor, no mark is left', !sr.querySelector('.online-bar') && !sr.querySelector('.net-monitor') && !sr.querySelector('.live-run')
         && !sr.querySelector('.libi-el.live-on'), 'left over');
 } catch (err) {
   results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });

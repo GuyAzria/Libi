@@ -2,18 +2,23 @@
 <!--
   LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
   [ADDED v1.0.0 | 2026-11-06] Purpose: Online's Simulate and Real - the user's choice (2026-11-06): both, Simulate by
-  default. Simulate: a block chosen gets FORCE TRUE / FALSE in the Online bar; a trigger forced TRUE runs its rung in the
-  panel only - a condition false stops it and says where, a forced one lets it on, each action says what it would do,
-  the TON counts down on its block and goes on to the next, ⏭ ends it at once - and nothing is sent to Home Assistant.
-  An action is not forced. Real: no FORCE; Run in Home Assistant asks first (checking or skipping the conditions), and is
-  never offered over changes not saved, for a lock, an alarm or a cover, for one turned off, or for a NET not in Home
-  Assistant. Leaving Online, switching to Real, opening another project: nothing forced is left (33a.1).
+  default. Simulate: a trigger forced TRUE runs its rung in the panel only - a condition false stops it and says where, a
+  forced one lets it on, each action says what it would do, the TON counts down on its block and goes on to the next, ⏭
+  ends it at once - and nothing is sent to Home Assistant. An action is not forced. Leaving Online, switching to Real,
+  opening another project: nothing forced is left (33a.1).
+  [CHANGED v1.1.0 | 2026-11-07] Purpose: The user's screenshot (2026-11-07): FORCE was not found, and Real could not
+  fire the trigger they wanted. A click on a block opens its own menu: FORCE TRUE / FALSE and Release in Simulate. In
+  Real, FORCE TRUE on a trigger asks LIBI's backend (libi/online_fire) what the run would be, asks the user, and only then
+  asks the backend to run it, with what the user was shown (before); a refusal of the backend is shown and nothing runs.
+  A trigger is named by its id, or for a NET drawn in LIBI by the NET and the block. Never over changes not saved, never
+  for a NET not in Home Assistant. A condition in Real offers Simulate.
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi online simulate test</title></head>
 <body style="margin:0;">
 <pre id="out">RUNNING</pre>
 <script type="module">
-import { CAPTURE, makeOnline, makeOnlinePanel, at, block, markOf, badges, monitor, chips, sleep, until } from './online_fixture.js';
+import { CAPTURE, makeOnline, makeOnlinePanel, at, block, markOf, runLine, badges, monitor, chips, sleep, until, firePlan,
+  openMenu, menuText, menuButtons, closeMenu } from './online_fixture.js';
 
 const results = [];
 const check = (name, cond, detail = '') => {
@@ -37,43 +42,59 @@ try {
   let now = Date.parse(CAPTURE.moments[0].now);
   online.now = () => now;
   panel._render(); panel._paintOnline(); await sleep(20);
-  // A block is chosen as a click on it chooses it (not on its label, which opens the entity picker).
-  const choose = async (nid, eid) => { block(panel, nid, eid).click(); await sleep(20); };
-  const force = async (v) => { sr.querySelector(`.online-force[data-force="${v}"]`).click(); await sleep(20); };
+  // FORCE as the user does it: a click on the block, then the button of its menu.
+  const force = async (nid, eid, v) => {
+    await openMenu(panel, nid, eid);
+    const btn = sr.querySelector(`.online-menu .onl-btn[data-onl="${v === 'release' ? 'release' : 'force-' + v}"]`);
+    if (!btn) throw new Error(`no ${v} on ${nid}/${eid}: ${menuText(panel)}`);
+    btn.click(); await sleep(20);
+  };
   const simText = (nid) => { const m = monitor(panel, nid); const c = m && m.querySelector('.mon-simstate'); return c ? c.textContent : ''; };
   const tick = async (ms) => { now += ms; panel._paintOnline(); await sleep(20); };
-  const sentToHa = () => env.services.length + env.api.length + env.sent.filter(m => /^libi\/(compile|save)/.test(m.type)).length;
+  const sentToHa = () => env.services.length + env.api.length + env.sent.filter(m => /^libi\/(compile|save|online_fire)/.test(m.type)).length;
 
-  // ---- Simulate is the default; a block chosen gets FORCE
-  check('Simulate is the default', sr.querySelector('.online-mode.on').getAttribute('data-mode') === 'simulate');
-  check('before a block is chosen, FORCE cannot be pressed', [...sr.querySelectorAll('.online-force')].every(b => b.disabled));
-  await choose('n1', 'e5');
-  check('an action is not forced', [...sr.querySelectorAll('.online-force')].every(b => b.disabled)
-        && sr.querySelector('.online-sel').textContent === 'NET 1 ▸ coil input_boolean.valve', sr.querySelector('.online-sel').textContent);
+  // ---- Simulate is the default; FORCE is on the menu of the block clicked
+  check('Simulate is the default, and the bar says what a click does', sr.querySelector('.online-mode.on').getAttribute('data-mode') === 'simulate'
+        && sr.querySelector('.online-note').textContent.startsWith('Click a block, then FORCE TRUE or FALSE.'), sr.querySelector('.online-note').textContent);
+  await openMenu(panel, 'n1', 'e5');
+  check('a click anywhere on a block opens its menu by the block; an action is not forced', !!sr.querySelector('.online-menu')
+        && menuButtons(panel).length === 0 && menuText(panel).startsWith('NET 1 ▸ coil input_boolean.valve')
+        && menuText(panel).includes('An action is not forced'), menuText(panel));
+  check('and not the editing menu', !sr.querySelector('.palette .pal-btn'));
+  await closeMenu(panel);
+  block(panel, 'n1', 'e3').querySelector('.pin-val, .el-lbl, .plc-header, .el-ico').click(); await sleep(20);
+  check('on its label too (no entity picker, in Online)', !!sr.querySelector('.online-menu') && menuText(panel).startsWith('NET 1 ▸ contact input_boolean.go · trigger')
+        && JSON.stringify(menuButtons(panel)) === JSON.stringify(['force-true', 'force-false']), menuText(panel));
+  check('a trigger\'s FORCE TRUE says it runs it', sr.querySelector('.onl-btn[data-onl="force-true"]').textContent === 'FORCE TRUE ▶ run it'
+        && menuText(panel).includes('Now: FALSE'), menuText(panel));
+  await closeMenu(panel);
 
   // ---- The trigger forced TRUE: the run starts, and stops at the condition that is false
-  await choose('n1', 'e3');
-  check('a trigger can be forced', !sr.querySelector('.online-force[data-force="true"]').disabled
-        && sr.querySelector('.online-sel').textContent === 'NET 1 ▸ contact input_boolean.go', sr.querySelector('.online-sel').textContent);
-  await force('true');
+  await force('n1', 'e3', 'true');
+  check('the menu closes once a FORCE is pressed', !sr.querySelector('.online-menu'));
   check('forced: the block gives TRUE, and says so', block(panel, 'n1', 'e3').classList.contains('live-forced') && badges(panel, 'n1', 'e3').includes('F TRUE'),
         JSON.stringify(badges(panel, 'n1', 'e3')));
   check('the trigger forced TRUE starts the run, which stops at the condition that is false', markOf(panel, 'n1', 'e3') === 'run-fired'
-        && markOf(panel, 'n1', 'e4') === 'run-false' && !markOf(panel, 'n1', 'e5') && simText('n1') === 'SIMULATION: stopped: contact input_boolean.enabled is false',
-        JSON.stringify([markOf(panel, 'n1', 'e3'), markOf(panel, 'n1', 'e4'), simText('n1')]));
+        && markOf(panel, 'n1', 'e4') === 'run-false' && !markOf(panel, 'n1', 'e5') && simText('n1') === 'SIMULATION: stopped: contact input_boolean.enabled is false'
+        && runLine(panel, 'n1', 'e4') === 'SIM ✗ false: stopped here',
+        JSON.stringify([markOf(panel, 'n1', 'e3'), markOf(panel, 'n1', 'e4'), simText('n1'), runLine(panel, 'n1', 'e4')]));
   check('the other rung, of another trigger, does not run', !markOf(panel, 'n1', 'e8') && !markOf(panel, 'n1', 'e9'));
+  await openMenu(panel, 'n1', 'e4');
+  check('the menu of the condition says what it gives and what the simulated run did there', menuText(panel).includes('Now: FALSE')
+        && menuText(panel).includes('Simulated run: false: this rung stops here'), menuText(panel));
+  await closeMenu(panel);
 
   // ---- The condition forced TRUE, the trigger again: the actions, the TON counting down, the next action
-  await choose('n1', 'e4'); await force('true');
-  await choose('n1', 'e3'); await force('true');
+  await force('n1', 'e4', 'true');
+  await force('n1', 'e3', 'true');
   check('now it runs on: the condition true, the valve would turn on, the TON counts down on its block',
         markOf(panel, 'n1', 'e4') === 'run-true' && markOf(panel, 'n1', 'e5') === 'run-done' && markOf(panel, 'n1', 'e6') === 'run-active'
-        && badges(panel, 'n1', 'e6').includes('⏳ 00:00:03') && badges(panel, 'n1', 'e5').includes('SIM → on'),
+        && badges(panel, 'n1', 'e6').includes('SIM ⏳ 00:00:03') && badges(panel, 'n1', 'e5').includes('SIM → on'),
         JSON.stringify([['e4', 'e5', 'e6'].map(e => markOf(panel, 'n1', e)), badges(panel, 'n1', 'e6'), badges(panel, 'n1', 'e5')]));
   check('the monitor says the TON is running, and offers ⏭', simText('n1') === 'SIMULATION: TON 00:00:03 left'
         && !!monitor(panel, 'n1').querySelector('[data-online="skip"]'), simText('n1'));
   await tick(2000);
-  check('a second later, less time is left', badges(panel, 'n1', 'e6').includes('⏳ 00:00:01'), JSON.stringify(badges(panel, 'n1', 'e6')));
+  check('a second later, less time is left', badges(panel, 'n1', 'e6').includes('SIM ⏳ 00:00:01'), JSON.stringify(badges(panel, 'n1', 'e6')));
   await tick(1500);
   check('the TON ran out: on to the next action, and the run finished', markOf(panel, 'n1', 'e6') === 'run-done' && markOf(panel, 'n1', 'e7') === 'run-done'
         && simText('n1') === 'SIMULATION: finished' && badges(panel, 'n1', 'e7').includes('SIM → off'),
@@ -82,7 +103,7 @@ try {
         JSON.stringify([env.services, env.api]));
 
   // ---- ⏭ ends a TON at once; Clear removes the simulation
-  await choose('n1', 'e3'); await force('true');
+  await force('n1', 'e3', 'true');
   monitor(panel, 'n1').querySelector('[data-online="skip"]').click(); await sleep(20);
   check('⏭ ends the TON at once and goes on', markOf(panel, 'n1', 'e6') === 'run-done' && markOf(panel, 'n1', 'e7') === 'run-done'
         && simText('n1') === 'SIMULATION: finished', JSON.stringify([markOf(panel, 'n1', 'e6'), simText('n1')]));
@@ -90,85 +111,145 @@ try {
   check('Clear removes the simulation, the forces stay', !simText('n1') && !markOf(panel, 'n1', 'e5') && online.forceCount() === 2, online.forceCount());
 
   // ---- Release, Release all
-  await choose('n1', 'e4'); await force('release');
+  await openMenu(panel, 'n1', 'e4');
+  check('a forced block\'s menu offers Release, and says it is forced', JSON.stringify(menuButtons(panel)) === JSON.stringify(['force-true', 'force-false', 'release'])
+        && menuText(panel).includes('Now: TRUE · FORCE TRUE'), menuText(panel));
+  await closeMenu(panel);
+  await force('n1', 'e4', 'release');
   check('Release frees the block', online.forcedOf('n1', 'e4') === null && !block(panel, 'n1', 'e4').classList.contains('live-forced'));
   sr.getElementById('onlineRelease').click(); await sleep(20);
   check('Release all frees every block', online.forceCount() === 0 && !sr.querySelector('.libi-el.live-forced'));
 
-  // ---- Real: no FORCE; what was forced and simulated goes
-  await choose('n1', 'e4'); await force('false');
-  await choose('n1', 'e3'); await force('true');
+  // ---- Real: what was forced and simulated goes
+  await force('n1', 'e4', 'false');
+  await force('n1', 'e3', 'true');
   sr.querySelector('.online-mode[data-mode="real"]').click(); await sleep(20);
-  check('Real: nothing forced or simulated is left, and FORCE is not offered', online.forceCount() === 0 && !online.sims.size
-        && !sr.querySelector('.online-force') && sr.querySelector('.online-note').textContent.startsWith('Real: what Home Assistant runs'),
+  check('Real: nothing forced or simulated is left, and the bar says what a click does', online.forceCount() === 0 && !online.sims.size
+        && sr.querySelector('.online-note').textContent.startsWith('Click a trigger, then FORCE TRUE: Home Assistant runs the automation for real.'),
         JSON.stringify([online.forceCount(), online.sims.size]));
-  check('each automation NET offers Run in Home Assistant', !!monitor(panel, 'n1').querySelector('[data-online="run"]'));
+  check('each automation NET offers a run without a trigger', monitor(panel, 'n1').querySelector('[data-online="run"]').textContent === '▶ Run without a trigger');
+  await openMenu(panel, 'n1', 'e4');
+  check('Real: a condition is checked by Home Assistant itself, and its menu offers Simulate', JSON.stringify(menuButtons(panel)) === JSON.stringify(['simulate'])
+        && menuText(panel).includes('In a real run Home Assistant checks this itself'), menuText(panel));
+  await closeMenu(panel);
 
-  // ---- Run in Home Assistant: asked first, then automation.trigger, checking or skipping the conditions
-  const run = async (answer) => {
-    monitor(panel, 'n1').querySelector('[data-online="run"]').click();
-    await until(() => sr.querySelector('.ask-modal'));
-    const text = sr.querySelector('.ask-text').textContent;
+  // ---- Real: FORCE TRUE on a trigger - asked, then run by LIBI's backend with what the user was shown
+  const fires = () => env.sent.filter(m => m.type === 'libi/online_fire');
+  const fireFrom = async (nid, eid, answer) => {
+    told.length = 0;
+    await openMenu(panel, nid, eid);
+    const btn = sr.querySelector('.online-menu .onl-btn[data-onl="fire"]');
+    if (!btn) throw new Error(`no fire on ${nid}/${eid}: ${menuText(panel)}`);
+    btn.click();
+    if (!(await until(() => sr.querySelector('.ask-modal') || told.length, 2000))) throw new Error('nothing was asked or said');
+    if (!sr.querySelector('.ask-modal')) return { title: '', text: '' };
+    const asked = { title: sr.querySelector('.modal-title').textContent, text: sr.querySelector('.ask-text').textContent,
+      answers: [...sr.querySelectorAll('.ask-answer')].map(b => b.getAttribute('data-answer')) };
     sr.querySelector(`.ask-answer[data-answer="${answer}"]`).click();
-    await sleep(40);
-    return text;
+    await sleep(500);
+    return asked;
   };
-  let text = await run('cancel');
-  check('Run asks first, says what it switches and that a rung of its own trigger does not run', sr.querySelector('.ask-modal') === null
-        && text.startsWith('This really runs the automation: what it switches, switches (input_boolean.valve).') && text.includes('a rung that runs only for its own trigger does not run')
-        && env.services.length === 0, text);
-  await run('check');
-  check('Run, checking its conditions: Home Assistant\'s own automation.trigger', JSON.stringify(env.services)
-        === JSON.stringify([['automation', 'trigger', { entity_id: 'automation.garden', skip_condition: false }]]), JSON.stringify(env.services));
-  await run('skip');
-  check('Run, skipping its conditions', JSON.stringify(env.services[1]) === JSON.stringify(['automation', 'trigger', { entity_id: 'automation.garden', skip_condition: true }]),
-        JSON.stringify(env.services));
+  await openMenu(panel, 'n1', 'e3');
+  check('Real: a trigger\'s menu offers FORCE TRUE in Home Assistant', JSON.stringify(menuButtons(panel)) === JSON.stringify(['fire'])
+        && sr.querySelector('.onl-btn[data-onl="fire"]').textContent === 'FORCE TRUE ▶ run it in Home Assistant', menuText(panel));
+  await closeMenu(panel);
+  let asked = await fireFrom('n1', 'e3', 'cancel');
+  check('it asks first, with what the backend said: which trigger, what it switches',
+        asked.title === 'FORCE TRUE: run "Garden" in Home Assistant?' && asked.text.startsWith('Home Assistant runs it for real, as if trigger 1 (start) happened now.')
+        && asked.text.includes('What it switches, switches (input_boolean.valve).') && JSON.stringify(asked.answers) === JSON.stringify(['run', 'skip', 'cancel']),
+        JSON.stringify(asked));
+  check('the trigger is named by its id (its block is the choose\'s trigger condition)', JSON.stringify(fires()[0])
+        === JSON.stringify({ type: 'libi/online_fire', entity_id: 'automation.garden', trigger_id: 'start' }), JSON.stringify(fires()));
+  check('Cancel: nothing is run', fires().length === 1 && !fires().some(m => m.fire), JSON.stringify(fires()));
+  const polled = () => env.sent.filter(m => m.type === 'trace/list').length;
+  let p0 = polled();
+  await fireFrom('n1', 'e3', 'run');
+  const ran = fires().filter(m => m.fire);
+  check('Run it: the backend runs it, with what the user was shown, checking the conditions', ran.length === 1
+        && JSON.stringify(ran[0]) === JSON.stringify({ type: 'libi/online_fire', entity_id: 'automation.garden', trigger_id: 'start', fire: true, before: 'b1', skip_condition: false })
+        && told.length === 0, JSON.stringify([ran, told]));
+  check('then its trace is read at once, for the blocks', polled() > p0, `${p0} -> ${polled()}`);
+  await fireFrom('n1', 'e8', 'skip');
+  check('the other trigger, skipping the automation\'s own conditions', JSON.stringify(fires().filter(m => m.fire)[1])
+        === JSON.stringify({ type: 'libi/online_fire', entity_id: 'automation.garden', trigger_id: 'stop', fire: true, before: 'b1', skip_condition: true }),
+        JSON.stringify(fires()));
+  check('no service was called by the panel itself, nor the config API', env.services.length === 0 && env.api.length === 0, JSON.stringify([env.services, env.api]));
 
-  // ---- What Home Assistant would run is read from it: a lock it has and the drawing does not, a script that opens a gate
-  const tried = async () => { told.length = 0; monitor(panel, 'n1').querySelector('[data-online="run"]').click(); await sleep(40); return told[0] || ''; };
-  const garden = env.state.configs['config/automation/config/garden'];
-  const k = env.services.length;
-  env.state.configs['config/automation/config/garden'] = { ...garden, actions: [...garden.actions, { action: 'lock.unlock', target: { entity_id: 'lock.front_door' } }] };
-  check("a lock Home Assistant's automation has, though the NET does not draw it, is never run for real",
-        (await tried()).startsWith('LIBI does not run this automation for real: it drives') && told[0].includes('lock.front_door')
-        && env.services.length === k && !sr.querySelector('.ask-modal'), told[0]);
-  env.state.configs['config/automation/config/garden'] = { ...garden, actions: [...garden.actions, { action: 'script.open_gate' }] };
-  env.state.configs['config/script/config/open_gate'] = { alias: 'Open the gate', sequence: [{ action: 'cover.open_cover', target: { entity_id: 'cover.gate' } }] };
-  check('nor one that calls a script that opens a cover', (await tried()).includes('cover.gate') && env.services.length === k, told[0]);
-  env.state.configs['config/automation/config/garden'] = new Error('Resource not found');
-  check('nor one LIBI cannot read from Home Assistant', (await tried()).startsWith('LIBI could not read automation garden from Home Assistant')
-        && env.services.length === k, told[0]);
-  env.state.configs['config/automation/config/garden'] = garden;
+  // ---- What LIBI's backend refuses is said, and nothing runs
+  const k = fires().filter(m => m.fire).length;
+  env.state.fire = (m) => ({ ok: false, risky: ['lock.front_door'], reason: 'LIBI does not run this automation for real: it can reach lock.front_door. Try it in Simulate, or run it from Home Assistant\'s own editor.' });
+  asked = await fireFrom('n1', 'e3', 'run');
+  check('a lock, an alarm or a cover it can reach: the backend\'s reason, no question, nothing run', !asked.title
+        && told[0].startsWith('LIBI does not run this automation for real: it can reach lock.front_door.') && fires().filter(m => m.fire).length === k, told[0]);
+  env.state.fire = (m) => ({ ok: false, reason: 'It is turned off in Home Assistant, so it does not run. Turn it on first.' });
+  await fireFrom('n1', 'e3', 'run');
+  check('one turned off', told[0].startsWith('It is turned off in Home Assistant') && fires().filter(m => m.fire).length === k, told[0]);
+  env.state.fire = (m) => (m.fire ? { ok: false, stale: true, reason: 'The automation changed in Home Assistant since you were asked, so it was not run. Try again.' } : firePlan(m));
+  await fireFrom('n1', 'e3', 'run');
+  check('changed in Home Assistant while asked: refused, and said', told[0].startsWith('The automation changed in Home Assistant since you were asked'), told.join(' | '));
+  env.state.fire = () => { throw new Error('Connection lost'); };
+  await fireFrom('n1', 'e3', 'run');
+  check('Home Assistant not reached: said, nothing run', told[0] === 'LIBI could not reach Home Assistant, so nothing was run: Connection lost', told[0]);
+  env.state.fire = firePlan;
 
-  // ---- Never over changes not saved, for a lock, for one turned off, for a NET not in Home Assistant
-  const n = env.services.length;
-  const tryRun = async () => { told.length = 0; monitor(panel, 'n1').querySelector('[data-online="run"]').click(); await sleep(40); return told[0] || ''; };
+  // ---- Never over changes not saved, never for a NET not in Home Assistant: nothing is even asked of the backend
+  const n = fires().length;
   panel.core.nets[0].rungs[0].elements[2].label = 'input_boolean.lamp';
   panel._render(); panel._paintOnline(); await sleep(20);
-  check('changes not saved: Home Assistant would run what it has, so it is refused', (await tryRun()).startsWith('This NET has changes that are not saved.')
-        && env.services.length === n && !sr.querySelector('.ask-modal'), told[0]);
-  panel.core.nets[0].rungs[0].elements[2].label = 'lock.front_door';
-  panel._markSaved(); panel._render(); panel._paintOnline(); await sleep(20);
-  check('a NET that drives a lock is never run for real', (await tryRun()).startsWith('LIBI does not run this automation for real: it drives lock.front_door.')
-        && env.services.length === n, told[0]);
+  await fireFrom('n1', 'e3', 'run');
+  check('changes not saved: Home Assistant would run what it has, so it is refused', told[0].startsWith('This NET has changes that are not saved.')
+        && fires().length === n && !sr.querySelector('.ask-modal'), told[0]);
   panel.core.nets[0].rungs[0].elements[2].label = 'input_boolean.valve';
   panel._markSaved();
-  env.hass.states['automation.garden'].state = 'off';
-  panel._render(); panel._paintOnline(); await sleep(20);
-  check('one turned off in Home Assistant is not run', (await tryRun()).startsWith('It is turned off in Home Assistant') && env.services.length === n, told[0]);
-  env.hass.states['automation.garden'].state = 'on';
+  const garden = env.hass.states['automation.garden'];
   delete env.hass.states['automation.garden'];
   panel._render(); panel._paintOnline(); await sleep(20);
-  check('a NET not in Home Assistant is not run', (await tryRun()).startsWith('This NET is not in Home Assistant yet') && env.services.length === n, told[0]);
+  await fireFrom('n1', 'e3', 'run');
+  check('a NET not in Home Assistant is not run', told[0].startsWith('This NET is not in Home Assistant yet') && fires().length === n, told[0]);
+  env.hass.states['automation.garden'] = garden;
 
-  // ---- 33a.1: leaving Online, another project - nothing forced is left
-  sr.querySelector('.online-mode[data-mode="simulate"]').click(); await sleep(20);
+  // ---- Run without a trigger: Home Assistant's own Run, asked first
+  told.length = 0;
+  monitor(panel, 'n1').querySelector('[data-online="run"]').click();
+  await until(() => sr.querySelector('.ask-modal'));
+  const plain = { title: sr.querySelector('.modal-title').textContent, text: sr.querySelector('.ask-text').textContent };
+  sr.querySelector('.ask-answer[data-answer="run"]').click(); await sleep(400);
+  check('Run without a trigger says a rung of its own trigger does not run', plain.title === 'Run "Garden" in Home Assistant without a trigger?'
+        && plain.text.includes('a rung that runs only for its own trigger does not run'), JSON.stringify(plain));
+  check('and asks the backend with no trigger', JSON.stringify(fires().filter(m => m.fire).pop())
+        === JSON.stringify({ type: 'libi/online_fire', entity_id: 'automation.garden', fire: true, before: 'b1', skip_condition: false }), JSON.stringify(fires().pop()));
+
+  // ---- A NET drawn in LIBI: its trigger is named by the NET and the block
+  const LEAVE = { id: 'n9', name: 'Leave work', level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r1', comment: '', elements: [
+    { id: 'e1', type: 'cmp_ge', sourceA: 'time', sourceB: 'input_datetime.leave', isTrigger: true },
+    { id: 'e2', type: 'coil_s', label: 'input_boolean.lamp' }] }] };
+  panel.core.nets.push(JSON.parse(JSON.stringify(LEAVE)));
+  panel._markSaved();
+  online.keys = { n9: 'porch' };
+  panel._render(); panel._paintOnline(); await sleep(20);
+  await fireFrom('n9', 'e1', 'run');
+  const drawn = fires().filter(m => m.fire).pop();
+  check('a NET drawn in LIBI: the backend gets the NET and the block, and finds the trigger\'s place itself', drawn.element_id === 'e1'
+        && drawn.net && drawn.net.id === 'n9' && drawn.entity_id === 'automation.porch' && drawn.trigger === undefined && drawn.trigger_id === undefined,
+        JSON.stringify(drawn));
+
+  // ---- Switch to Simulate from a condition's menu
+  await openMenu(panel, 'n1', 'e4');
+  sr.querySelector('.onl-btn[data-onl="simulate"]').click(); await sleep(20);
+  check('Switch to Simulate does', online.mode === 'simulate' && sr.querySelector('.online-mode.on').getAttribute('data-mode') === 'simulate');
+
+  // ---- 33a.1: leaving Online, another project - nothing forced is left; the menu goes with Online
   env.hass.states = quiet;
-  await choose('n1', 'e4'); await force('true');
+  await force('n1', 'e4', 'true');
+  await openMenu(panel, 'n1', 'e4');
   sr.getElementById('onlineBtn').click(); await sleep(20);
-  check('Online off: nothing forced or simulated is left', online.forceCount() === 0 && !online.sims.size && !online.enabled);
+  check('Online off: nothing forced or simulated is left, and no Online menu', online.forceCount() === 0 && !online.sims.size && !online.enabled
+        && !sr.querySelector('.online-menu'));
+  block(panel, 'n1', 'e4').querySelector('.plc-block, .el-ico').click(); await sleep(20);
+  check('Online off: a click on a block opens the editing menu again', !sr.querySelector('.online-menu') && !!sr.querySelector('.palette .pal-btn'));
+  panel._floatingMenu = null;
   sr.getElementById('onlineBtn').click(); await sleep(20);
-  await choose('n1', 'e4'); await force('true');
+  await force('n1', 'e4', 'true');
   panel._markSaved();
   await panel._projectOpen('q');
   check('another project: nothing forced is left', online.forceCount() === 0 && !online.sims.size, online.forceCount());

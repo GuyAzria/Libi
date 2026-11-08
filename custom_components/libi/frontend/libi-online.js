@@ -14,9 +14,8 @@
  */
 /**
  * LIBI - Online Engine
- * v3.93.0
+ * v3.94.0
  */
-// [ADDED v3.77.0 | 2026-11-01] Purpose: The value of IN1 of a CMP DAY - datetime.day.now - is today's day.
 // [CHANGED v3.93.0 | 2026-11-06] Purpose: Online as a PLC's online view and tracer - the user's request. Everything is
 //   kept per NET (two NETs opened from Home Assistant share the ids r1, e3: one was drawn with the other's states). A
 //   block whose entity is unavailable, unknown or gone says so; a comparison shows IN1 and IN2 (the clock now and the
@@ -24,12 +23,14 @@
 //   the run Home Assistant is in. The last real run, from Home Assistant's own trace, is drawn on each block (src: where
 //   the block is in the YAML). Simulate: FORCE TRUE / FALSE on a block, and a forced trigger runs the NET in the panel
 //   only - each condition, each action that would run, each TON counting down - nothing is sent to Home Assistant.
+// [CHANGED v3.94.0 | 2026-11-07] Purpose: The user's screenshot (2026-11-07): the mark of the last run was a grey circle
+//   half outside its block, read as a button that did nothing. It is a line under the block now, in words - RUN ✓ true,
+//   RUN – not reached, SIM ⏳ 00:00:03 - below the Trigger label, which hid IN1. A run Home Assistant started with no
+//   trigger says so. What a real run may reach is checked by LIBI's backend now (online.py), from Home Assistant.
 const ON_STATES = new Set(['on', 'true', 'home', 'open', 'unlocked', 'active', 'detected', 'playing']);
 const PULSE_MS = 4000;
 const DAY_IDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];  // Date.getDay() order, written as a CMP DAY's days
 const ENTITY_ID = /^[a-z_]+\.[a-z0-9_]+$/;
-// A Real run is never offered for these: they lock, arm or open the house (CLAUDE.md RULE 9).
-export const NEVER_RUN_REAL = ['lock', 'alarm_control_panel', 'cover'];
 
 /** "hh:mm:ss", "mm:ss" or seconds as a number of seconds; NaN for what is not a fixed time (a template). */
 export function secondsOf(text) {
@@ -461,6 +462,10 @@ export class LibiOnline {
         else if (exec === 'finished') { text = `${at} finished`; }
         else if (exec) { kind = 'false'; text = `${at} ${exec.replace(/_/g, ' ')}`; }
         else { text = at; }
+        // [ADDED v3.94.0] Started with no trigger (Home Assistant's own Run, or Run without a trigger): a rung that runs
+        // for its own trigger did not run - what the user saw, 2026-11-07, every block "not reached".
+        const traced = get.trace && typeof get.trace === 'object' ? Object.keys(get.trace) : null;
+        if (traced && traced.length && !traced.some(p => /^trigger\/\d+$/.test(p))) text += ' - started with no trigger';
         return { kind, text, running, error, trigger: list.trigger || '', lastStep: list.last_step || '', start };
     }
 
@@ -687,8 +692,8 @@ export class LibiOnline {
         if (!root) return;
         root.querySelectorAll('.libi-el').forEach(node => {
             node.classList.remove('live-on', 'live-off', 'live-unknown', 'live-fresh', 'live-offline', 'live-missing', 'live-forced',
-                'run-fired', 'run-true', 'run-false', 'run-done', 'run-error', 'run-active', 'run-skip');
-            node.querySelectorAll('.live-val, .run-mark').forEach(b => b.remove());
+                'run-fired', 'run-true', 'run-false', 'run-done', 'run-error', 'run-active', 'run-skip', 'run-idle');
+            node.querySelectorAll('.live-val').forEach(b => b.remove());
         });
         root.querySelectorAll('.rung').forEach(node => node.classList.remove('rung-live'));
         root.querySelectorAll('.net-live-note').forEach(node => node.remove());
@@ -702,7 +707,7 @@ export class LibiOnline {
             const marks = new Map();
             for (const rung of net.rungs || []) {
                 const walk = (els) => (els || []).forEach(el => {
-                    const mark = sim ? sim.marks.get(el.id) : this.elementRun(net, rung, el, now);
+                    const mark = this.markOf(net, rung, el, now);
                     if (mark) marks.set(el.id, mark);
                     (el.branches || []).forEach(walk);
                     walk(el.sequence);
@@ -713,32 +718,31 @@ export class LibiOnline {
                 const id = node.getAttribute('data-eid');
                 const res = id ? this.resultOf(net.id, id) : null;
                 const mark = id ? marks.get(id) : null;
+                const lines = [];
+                // [CHANGED v3.94.0] What the run did here is the first line, in words (it was a circle on the corner).
+                if (mark) {
+                    node.classList.add(`run-${mark.kind}`);
+                    lines.push([`live-run run-${mark.kind}`, this.markLine(mark, !!sim)]);
+                }
                 if (res) {
                     node.classList.add(res.power === true ? 'live-on' : res.power === false ? 'live-off' : 'live-unknown');
                     if (res.fresh) node.classList.add('live-fresh');
                     if (res.state === 'offline' || res.state === 'unknown') node.classList.add('live-offline');
                     if (res.state === 'missing') node.classList.add('live-missing');
                     if (res.forced !== null && res.forced !== undefined) node.classList.add('live-forced');
-                    const lines = this.badgeLines(res, sim ? sim.states : null, id, net, mark);
-                    if (lines.length) {
-                        const badge = document.createElement('div');
-                        badge.className = 'live-val';
-                        for (const [cls, text] of lines) {
-                            const span = document.createElement('span');
-                            span.className = cls;
-                            span.textContent = text;
-                            badge.appendChild(span);
-                        }
-                        node.appendChild(badge);
-                    }
+                    lines.push(...this.badgeLines(res, sim ? sim.states : null, id, net, mark));
                 }
-                if (mark) {
-                    node.classList.add(`run-${mark.kind}`);
-                    const tag = document.createElement('div');
-                    tag.className = `run-mark run-${mark.kind}`;
-                    tag.title = `${sim ? 'Simulated run' : 'Last run in Home Assistant'}: ${mark.text}`;
-                    tag.textContent = { fired: '▶', true: '✓', false: '✗', done: '✓', error: '⚠', active: '⏳', skip: '–', idle: '·' }[mark.kind] || '·';
-                    node.appendChild(tag);
+                if (lines.length) {
+                    const badge = document.createElement('div');
+                    // Under the Trigger (or continue if error) label of the block, not on it.
+                    badge.className = node.querySelector(':scope > .trigger-bottom-lbl, :scope > .coe-bottom-lbl') ? 'live-val below-tag' : 'live-val';
+                    for (const [cls, text] of lines) {
+                        const span = document.createElement('span');
+                        span.className = cls;
+                        span.textContent = text;
+                        badge.appendChild(span);
+                    }
+                    node.appendChild(badge);
                 }
             });
             for (const rung of net.rungs || []) {
@@ -757,9 +761,10 @@ export class LibiOnline {
         if (res.state === 'offline') lines.push(['live-state', 'OFFLINE']);
         else if (res.state === 'unknown') lines.push(['live-state', 'UNKNOWN']);
         else if (res.state === 'missing') lines.push(['live-state', 'NOT IN HA']);
-        // The TON a run is in - Home Assistant's, or the simulated one - counts down on the block itself.
-        if (mark && mark.kind === 'active' && mark.remaining !== undefined) lines.push(['live-timer', `⏳ ${clockOf(mark.remaining)}`]);
-        else if (res.remaining !== undefined) lines.push(['live-timer', res.remaining > 0 ? `⏳ ${clockOf(res.remaining)}` : 'Q ✓']);
+        // The TON a run is in - Home Assistant's, or the simulated one - counts down on the run's own line (markLine).
+        if (!(mark && mark.kind === 'active' && mark.remaining !== undefined) && res.remaining !== undefined) {
+            lines.push(['live-timer', res.remaining > 0 ? `⏳ ${clockOf(res.remaining)}` : 'Q ✓']);
+        }
         if (res.in1 !== undefined || res.in2 !== undefined) {
             lines.push(['live-now', `IN1 ${res.in1 === undefined || res.in1 === null ? '?' : res.in1}`]);
             lines.push(['live-now', `IN2 ${res.in2 === undefined || res.in2 === null ? '?' : res.in2}`]);
@@ -770,6 +775,23 @@ export class LibiOnline {
         const el = this.findEl(net, elId);
         if (simStates && el && el.label && simStates.has(el.label)) lines.push(['live-sim', `SIM → ${simStates.get(el.label)}`]);
         return lines;
+    }
+
+    /** [ADDED v3.94.0] What the run did at a block: the simulated run's in Simulate, else Home Assistant's last run. */
+    markOf(net, rung, el, now = this.now()) {
+        const sim = this.mode === 'simulate' ? this.sims.get(net.id) : null;
+        if (sim) return sim.marks.get(el.id) || null;
+        return this.elementRun(net, rung, el, now);
+    }
+
+    /** [ADDED v3.94.0] The run's line under a block, in words: RUN (Home Assistant's) or SIM (the simulated one). */
+    markLine(mark, simulated) {
+        const who = simulated ? 'SIM' : 'RUN';
+        if (mark.kind === 'active') return `${who} ⏳ ${mark.remaining !== undefined ? clockOf(mark.remaining) : 'now'}`;
+        if (mark.kind === 'false') return `${who} ✗ ${String(mark.text || '').startsWith('unknown') ? 'unknown' : 'false'}: stopped here`;
+        const words = { fired: '▶ started the run', idle: '· another trigger', true: '✓ true', done: '✓ done', error: '⚠ error',
+            skip: '– not reached' }[mark.kind];
+        return `${who} ${words || mark.text}`;
     }
 
     findEl(net, elId) {
@@ -825,7 +847,7 @@ export class LibiOnline {
             if (sim && sim.status === 'running' && sim.active) buttons.push(['skip', '⏭ Skip']);
             if (sim) buttons.push(['stop', '⏹ Clear the simulation']);
         } else if (level === 'automation') {
-            buttons.push(['run', '▶ Run in Home Assistant']);
+            buttons.push(['run', '▶ Run without a trigger']);
         }
         const sig = JSON.stringify([chips, sim && [sim.status, sim.text, sim.log.length], vars, buttons]);
         if (box.dataset.sig === sig) return;

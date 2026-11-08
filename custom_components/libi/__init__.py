@@ -12,15 +12,15 @@
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
 """The LIBI integration: a ladder editor panel for Home Assistant automations."""
-# v3.93.0
+# v3.94.0
 # [ADDED v3.34.0 | 2026-10-26] Purpose: The static path and the websocket commands are registered once
 #   in async_setup, so reloading the config entry no longer fails on a route that already exists. The
 #   panel is admin only and is removed through the frontend API on unload, the entry data lives on
 #   entry.runtime_data, and CONFIG_SCHEMA declares that LIBI is set up from the UI only.
-# [CHANGED v3.92.0 | 2026-11-06] Purpose: LIBI_VERSION 3.92.0 (the entities named in LIBI only listed in the Global tab);
-#   the browser must load the new panel and styles, not keep 3.91.0.
 # [CHANGED v3.93.0 | 2026-11-06] Purpose: LIBI_VERSION 3.93.0 (Online as a PLC's online view and tracer, FORCE and
 #   Simulate); the browser must load the new online engine, panel and styles, not keep 3.92.0.
+# [CHANGED v3.94.0 | 2026-11-07] Purpose: LIBI_VERSION 3.94.0 (Online: FORCE on the block clicked, a trigger fired
+#   for real in Home Assistant); the browser must load the new online engine, panel and styles, not keep 3.93.0.
 import logging
 import os
 
@@ -45,7 +45,7 @@ _PANEL_ELEMENT = "libi-panel"
 _DAYS_ROW_JS = "libi-days-row.js"
 # One version number for the whole integration. The panel and every module it imports are served
 # with this string, so the browser can never mix an old file with a new one.
-LIBI_VERSION = "3.93.0"
+LIBI_VERSION = "3.94.0"
 
 # [CHANGED v3.15.2] The frontend used to be served from /local/libi. /local is Home Assistant's own
 # alias for the config/www folder and it is registered before any custom integration, so if a folder
