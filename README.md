@@ -68,9 +68,9 @@ The software is built upon the **IEC 61131-3** standard, the international stand
     * its last run
     * the value of every variable it uses; one that is offline is red
   * **Each block** shows:
-    * its state
+    * its state: green when it is TRUE - an action, while what it drives is on - and grey when it is not
     * **OFFLINE** or **NOT IN HA** when its entity is unavailable or gone
-    * for a comparison, **IN1** and **IN2**, for example the clock now and the time it waits for
+    * for a comparison, **IN1** and **IN2**, for example the clock now and the time it waits for, or the day now and the days ticked on the card (**IN2 sun mon tue wed thu**). Against a list of states (**IN2 rainy, pouring, hail**), **=** is TRUE when IN1 is one of them and **≠** when it is none of them; against a zone, IN1 is compared with the zone's name, as Home Assistant names a person's place
     * for a TON, the time left, counting down: the *for* of a trigger, or the delay a run is in
   * **The last real run**, from Home Assistant's own trace, is written under each block: **RUN ▶ started the run** (the trigger that started it), **RUN ✓ true** / **RUN ✓ done**, **RUN ✗ false: stopped here**, **RUN ⚠ error**, **RUN ⏳ 00:01:20** (the step it is in, counting down), **RUN – not reached**. A run started with no trigger says so in the monitor. For a NET you drew in LIBI, the run is shown in its monitor rather than on each block.
   * **Click a block** to open its menu, next to the block: what it gives now, what the run did there (with Home Assistant's reason for an error), and what you can do with it.

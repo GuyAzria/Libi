@@ -1,15 +1,17 @@
 /*
  * LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
- * [ADDED v1.0.0 | 2026-11-06] Purpose: What the Online pages share (test_panel_online*.html): a Home Assistant whose
- *   states, time and traces are those of a moment of trace_fixture.js - real runs of a real Home Assistant - whose
- *   trace/list and trace/get answer as Home Assistant's do, and which records every service call and config API call;
- *   and the panel on it, with the captured NETs, Online on. Not a test page itself: the runner runs test_*.html only.
- *   trace/list without an item answers every automation's runs (state.listAllFails: as a Home Assistant that wants the
- *   item).
+ * What the Online pages share (test_panel_online*.html): a Home Assistant whose states, time and traces are those of a
+ *   moment of trace_fixture.js - real runs of a real Home Assistant - whose trace/list and trace/get answer as Home
+ *   Assistant's do, and which records every service call and config API call; and the panel on it, with the captured
+ *   NETs, Online on. Not a test page itself: the runner runs test_*.html only. trace/list without an item answers every
+ *   automation's runs (state.listAllFails: as a Home Assistant that wants the item).
  * [CHANGED v1.1.0 | 2026-11-07] Purpose: libi/online_fire answers as LIBI's backend does (tests/test_online_fire.py runs
  *   the real one): state.fire(message) - by default a run it would start, of the trigger asked for, and with fire set
  *   and the before it gave, started. The run's line under a block (.live-run) is what markOf reads; openMenu and
  *   menuText are a block's Online menu.
+ * [CHANGED v1.2.0 | 2026-11-09] Purpose: roomChecks - the user's screenshot: under a time trigger in Traces, RUN and
+ *   IN1 showed and IN2 was cut off by the end of the NET's drawing. Every line under every block inside the drawing and
+ *   clear of every other block, with four lines under a trigger, in both directions; editing keeps its layout.
  */
 import '../../custom_components/libi/frontend/libi-panel.js';
 import { CAPTURE } from './trace_fixture.js';
@@ -167,4 +169,118 @@ export async function onlineLayoutChecks(check, panel, phone) {
     await closeMenu(panel);
   }
   document.documentElement.setAttribute('dir', 'ltr');
+}
+
+/** [ADDED v1.2.0] The user's train reminder (2026-11-09) as their screenshot had it, a NET of one rung: a time trigger,
+ *  the days, a message - IN2 under the trigger was cut off by the end of the drawing. */
+export const ONE_NET = { id: 'n_one', name: 'Train reminder', level: 'automation', collapsed: false, links: [], rungs: [
+  { id: 'r1', comment: 'When the time is the train reminder, if the day is ticked', elements: [
+    { id: 'e1', type: 'cmp_eq', isTrigger: true, sourceA: 'time', sourceB: 'input_datetime.sh_t_tzkvrt_lrkbt' },
+    { id: 'e2', type: 'cmp_eq', isTrigger: false, sourceA: 'weekday', sourceB: 'input_number.days' },
+    { id: 'e3', type: 'move', isTrigger: false, mode: 'value', source: 'Train', target: 'input_text.message' }] },
+] };
+
+/** [ADDED v1.2.0] More of what a NET holds: that rung, a rung of two branches, a rung that starts with a trigger, and a
+ *  last rung of two triggers, either one (OR). Rung 2 hangs from the train reminder, as an imported NET does. */
+export const ROOM_NET = { id: 'n_r', name: 'Train', level: 'automation', collapsed: false, links: [], rungs: [
+  { id: 'r1', comment: 'When the time is the train reminder, if the day is ticked', elements: [
+    { id: 'e1', type: 'cmp_eq', isTrigger: true, sourceA: 'time', sourceB: 'input_datetime.sh_t_tzkvrt_lrkbt' },
+    { id: 'e2', type: 'cmp_eq', isTrigger: false, sourceA: 'weekday', sourceB: 'input_number.days' },
+    { id: 'e3', type: 'move', isTrigger: false, mode: 'value', source: 'Train', target: 'input_text.message' }] },
+  { id: 'r2', comment: '', sharesHead: true, elements: [
+    { id: 'p1', type: 'parallel', closed: true, branches: [
+      [{ id: 'e4', type: 'cmp_gt', isTrigger: false, sourceA: 'sensor.temperature', sourceB: '20' }],
+      [{ id: 'e5', type: 'contact_no', isTrigger: false, label: 'binary_sensor.door' }]] },
+    { id: 'e6', type: 'coil_s', isTrigger: false, label: 'light.lamp' }] },
+  { id: 'r3', comment: '', elements: [
+    { id: 'e7', type: 'cmp_eq', isTrigger: true, sourceA: 'time', sourceB: 'input_datetime.other_reminder' },
+    { id: 'e8', type: 'cmp_ne', isTrigger: false, sourceA: 'weather.home', sourceB: 'rainy, pouring, hail' },
+    { id: 'e9', type: 'coil_s', isTrigger: false, label: 'switch.valve' }] },
+  { id: 'r4', comment: 'Two triggers, either one', elements: [
+    { id: 'p2', type: 'parallel', closed: true, branches: [
+      [{ id: 'e10', type: 'cmp_eq', isTrigger: true, sourceA: 'time', sourceB: 'input_datetime.other_reminder' }],
+      [{ id: 'e11', type: 'contact_no', isTrigger: true, label: 'binary_sensor.door' }]] },
+    { id: 'e12', type: 'coil_s', isTrigger: false, label: 'light.lamp' }] },
+] };
+
+/** [ADDED v1.2.0] ONE_NET and ROOM_NET in Traces: under each block up to four lines (the run, FORCE, OFFLINE, IN1, IN2),
+ *  none cut by the end of its NET's drawing or lying over another block, in both directions; editing keeps its layout. */
+export async function roomChecks(check) {
+  const env = makeOnline();
+  const panel = await makeOnlinePanel(env, { nets: [ONE_NET, ROOM_NET] });
+  const sr = panel.shadowRoot;
+  const st = (state, attributes = {}) => ({ state, attributes, last_changed: '2026-11-09T03:00:00+00:00' });
+  env.hass.states = {
+    'input_datetime.sh_t_tzkvrt_lrkbt': st('14:01:00', { has_date: false, has_time: true, friendly_name: 'Train reminder' }),
+    'input_datetime.other_reminder': st('unavailable', { has_date: false, has_time: true }),
+    'input_number.days': st('31.0'), 'input_text.message': st(''), 'sensor.temperature': st('unavailable'),
+    'binary_sensor.door': st('unavailable'), 'light.lamp': st('off'), 'weather.home': st('sunny'), 'switch.valve': st('off') };
+  let now = new Date(2026, 10, 9, 5, 49, 36).getTime();
+  panel.online.now = () => now;
+  panel.online.setMode('simulate');
+  panel._render(); panel._paintOnline(); await sleep(20);
+  const force = async (nid, eid) => {
+    await openMenu(panel, nid, eid);
+    const b = sr.querySelector('.online-menu .onl-btn[data-onl="force-true"]');
+    if (!b) throw new Error(`no FORCE TRUE on ${nid}/${eid}: ${menuText(panel)}`);
+    b.click(); await sleep(20);
+  };
+  // Each run starts at the train reminder (forced last); three blocks also say OFFLINE: four lines under each.
+  for (const eid of ['e4', 'e8', 'e7', 'e10', 'e11', 'e1']) await force('n_r', eid);
+  await force('n_one', 'e1');
+  for (let i = 0; i < 3; i++) { now += 1000; panel._paintOnline(); await sleep(20); }
+  clearInterval(panel._onlineTimer);
+
+  const lines = (nid, eid) => badges(panel, nid, eid);
+  check('the train reminder\'s trigger has its four lines, IN2 the time it starts at: 14:01:00',
+        ['n_one', 'n_r'].every(nid => lines(nid, 'e1').length >= 4 && lines(nid, 'e1').includes('IN2 14:01:00')
+          && lines(nid, 'e1').some(l => l.startsWith('IN1 05:49:'))), JSON.stringify([lines('n_one', 'e1'), lines('n_r', 'e1')]));
+  check('a block in a branch, a trigger in a rung below and a trigger in a branch have four lines too',
+        ['e4', 'e7', 'e10'].every(id => lines('n_r', id).length >= 4), JSON.stringify(['e4', 'e7', 'e10'].map(id => lines('n_r', id))));
+
+  const meets = (a, b) => a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+  const named = (x) => { const b = x.closest('.libi-el'); return `${b ? `${b.getAttribute('data-nid')}/${b.getAttribute('data-eid')}` : '?'}:${x.textContent}`; };
+  for (const dir of ['ltr', 'rtl']) {
+    document.documentElement.setAttribute('dir', dir);
+    panel._render(); panel._paintOnline(); await sleep(30);
+    clearInterval(panel._onlineTimer);
+    const cut = [], over = [];
+    let count = 0;
+    for (const nid of ['n_one', 'n_r']) {
+      const box = sr.querySelector(`.rung-scroll[data-nid="${nid}"]`).getBoundingClientRect();
+      const spans = [...sr.querySelectorAll(`.libi-el[data-nid="${nid}"] .live-val > span`)];
+      count += spans.length;
+      for (const s of spans) {
+        const r = s.getBoundingClientRect();
+        if (r.bottom > box.bottom + 0.5 || r.top < box.top - 0.5) cut.push(`${named(s)} ${Math.round(r.bottom)} > ${Math.round(box.bottom)}`);
+      }
+      // Another block: its own box and everything drawn for it (the name over it, the Trigger label), not its lines.
+      const blocks = [...sr.querySelectorAll(`.libi-el[data-nid="${nid}"]:not(.libi-parallel)`)];
+      for (const s of spans) {
+        const r = s.getBoundingClientRect();
+        const own = s.closest('.libi-el');
+        for (const other of blocks) {
+          if (other === own) continue;
+          const parts = [other, ...other.querySelectorAll('*')].filter(x => !x.closest('.live-val'))
+            .map(x => x.getBoundingClientRect()).filter(q => q.width > 0 && q.height > 0);
+          if (parts.some(q => meets(r, q))) over.push(`${named(s)} over ${other.getAttribute('data-eid')}`);
+        }
+      }
+    }
+    check(`${dir}: no line under a block is cut by the end of its NET's drawing - IN2 under the train reminder neither`,
+          count >= 24 && cut.length === 0, JSON.stringify([count, cut]));
+    check(`${dir}: no line under a block lies over another block - the rung below, the branch below`, over.length === 0, JSON.stringify(over));
+  }
+  document.documentElement.setAttribute('dir', 'ltr');
+
+  // Editing keeps its drawing: the room is there in Traces only.
+  const tall = sr.querySelector('.rung-scroll[data-nid="n_r"] .rung-wire').getBoundingClientRect().height;
+  panel.online.enabled = false;
+  panel._render(); await sleep(20);
+  const wire = sr.querySelector('.rung-scroll[data-nid="n_r"] .rung-wire');
+  const editing = wire ? wire.getBoundingClientRect().height : 0;
+  check('editing (Traces off) draws the NET as before, without the room for the lines',
+        panel.core.liveRoom === 0 && editing > 0 && editing < tall && editing === panel.core.layoutNet(panel.core.nets[1]).height,
+        JSON.stringify([panel.core.liveRoom, editing, tall]));
+  return { env, panel };
 }

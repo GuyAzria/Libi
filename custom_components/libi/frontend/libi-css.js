@@ -14,16 +14,15 @@
  */
 /**
  * LIBI Panel - Styles
- * v3.94.0
+ * v3.94.1
  */
-// [CHANGED v3.93.0 | 2026-11-06] Purpose: Online as a PLC's online view and tracer: the Online bar (.online-*), a
-//   NET's monitor (.net-monitor, .mon-*), a block offline or forced, its TON's time left, IN1 and IN2, and the mark of
-//   what the last run did at it (.run-mark). FORCE is magenta, as on a PLC; what is running is blue.
 // [CHANGED v3.94.0 | 2026-11-07] Purpose: The user's screenshot: the run's mark is a line in words under the block
 //   (.live-run), no longer a circle half outside it (.run-mark is gone), and the lines start below the Trigger label
 //   (.below-tag), which covered IN1. A block's Online menu (.online-menu, .onl-*). The bar sticks to the very top of the
 //   canvas (the canvas's padding showed the NET above it). Traces is read only (.trace-lock): what edits is dimmed or
 //   hidden, a click on it says why (.trace-toast), and the Inspector waits (.trace-locked-note).
+// [CHANGED v3.94.1 | 2026-11-08] Purpose: The user's screenshot: a MOVE TTS whose script was off showed "off" in green.
+//   A line under a block that is not TRUE or on is grey (.live-now.off).
 export const getStyles = () => `
 :host { display: block; height: 100vh; overflow-y: hidden; background: var(--primary-background-color, #f5f5f5); color: var(--primary-text-color, #212121); font-family: var(--primary-font-family, sans-serif); box-sizing: border-box; direction: ltr !important; text-align: left; }
 /* [ADDED v3.35.0] Colour tokens. The light values are the colours the panel always used; the
@@ -551,6 +550,7 @@ export const getStyles = () => `
 @keyframes livePulse { 0% { box-shadow: 0 0 0 0 rgba(46,125,50,.55); } 100% { box-shadow: 0 0 0 12px rgba(46,125,50,0); } }
 .live-val { position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 2px; align-items: center; white-space: nowrap; pointer-events: none; z-index: 6; }
 .live-now { font-size: 11px; font-weight: 800; color: var(--libi-ok-strong); background: var(--libi-ok-bg); border: 1px solid var(--libi-ok-border); border-radius: 4px; padding: 1px 5px; }
+.live-now.off { color: var(--secondary-text-color, #9e9e9e); background: var(--secondary-background-color, #f5f5f5); border-color: var(--divider-color, #e0e0e0); }
 .live-prev { font-size: 10px; color: var(--secondary-text-color, #9e9e9e); background: var(--secondary-background-color, #f5f5f5); border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; padding: 1px 5px; }
 
 .rung.rung-live { background: rgba(46,125,50,.05); border-radius: 8px; }

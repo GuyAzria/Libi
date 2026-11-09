@@ -14,13 +14,15 @@
  */
 /**
  * LIBI Panel - Core Engine
- * v3.91.0
+ * v3.94.3
  */
-// [ADDED v3.88.0 | 2026-11-05] Purpose: A recipient of LIBI Global (script.libi_send_to_<name>) shows its name in LIBI
-//   Global, not its script's alias (recipients, recipientOf).
 // [CHANGED v3.91.0 | 2026-11-06] Purpose: CLAUDE.md RULE 38 - a copy of a NET (duplicateNet) is a new automation, not
 //   the one its original was opened from: it no longer gets an ha_id ("<id>_copy"), which saved it over the user's own
 //   automation of that id.
+// [CHANGED v3.94.3 | 2026-11-09] Purpose: The user's screenshot: in Traces, IN2 under a time trigger was cut off by the
+//   end of the NET's drawing. liveRoom - the room under every block for Traces' lines: a rung's pad under its blocks
+//   when larger (layout), added between branches, which editing packs block to block (calcHeightPx), and the pad
+//   under a parallel too, for its own line; 0 while editing, so the editing layout is as it was.
 export class LibiCore {
     constructor() {
         this.nets = [];
@@ -34,6 +36,9 @@ export class LibiCore {
         this.lid = 1;
 
         this.LAY = { DOT: 16, GAP: 24, SPLIT: 32, MERGE: 32, ANCHOR: 38, REP_W: 70, CAP: 8, BOTTOM_PAD: 44, LEAD: 24, LBL_PAD: 56, RUNG_GAP: 10 };
+        // [ADDED v3.94.3] Room under each block for the lines Traces writes there; the panel sets it (LIVE_ROOM in
+        // libi-online.js) while Traces is on and back to 0 for editing.
+        this.liveRoom = 0;
 
         // [ADDED v3.5.0] The three kinds of logic a net can be.
         this.LEVELS = ['automation', 'script', 'scene'];
@@ -357,7 +362,7 @@ export class LibiCore {
             } else if (el.type === 'repeat') {
                 maxH = Math.max(maxH, this.calcHeightPx(el.sequence));
             } else {
-                maxH = Math.max(maxH, this.getElH(el) + (el.isTrigger ? 24 : 0));
+                maxH = Math.max(maxH, this.getElH(el) + (el.isTrigger ? 24 : 0) + this.liveRoom);
             }
         }
         return maxH;
@@ -660,7 +665,7 @@ export class LibiCore {
                 const ex = cur + L.GAP;
                 ctx.nodes.push({ kind: 'el', el, path, x: ex, y, w, par: ctx.par, bidx: ctx.bidx });
                 ctx.maxX = Math.max(ctx.maxX, ex + w);
-                ctx.maxBottom = Math.max(ctx.maxBottom, y - L.ANCHOR + this.getElH(el) + L.BOTTOM_PAD);
+                ctx.maxBottom = Math.max(ctx.maxBottom, y - L.ANCHOR + this.getElH(el) + Math.max(L.BOTTOM_PAD, this.liveRoom));
                 cur = ex + w + L.GAP;
                 cur += (ctx.gaps && ctx.gaps[`${prefix}${i + 1}`]) || 0;
                 addDot(`${prefix}${i + 1}`, cur); cur += L.DOT;
@@ -732,6 +737,8 @@ export class LibiCore {
         ctx.nodes.push({ kind: 'parallel', el, path, x: cur, y, w: Math.max(boxRight - cur, L.SPLIT), h: (by - y), par: ctx.par, bidx: ctx.bidx });
         const lastY = ends.length ? ends[ends.length - 1].y : y;
         ctx.maxBottom = Math.max(ctx.maxBottom, lastY + 40);
+        // [ADDED v3.94.3] In Traces the run's line of the whole parallel is under it (at by): the rung's pad under it too.
+        if (this.liveRoom) ctx.maxBottom = Math.max(ctx.maxBottom, by + L.BOTTOM_PAD);
         return after;
     }
 

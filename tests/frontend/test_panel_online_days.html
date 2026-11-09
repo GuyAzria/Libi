@@ -1,0 +1,112 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-08] Purpose: The user's screenshots (2026-11-08). A CMP DAY's IN2 showed the days helper as
+  its number (31.0), not the days chosen on the card: it says the days by name (sun mon tue wed thu), and so does the
+  NET's monitor, and the CMP DAY is TRUE or FALSE for today. A MOVE TTS whose script was off was green, as if it had
+  run: an action is green only while its target is on, and the lines under any block are grey when it is not TRUE or
+  on. An action that is off still does not stop its rung. Nothing is sent to Home Assistant.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi online days test</title></head>
+<body style="margin:0;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { makeOnline, makeOnlinePanel, block, badges, chips, sleep, openMenu, menuText, closeMenu } from './online_fixture.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const trig = (id, label) => ({ id, type: 'contact_no', isTrigger: true, label });
+const day = (id, type, sourceB) => ({ id, type, isTrigger: false, sourceA: 'weekday', sourceB, kind: 'date' });
+const tts = (id, target) => ({ id, type: 'move', isTrigger: false, mode: 'tts', tts: 'Time to go', stream: 'alarm_stream', target });
+const NET = { id: 'n_days', name: 'Leave work', level: 'automation', collapsed: false, links: [], rungs: [
+  { id: 'r1', comment: '', elements: [trig('e1', 'input_boolean.go'), day('e2', 'cmp_eq', 'input_number.days'), tts('e3', 'script.libi_send_to_guy')] },
+  { id: 'r2', comment: '', elements: [trig('e4', 'input_boolean.go'), day('e5', 'cmp_eq', 'mon,tue'), day('e6', 'cmp_ne', 'input_number.days'), { id: 'e7', type: 'coil_s', isTrigger: false, label: 'light.lamp' }] },
+  { id: 'r3', comment: '', elements: [trig('e8', 'input_boolean.go'), tts('e9', 'script.libi_send_to_guy')] },
+] };
+
+try {
+  const env = makeOnline();
+  const panel = await makeOnlinePanel(env, { nets: [NET] });
+  const sr = panel.shadowRoot;
+  const st = (state, name) => ({ state, attributes: name ? { friendly_name: name } : {}, last_changed: '2026-11-08T07:00:00+00:00' });
+  // Sunday 8 November 2026, 10:00 in the browser's own time zone (Date.getDay() is local, as the panel's clock is).
+  let when = new Date(2026, 10, 8, 10, 0, 0).getTime();
+  panel.online.now = () => when;
+  const show = async (states) => {
+    env.hass.states = { 'input_boolean.go': st('on', 'Go'), 'light.lamp': st('off', 'Lamp'), 'script.libi_send_to_guy': st('off', 'LIBI Global: Guy'), ...states };
+    panel._paintOnline();
+    await sleep(20);
+  };
+  const classes = (eid) => { const b = block(panel, 'n_days', eid); return b ? [...b.classList].filter(c => c.startsWith('live-')) : ['NO BLOCK']; };
+  const lines = (eid) => { const b = block(panel, 'n_days', eid); return b ? [...b.querySelectorAll('.live-val .live-now')] : []; };
+  const grey = (eid) => lines(eid).length > 0 && lines(eid).every(s => s.classList.contains('off'));
+  const green = (eid) => lines(eid).length > 0 && lines(eid).every(s => !s.classList.contains('off'));
+
+  // ---- The user's helper: 31 = Sunday to Thursday, today Sunday
+  await show({ 'input_number.days': st('31.0', 'Leave work days') });
+  check('a CMP DAY on a days helper says the days by name: IN2 sun mon tue wed thu, not 31.0',
+        badges(panel, 'n_days', 'e2').includes('IN2 sun mon tue wed thu') && !badges(panel, 'n_days', 'e2').some(t => t.includes('31')),
+        JSON.stringify(badges(panel, 'n_days', 'e2')));
+  check('IN1 is still the day now (sun)', badges(panel, 'n_days', 'e2').includes('IN1 sun'), JSON.stringify(badges(panel, 'n_days', 'e2')));
+  check('on a day it holds the CMP DAY is TRUE: green, and so are its lines', classes('e2').includes('live-on') && green('e2'),
+        JSON.stringify([classes('e2'), lines('e2').map(s => s.className)]));
+  await openMenu(panel, 'n_days', 'e2');
+  check('its menu says TRUE, not unknown', /Now: TRUE/.test(menuText(panel)), menuText(panel));
+  await closeMenu(panel);
+  check('days written in (mon,tue) are said the same way, and FALSE on Sunday: grey, and so are its lines',
+        badges(panel, 'n_days', 'e5').includes('IN2 mon tue') && classes('e5').includes('live-off') && grey('e5'),
+        JSON.stringify([badges(panel, 'n_days', 'e5'), classes('e5'), lines('e5').map(s => s.className)]));
+  check('CMP DAY ≠ is FALSE on a day the helper holds', classes('e6').includes('live-off'), JSON.stringify(classes('e6')));
+  const vars = chips(panel, 'n_days');
+  check("the NET's monitor says the helper's days by name too", vars.some(c => c === 'Leave work days = sun mon tue wed thu') && !vars.some(c => c.includes('31')),
+        JSON.stringify(vars));
+  check('the monitor still says other values as they are', vars.some(c => c === 'Lamp = off'), JSON.stringify(vars));
+
+  // ---- MOVE TTS: off is grey, on is green
+  check('a MOVE TTS whose script is off is not green: grey, and so is its "off"',
+        !classes('e3').includes('live-on') && classes('e3').includes('live-off') && badges(panel, 'n_days', 'e3').includes('off') && grey('e3'),
+        JSON.stringify([classes('e3'), badges(panel, 'n_days', 'e3'), lines('e3').map(s => s.className)]));
+  check('a coil whose light is off: its "off" is grey too', classes('e7').includes('live-off') && grey('e7'), JSON.stringify([classes('e7'), lines('e7').map(s => s.className)]));
+  const rgb = (s) => getComputedStyle(s).color;
+  const offLine = lines('e3')[0];
+  const onLine = lines('e2')[0];
+  check('grey is drawn grey: a line that is off has another colour than one that is on', offLine && onLine && rgb(offLine) !== rgb(onLine),
+        offLine && onLine ? `${rgb(offLine)} vs ${rgb(onLine)}` : 'no line');
+  check('an action that is off does not stop its rung: rung 3 is still lit', !!sr.querySelector('.rung[data-nid="n_days"][data-rid="r3"].rung-live'));
+  await show({ 'input_number.days': st('31.0', 'Leave work days'), 'script.libi_send_to_guy': st('on', 'LIBI Global: Guy') });
+  check('while its script runs (on), the MOVE TTS is green, and so is its "on"', classes('e3').includes('live-on') && green('e3'),
+        JSON.stringify([classes('e3'), lines('e3').map(s => s.className)]));
+
+  // ---- Other days and values
+  await show({ 'input_number.days': st('127', 'Leave work days') });
+  check('all seven days: "every day"', badges(panel, 'n_days', 'e2').includes('IN2 every day'), JSON.stringify(badges(panel, 'n_days', 'e2')));
+  await show({ 'input_number.days': st('0', 'Leave work days') });
+  check('no day ticked: "no day", and the CMP DAY is FALSE', badges(panel, 'n_days', 'e2').includes('IN2 no day') && classes('e2').includes('live-off'),
+        JSON.stringify([badges(panel, 'n_days', 'e2'), classes('e2')]));
+  await show({ 'input_number.days': st('65.0', 'Leave work days') });
+  check('Sunday and Saturday (1 + 64): "sun sat", in the order of the week', badges(panel, 'n_days', 'e2').includes('IN2 sun sat'), JSON.stringify(badges(panel, 'n_days', 'e2')));
+  when = new Date(2026, 10, 13, 10, 0, 0).getTime();  // Friday
+  await show({ 'input_number.days': st('31', 'Leave work days') });
+  check('on Friday the helper of Sunday to Thursday gives FALSE, and IN1 is fri',
+        classes('e2').includes('live-off') && badges(panel, 'n_days', 'e2').includes('IN1 fri') && classes('e6').includes('live-on'),
+        JSON.stringify([classes('e2'), badges(panel, 'n_days', 'e2'), classes('e6')]));
+  await show({ 'input_number.days': st('unavailable', 'Leave work days') });
+  check('a days helper that is offline is not read as days: unknown, and OFFLINE',
+        classes('e2').includes('live-unknown') && badges(panel, 'n_days', 'e2').includes('OFFLINE') && !badges(panel, 'n_days', 'e2').some(t => /day/.test(t)),
+        JSON.stringify([classes('e2'), badges(panel, 'n_days', 'e2')]));
+
+  check('nothing was sent to Home Assistant', env.services.length === 0 && env.api.length === 0, JSON.stringify([env.services, env.api]));
+} catch (err) {
+  check('the page ran without an error', false, err && err.stack ? err.stack : String(err));
+}
+
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed });
+</script>
+</body></html>

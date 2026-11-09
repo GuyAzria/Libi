@@ -14,28 +14,26 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.94.0
+ * v3.94.3
  */
-// [CHANGED v3.93.0 | 2026-11-06] Purpose: Online as a PLC's online view and tracer - the user's request: the Online bar
-//   (Simulate or Real, FORCE TRUE / FALSE on the block chosen), a monitor over each NET (the clock, the automation in
-//   Home Assistant and its last run, every variable's value), Home Assistant's traces read every 3 seconds and drawn on
-//   the blocks, and Run in Home Assistant - asked first, never for a lock, an alarm or a cover, never over changes not
-//   saved. Leaving Online, Real, another project: nothing forced is left.
 // [CHANGED v3.94.0 | 2026-11-07] Purpose: The user's screenshot (2026-11-07) - they could not find FORCE, nor fire the
 //   trigger they wanted in Real. In Online a click on a block opens its own menu, by the block: FORCE TRUE / FALSE and
 //   Release in Simulate; in Real, FORCE TRUE on a trigger runs the automation in Home Assistant as if that trigger fired
 //   (libi/online_fire, asked first), and a condition offers Simulate. What a real run can reach is checked by LIBI's
 //   backend from Home Assistant, areas and devices too. Traces is read only - the user's rule, the same day: while it is
 //   on, a click follows the run or FORCEs, nothing edits (TRACE_ALLOWED, _traceGuard); editing comes back with it off.
-import { LibiCore } from './libi-core.js?v=3.94.0';
-import { getStyles } from './libi-css.js?v=3.94.0';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.94.0';
-import { LibiOnline } from './libi-online.js?v=3.94.0';
-import { LibiAiChat } from './libi-ai.js?v=3.94.0';
+// [CHANGED v3.94.3 | 2026-11-09] Purpose: The user's screenshot: in Traces, IN2 under a time trigger was cut off.
+//   _netCanvasHtml lays a NET out with room under every block (LIVE_ROOM) while Traces is on, without it for
+//   editing. LIBI_BUILD 3.94.3, so the browser loads this, the core and the online engine, not 3.94.2.
+import { LibiCore } from './libi-core.js?v=3.94.3';
+import { getStyles } from './libi-css.js?v=3.94.3';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.94.3';
+import { LibiOnline, LIVE_ROOM } from './libi-online.js?v=3.94.3';
+import { LibiAiChat } from './libi-ai.js?v=3.94.3';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.94.0';
+export const LIBI_BUILD = '3.94.3';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -3632,6 +3630,8 @@ class LibiPanel extends HTMLElement {
     }
 
     _netCanvasHtml(net) {
+        // [ADDED v3.94.3] Traces writes lines under each block: room for them, so none is cut or covers the rung below.
+        this.core.liveRoom = this.online && this.online.enabled ? LIVE_ROOM : 0;
         const L = this.core.layoutNet(net);
         this._netLayout = this._netLayout || {};
         this._netLayout[net.id] = L;

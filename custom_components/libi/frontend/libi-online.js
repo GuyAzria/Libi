@@ -14,23 +14,31 @@
  */
 /**
  * LIBI - Online Engine
- * v3.94.0
+ * v3.94.3
  */
-// [CHANGED v3.93.0 | 2026-11-06] Purpose: Online as a PLC's online view and tracer - the user's request. Everything is
-//   kept per NET (two NETs opened from Home Assistant share the ids r1, e3: one was drawn with the other's states). A
-//   block whose entity is unavailable, unknown or gone says so; a comparison shows IN1 and IN2 (the clock now and the
-//   time it waits for); a TON counts down - the for of a trigger from the entity's last change, a delay from the step of
-//   the run Home Assistant is in. The last real run, from Home Assistant's own trace, is drawn on each block (src: where
-//   the block is in the YAML). Simulate: FORCE TRUE / FALSE on a block, and a forced trigger runs the NET in the panel
-//   only - each condition, each action that would run, each TON counting down - nothing is sent to Home Assistant.
-// [CHANGED v3.94.0 | 2026-11-07] Purpose: The user's screenshot (2026-11-07): the mark of the last run was a grey circle
-//   half outside its block, read as a button that did nothing. It is a line under the block now, in words - RUN ✓ true,
-//   RUN – not reached, SIM ⏳ 00:00:03 - below the Trigger label, which hid IN1. A run Home Assistant started with no
-//   trigger says so. What a real run may reach is checked by LIBI's backend now (online.py), from Home Assistant.
+// [CHANGED v3.94.2 | 2026-11-08] Purpose: The user's screenshot: CMP ≠ weather against "rainy, pouring, lightning-rainy,
+//   snowy-rainy, hail" was TRUE while it rained - the watering must not run then. IN2 a list of states (as a state
+//   condition holds them): = is TRUE when IN1 is one of them, ≠ when it is none of them. IN2 a zone: compared by its
+//   name, as a person's state names it (home for zone.home) - it was compared with the zone's count of people.
+// [CHANGED v3.94.3 | 2026-11-09] Purpose: The user's screenshot: under a time trigger RUN and IN1 showed, IN2 (the time
+//   it starts at) did not - the end of the NET's drawing cut it, and between rungs the lines lay over the rung below.
+//   LIVE_ROOM is the room the panel gives under every block while Traces is on (libi-core.js liveRoom).
 const ON_STATES = new Set(['on', 'true', 'home', 'open', 'unlocked', 'active', 'detected', 'playing']);
 const PULSE_MS = 4000;
 const DAY_IDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];  // Date.getDay() order, written as a CMP DAY's days
 const ENTITY_ID = /^[a-z_]+\.[a-z0-9_]+$/;
+// [ADDED v3.94.1] The days of an 8-bit helper (DAY_BITS_DOMAINS in yaml_to_libi.py): bit 1 Sunday ... bit 64 Saturday.
+const DAY_BITS = /^(input_number|number)\.[a-z0-9_]+$/;
+// [ADDED v3.94.3] The room, in px, Traces needs under a block: four lines (the run, FORCE or OFFLINE, IN1, IN2 - 21px
+// each with the gap) under a trigger's label. The panel lays the NETs out with it while Traces is on (core.liveRoom),
+// so no line is cut by the end of the drawing or lies over the rung or branch below.
+export const LIVE_ROOM = 96;
+
+/** [ADDED v3.94.1] Days as the user reads them: "sun mon tue", "every day", "no day". */
+function daysText(days) {
+    if (!days.length) return 'no day';
+    return days.length === DAY_IDS.length ? 'every day' : days.join(' ');
+}
 
 /** "hh:mm:ss", "mm:ss" or seconds as a number of seconds; NaN for what is not a fixed time (a template). */
 export function secondsOf(text) {
@@ -155,6 +163,37 @@ export class LibiOnline {
         return asText;
     }
 
+    /** [ADDED v3.94.1] The days a CMP DAY's IN2 holds, in Date.getDay() order: the bits of an 8-bit helper (as
+     *  DAY_BITS_TEMPLATE reads them) or the days written in ("mon,tue"); null when that cannot be told. */
+    daysOf(hass, source) {
+        const text = String(Array.isArray(source) ? source.join(',') : (source ?? '')).trim();
+        if (DAY_BITS.test(text)) {
+            const n = parseFloat(this.stateOf(hass, text));
+            if (isNaN(n)) return null;
+            const mask = Math.trunc(n);
+            return DAY_IDS.filter((_, i) => (mask >> i) & 1);
+        }
+        const written = text.toLowerCase().split(',').map(d => d.trim()).filter(Boolean);
+        if (!written.length || written.some(d => !DAY_IDS.includes(d))) return null;
+        return DAY_IDS.filter(d => written.includes(d));
+    }
+
+    /** [ADDED v3.94.2] The states a CMP = / ≠ compares with when its IN2 is a list ("rainy, pouring, hail" - a state
+     *  condition's list, as the importer joins it), each a state or a helper's value; null for one value. */
+    statesOf(hass, source) {
+        const items = (Array.isArray(source) ? source : String(source ?? '').split(',')).map(x => String(x).trim()).filter(Boolean);
+        if (items.length < 2) return null;
+        return items.map(x => { const v = this.valueOf(hass, x); return v === undefined ? x : String(v); });
+    }
+
+    /** [ADDED v3.94.2] The state of a person or a tracker inside a zone: "home" for zone.home, the zone's name
+     *  otherwise; undefined when Home Assistant has no such zone. */
+    zoneStateOf(hass, zoneId) {
+        if (zoneId === 'zone.home') return 'home';
+        const zone = this.stateObj(hass, zoneId);
+        return zone ? String((zone.attributes || {}).friendly_name || zoneId.slice(5)) : undefined;
+    }
+
     /** [ADDED v3.93.0] The entities a block reads or drives - what is offline when they are. */
     entitiesOf(el) {
         const t = el.type || '';
@@ -205,6 +244,8 @@ export class LibiOnline {
         let value;
         let in1;
         let in2;
+        // [ADDED v3.94.1] Green on the canvas: the block is TRUE, or - for an action - its target is on.
+        let glow;
 
         if (t.startsWith('contact')) {
             const st = this.stateOf(hass, el.label);
@@ -255,15 +296,28 @@ export class LibiOnline {
                 value = left === 'weekday' ? DAY_IDS[new Date(this.now()).getDay()] : left;
                 in1 = value;
                 in2 = this.valueOf(hass, el.sourceB);
+                // [ADDED v3.94.1] IN2 is the days by name, not the helper's number; = is TRUE on one of them.
+                const days = left === 'weekday' ? this.daysOf(hass, el.sourceB) : null;
+                if (days) {
+                    in2 = daysText(days);
+                    if (t === 'cmp_eq' || t === 'cmp_ne') power = days.includes(value) === (t === 'cmp_eq');
+                }
             } else {
                 const a = this.numberOf(hass, el.sourceA);
                 const b = this.numberOf(hass, el.sourceB);
                 const av = this.valueOf(hass, el.sourceA);
                 const bv = this.valueOf(hass, el.sourceB);
+                // [ADDED v3.94.2] IN2 a zone: IN1 names it when inside it. IN2 a list: one of them (=), none of them (≠).
+                const eqNe = t === 'cmp_eq' || t === 'cmp_ne';
+                const zoneId = String(el.sourceB ?? '').trim();
+                const zone = eqNe && /^zone\.[a-z0-9_]+$/.test(zoneId) ? this.zoneStateOf(hass, zoneId) : undefined;
+                const among = zone !== undefined ? [zone] : (eqNe ? this.statesOf(hass, el.sourceB) : null);
                 value = av;
                 in1 = av;
-                in2 = bv;
-                if (!isNaN(a) && !isNaN(b)) {
+                in2 = zone !== undefined ? zone : bv;
+                if (among) {
+                    if (av !== undefined) power = among.includes(String(av)) === (t === 'cmp_eq');
+                } else if (!isNaN(a) && !isNaN(b)) {
                     if (t === 'cmp_gt') power = a > b;
                     else if (t === 'cmp_lt') power = a < b;
                     else if (t === 'cmp_ge') power = a >= b;
@@ -278,7 +332,9 @@ export class LibiOnline {
         } else if (t === 'move' || t === 'notify' || t.startsWith('math') || t === 'ctu') {
             const st = this.stateOf(hass, el.target || el.source);
             value = st === null ? undefined : st;
+            // An action does not stop the rung's flow; it is green only while what it drives is on.
             power = true;
+            glow = st !== null && ON_STATES.has(String(st).toLowerCase());
         } else if (t === 'timer_ton' || t === 'timer_toff' || t === 'wait') {
             power = true;
         }
@@ -286,9 +342,9 @@ export class LibiOnline {
         const key = this.key(netId, el.id);
         // [ADDED v3.93.0] Forced in Simulate: the block gives what was forced, whatever Home Assistant has.
         const forced = this.mode === 'simulate' && this.forces.has(key) ? this.forces.get(key) : null;
-        if (forced !== null) power = forced;
+        if (forced !== null) { power = forced; glow = forced; }
         this.remember(key, value, now);
-        return { power, value, in1, in2, forced };
+        return { power, glow: glow === undefined ? power === true : glow, value, in1, in2, forced };
     }
 
     remember(key, value, now) {
@@ -336,6 +392,7 @@ export class LibiOnline {
             const mem = this.memory.get(key) || {};
             this.result.set(key, {
                 power: res.power,
+                glow: res.glow === undefined ? res.power === true : res.glow,
                 value: mem.value,
                 prev: mem.prev,
                 in1: res.in1,
@@ -725,7 +782,8 @@ export class LibiOnline {
                     lines.push([`live-run run-${mark.kind}`, this.markLine(mark, !!sim)]);
                 }
                 if (res) {
-                    node.classList.add(res.power === true ? 'live-on' : res.power === false ? 'live-off' : 'live-unknown');
+                    // [CHANGED v3.94.1] Green only when it glows: an action whose target is off is grey, not green.
+                    node.classList.add(res.glow ? 'live-on' : res.power === null || res.power === undefined ? 'live-unknown' : 'live-off');
                     if (res.fresh) node.classList.add('live-fresh');
                     if (res.state === 'offline' || res.state === 'unknown') node.classList.add('live-offline');
                     if (res.state === 'missing') node.classList.add('live-missing');
@@ -765,11 +823,13 @@ export class LibiOnline {
         if (!(mark && mark.kind === 'active' && mark.remaining !== undefined) && res.remaining !== undefined) {
             lines.push(['live-timer', res.remaining > 0 ? `⏳ ${clockOf(res.remaining)}` : 'Q ✓']);
         }
+        // [CHANGED v3.94.1] The block's own lines are green only when it is: grey for false, off or unknown.
+        const shown = res.glow ? 'live-now' : 'live-now off';
         if (res.in1 !== undefined || res.in2 !== undefined) {
-            lines.push(['live-now', `IN1 ${res.in1 === undefined || res.in1 === null ? '?' : res.in1}`]);
-            lines.push(['live-now', `IN2 ${res.in2 === undefined || res.in2 === null ? '?' : res.in2}`]);
+            lines.push([shown, `IN1 ${res.in1 === undefined || res.in1 === null ? '?' : res.in1}`]);
+            lines.push([shown, `IN2 ${res.in2 === undefined || res.in2 === null ? '?' : res.in2}`]);
         } else if (res.value !== undefined && res.value !== null && String(res.value) !== '') {
-            lines.push(['live-now', String(res.value)]);
+            lines.push([shown, String(res.value)]);
             if (res.prev !== undefined && res.prev !== null && String(res.prev) !== String(res.value)) lines.push(['live-prev', `was ${res.prev}`]);
         }
         const el = this.findEl(net, elId);
@@ -829,13 +889,22 @@ export class LibiOnline {
         const sim = this.mode === 'simulate' ? this.simSummary(net.id) : null;
         const vars = [];
         const seen = new Set();
+        // [ADDED v3.94.1] A helper a CMP DAY reads holds days: the monitor writes them by name, as IN2 does.
+        const dayHelpers = new Set();
+        const findDays = (els) => (els || []).forEach(el => {
+            if (String(el.type || '').startsWith('cmp') && String(el.sourceA || '') === 'weekday') dayHelpers.add(String(el.sourceB || '').trim());
+            (el.branches || []).forEach(findDays);
+            findDays(el.sequence);
+        });
+        (net.rungs || []).forEach(r => findDays(r.elements));
         const walk = (els) => (els || []).forEach(el => {
             for (const id of this.entitiesOf(el)) {
                 if (seen.has(id) || id.startsWith('notify.') || id.startsWith('script.')) continue;
                 seen.add(id);
                 const st = this.stateObj(hass, id);
                 const name = (this.core && this.core.friendlyName ? this.core.friendlyName(id, hass) : '') || id;
-                const value = !st ? 'NOT IN HA' : st.state === 'unavailable' ? 'OFFLINE' : st.state;
+                const days = st && dayHelpers.has(id) ? this.daysOf(hass, id) : null;
+                const value = !st ? 'NOT IN HA' : st.state === 'unavailable' ? 'OFFLINE' : days ? daysText(days) : st.state;
                 vars.push([!st || st.state === 'unavailable' || st.state === 'unknown' ? 'mon-var bad' : 'mon-var', `${name} = ${value}`, id]);
             }
             (el.branches || []).forEach(walk);

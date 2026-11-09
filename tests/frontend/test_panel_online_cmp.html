@@ -1,0 +1,123 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-08] Purpose: The user's screenshot (2026-11-08): CMP ≠ of the weather against "rainy, pouring,
+  lightning-rainy, snowy-rainy, hail" - a state condition's list, as the importer draws it - was TRUE and green while it
+  rained, and the watering must not run then. Against a list, = is TRUE when IN1 is one of the states and ≠ when it is
+  none of them, as Home Assistant checks it; a simulated run stops there and the valve is not reached. Against a zone,
+  IN1 (a person's state) is compared with the zone's name - it was compared with the zone's count of people, so "Guy =
+  work" was never TRUE. A single value compares as before. Nothing is sent to Home Assistant.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1400,900"><title>libi online cmp test</title></head>
+<body style="margin:0;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { makeOnline, makeOnlinePanel, block, badges, markOf, monitor, sleep, openMenu, menuText } from './online_fixture.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const RAIN = 'rainy, pouring, lightning-rainy, snowy-rainy, hail';
+const trig = (id, label) => ({ id, type: 'contact_no', isTrigger: true, label });
+const cmp = (id, type, sourceA, sourceB) => ({ id, type, isTrigger: false, sourceA, sourceB });
+const NET = { id: 'n_w', name: 'Garden', level: 'automation', collapsed: false, links: [], rungs: [
+  { id: 'r1', comment: '', elements: [trig('e1', 'input_boolean.start'), cmp('e2', 'cmp_ne', 'weather.guy_smart_home', RAIN), { id: 'e3', type: 'coil_s', isTrigger: false, label: 'switch.valve' }] },
+  { id: 'r2', comment: '', elements: [trig('e4', 'input_boolean.go'), cmp('e5', 'cmp_eq', 'weather.guy_smart_home', 'rainy, pouring'),
+    cmp('e6', 'cmp_eq', 'person.guy', 'zone.work'), cmp('e7', 'cmp_ne', 'person.guy', 'zone.home'), cmp('e8', 'cmp_eq', 'person.yulia', 'zone.home'),
+    cmp('e9', 'cmp_eq', 'weather.guy_smart_home', 'rainy'), { id: 'e10', type: 'coil_s', isTrigger: false, label: 'light.lamp' }] },
+] };
+
+try {
+  const env = makeOnline();
+  const panel = await makeOnlinePanel(env, { nets: [NET] });
+  const sr = panel.shadowRoot;
+  const st = (state, name) => ({ state, attributes: name ? { friendly_name: name } : {}, last_changed: '2026-11-08T07:00:00+00:00' });
+  let now = new Date(2026, 10, 8, 10, 0, 0).getTime();
+  panel.online.now = () => now;
+  const base = { 'input_boolean.start': st('off', 'Start'), 'input_boolean.go': st('off', 'Go'), 'switch.valve': st('off', 'Valve'), 'light.lamp': st('off', 'Lamp'),
+    'person.guy': st('גיא בעבודה צור יגאל', 'Guy'), 'person.yulia': st('home', 'Yulia'),
+    'zone.work': st('1', 'גיא בעבודה צור יגאל'), 'zone.home': st('1', 'Home') };
+  const show = async (states) => { env.hass.states = { ...base, ...states }; panel._paintOnline(); await sleep(20); };
+  const live = (eid) => { const b = block(panel, 'n_w', eid); return b ? [...b.classList].filter(c => c.startsWith('live-')) : ['NO BLOCK']; };
+
+  // ---- Raining: ≠ the rain states is FALSE (grey), = one of them TRUE
+  await show({ 'weather.guy_smart_home': st('rainy', 'Guy Smart Home') });
+  check('raining: CMP ≠ the rain states is FALSE - grey, not green', live('e2').includes('live-off') && !live('e2').includes('live-on'), JSON.stringify(live('e2')));
+  check('its lines are grey too, and say what it compares', badges(panel, 'n_w', 'e2').includes('IN1 rainy') && badges(panel, 'n_w', 'e2').includes(`IN2 ${RAIN}`)
+        && [...block(panel, 'n_w', 'e2').querySelectorAll('.live-now')].every(s => s.classList.contains('off')),
+        JSON.stringify(badges(panel, 'n_w', 'e2')));
+  await openMenu(panel, 'n_w', 'e2');
+  check('its menu says FALSE', /Now: FALSE/.test(menuText(panel)), menuText(panel));
+  sr.getElementById('fmOverlay').click(); await sleep(20);
+  check('raining: CMP = "rainy, pouring" is TRUE (one of them)', live('e5').includes('live-on'), JSON.stringify(live('e5')));
+  check('a single value compares as before: CMP = rainy is TRUE', live('e9').includes('live-on'), JSON.stringify(live('e9')));
+
+  // Every rain state of the list, and the one written last
+  for (const w of ['pouring', 'lightning-rainy', 'snowy-rainy', 'hail']) {
+    await show({ 'weather.guy_smart_home': st(w) });
+    check(`${w}: CMP ≠ the rain states is FALSE`, live('e2').includes('live-off'), JSON.stringify(live('e2')));
+  }
+  // Not raining
+  await show({ 'weather.guy_smart_home': st('sunny') });
+  check('sunny: CMP ≠ the rain states is TRUE - green', live('e2').includes('live-on'), JSON.stringify(live('e2')));
+  check('sunny: CMP = "rainy, pouring" is FALSE, and CMP = rainy too', live('e5').includes('live-off') && live('e9').includes('live-off'),
+        JSON.stringify([live('e5'), live('e9')]));
+  await show({ 'weather.guy_smart_home': st('rainy-day') });
+  check('a state only like one of the list (rainy-day) is none of them: ≠ TRUE', live('e2').includes('live-on'), JSON.stringify(live('e2')));
+  await show({ 'weather.guy_smart_home': st('unavailable') });
+  check('weather offline: ≠ is TRUE as in Home Assistant (unavailable is none of them), and the block says OFFLINE',
+        live('e2').includes('live-on') && badges(panel, 'n_w', 'e2').includes('OFFLINE'), JSON.stringify([live('e2'), badges(panel, 'n_w', 'e2')]));
+
+  // ---- Zones: by name
+  await show({ 'weather.guy_smart_home': st('sunny') });
+  check('Guy at work: CMP person.guy = zone.work is TRUE, and IN2 is the zone\'s name, not its count of people',
+        live('e6').includes('live-on') && badges(panel, 'n_w', 'e6').includes('IN2 גיא בעבודה צור יגאל') && !badges(panel, 'n_w', 'e6').includes('IN2 1'),
+        JSON.stringify([live('e6'), badges(panel, 'n_w', 'e6')]));
+  check('Guy at work: CMP person.guy ≠ zone.home is TRUE; Yulia = zone.home ("home") is TRUE',
+        live('e7').includes('live-on') && live('e8').includes('live-on') && badges(panel, 'n_w', 'e8').includes('IN2 home'),
+        JSON.stringify([live('e7'), live('e8'), badges(panel, 'n_w', 'e8')]));
+  await show({ 'weather.guy_smart_home': st('sunny'), 'person.guy': st('home', 'Guy') });
+  check('Guy at home: = zone.work FALSE, ≠ zone.home FALSE', live('e6').includes('live-off') && live('e7').includes('live-off'), JSON.stringify([live('e6'), live('e7')]));
+  await show({ 'weather.guy_smart_home': st('sunny'), 'person.guy': st('not_home', 'Guy') });
+  check('Guy away (not_home): = zone.work FALSE', live('e6').includes('live-off'), JSON.stringify(live('e6')));
+
+  // ---- Simulate: FORCE TRUE the trigger while it rains - the run stops at ≠, the valve is not reached
+  const force = async (eid) => {
+    await openMenu(panel, 'n_w', eid);
+    const btn = sr.querySelector('.online-menu .onl-btn[data-onl="force-true"]');
+    if (!btn) throw new Error(`no FORCE TRUE on ${eid}: ${menuText(panel)}`);
+    btn.click(); await sleep(20);
+  };
+  const simText = () => { const m = monitor(panel, 'n_w'); const c = m && m.querySelector('.mon-simstate'); return c ? c.textContent : ''; };
+  await show({ 'weather.guy_smart_home': st('rainy') });
+  await force('e1');
+  now += 1000; await show({ 'weather.guy_smart_home': st('rainy') });
+  check('Simulate while it rains: the run stops at CMP ≠, and the valve is not reached',
+        markOf(panel, 'n_w', 'e1') === 'run-fired' && markOf(panel, 'n_w', 'e2') === 'run-false' && markOf(panel, 'n_w', 'e3') !== 'run-done' && /stopped/.test(simText()),
+        JSON.stringify([markOf(panel, 'n_w', 'e1'), markOf(panel, 'n_w', 'e2'), markOf(panel, 'n_w', 'e3'), simText()]));
+  const stop = sr.querySelector('.net-monitor[data-nid="n_w"] [data-online="stop"]');
+  if (stop) { stop.click(); await sleep(20); }
+  await openMenu(panel, 'n_w', 'e1');
+  const release = sr.querySelector('.online-menu .onl-btn[data-onl="release"]');
+  if (release) { release.click(); await sleep(20); }
+  await show({ 'weather.guy_smart_home': st('sunny') });
+  await force('e1');
+  now += 1000; await show({ 'weather.guy_smart_home': st('sunny') });
+  check('Simulate when it is sunny: the run goes past CMP ≠ to the valve',
+        markOf(panel, 'n_w', 'e2') === 'run-true' && markOf(panel, 'n_w', 'e3') === 'run-done',
+        JSON.stringify([markOf(panel, 'n_w', 'e2'), markOf(panel, 'n_w', 'e3'), simText()]));
+
+  check('nothing was sent to Home Assistant', env.services.length === 0 && env.api.length === 0, JSON.stringify([env.services, env.api]));
+} catch (err) {
+  check('the page ran without an error', false, err && err.stack ? err.stack : String(err));
+}
+
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed });
+</script>
+</body></html>
