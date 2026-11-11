@@ -1,0 +1,93 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-11] Purpose: the user's train reminder got a fixed zone (zone.work) in place of the zone chosen
+  on the card: the Inspector of a person against a zone offered only zones for IN2. It offers the zone chosen on the
+  dashboard too - a dropdown of the zones (input_select) - says what it is, and opening it changes nothing.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi zone choice test</title></head>
+<body style="margin:0; width:1280px; height:800px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const CHOSEN = 'input_select.train_reminder_zone_selection';
+const NET = { id: 'n1', name: 'Train home reminder', level: 'automation', collapsed: false, links: [], rungs: [{ id: 'r1', comment: '', elements: [
+  { id: 'e1', type: 'contact_no', isTrigger: true, label: 'input_button.go', raw: { trigger: 'state', entity_id: 'input_button.go', id: 'start' }, trigId: 'start' },
+  { id: 'e2', type: 'cmp_eq', sourceA: 'person.guy', sourceB: CHOSEN,
+    raw: { condition: 'state', entity_id: 'person.guy', state: CHOSEN } },
+  { id: 'e3', type: 'move', mode: 'notify', source: 'Time to leave', target: 'notify.mobile_app_x' }] }] };
+const hass = {
+  states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+  connection: {
+    sendMessagePromise: async (m) => {
+      if (m.type === 'libi/ai_status') return { configured: false };
+      if (m.type === 'libi/project_list') return { projects: [] };
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+
+try {
+  localStorage.clear();
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '800px';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await sleep(300);
+  const sr = panel.shadowRoot;
+  panel.core.nets = [JSON.parse(JSON.stringify(NET))];
+  panel.core.syncCounters(); panel.core.repairAST(); panel.core.validateAST();
+  panel._project = { slug: 'p', name: 'P' };
+  const el = () => panel.core.nets[0].rungs[0].elements[1];
+  const open = async () => {
+    panel._inspectedEl = { netId: 'n1', rungId: 'r1', elId: 'e2' };
+    panel._wakeSidebar();
+    panel._render(); await sleep(50);
+    return sr.querySelector('#inp_sourceB');
+  };
+  let picker = await open();
+  check('the Inspector of a person against a zone has the field of the zone', !!picker && sr.querySelector('#lbl_sourceB').textContent === 'Zone, or the zone chosen on the dashboard',
+        sr.querySelector('#lbl_sourceB') && sr.querySelector('#lbl_sourceB').textContent);
+  check('it offers the zones and the dropdowns of zones', JSON.stringify(picker.includeDomains) === '["zone","input_select"]', JSON.stringify(picker.includeDomains));
+  check('it holds the zone chosen on the dashboard', picker.value === CHOSEN, picker.value);
+  check('and says what it is', ((sr.querySelector('.zone-chosen') || {}).textContent || '') === `The zone chosen on the dashboard: when it runs, the person must be in the zone picked in ${CHOSEN}.`);
+  check('opening the Inspector changes nothing', el().sourceB === CHOSEN && el().sourceA === 'person.guy');
+
+  picker.dispatchEvent(new CustomEvent('value-changed', { detail: { value: 'zone.work' } }));
+  await sleep(30);
+  picker = sr.querySelector('#inp_sourceB');
+  check('a zone can still be picked: IN2 is that zone, and no word of the dashboard', el().sourceB === 'zone.work' && picker.value === 'zone.work' && !sr.querySelector('.zone-chosen'));
+  picker.dispatchEvent(new CustomEvent('value-changed', { detail: { value: CHOSEN } }));
+  await sleep(30);
+  check('and the zone chosen on the dashboard picked back', el().sourceB === CHOSEN && !!sr.querySelector('.zone-chosen'));
+
+  // [v3.95.5] A trigger reads no helper: a person arriving in a zone offers zones only (the third pass of the review).
+  panel.core.nets[0].rungs[0].elements[0] = { id: 'e1', type: 'cmp_eq', isTrigger: true, sourceA: 'person.guy', sourceB: 'zone.work' };
+  panel._inspectedEl = { netId: 'n1', rungId: 'r1', elId: 'e1' };
+  panel._wakeSidebar(); panel._render(); await sleep(50);
+  const trig = sr.querySelector('#inp_sourceB');
+  check('a trigger offers zones only', !!trig && JSON.stringify(trig.includeDomains) === '["zone"]'
+        && sr.querySelector('#lbl_sourceB').textContent === 'Zone' && !sr.querySelector('.zone-chosen'), trig && JSON.stringify(trig.includeDomains));
+
+  el().sourceB = 'input_select.<img src=x onerror="window.__xss=1">';
+  await open();
+  check('the name of the dropdown is text, never HTML', !sr.querySelector('.zone-chosen img') && window.__xss === undefined);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

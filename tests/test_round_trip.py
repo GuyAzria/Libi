@@ -952,3 +952,278 @@ async def test_the_day_bits_template_reads_the_bit_of_today(hass: HomeAssistant,
     for state in ("0.0", "unavailable", "unknown"):
         hass.states.async_set(_DAYS, state)
         assert template.async_render() is False, state
+
+
+# [ADDED 2026-11-11, v3.95.4] The user's train reminder: the AI wrote "Guy is in the zone chosen on the card" as a state
+# condition of the dropdown of the zones (state: input_select.x, which Home Assistant reads as that helper's option). The
+# Inspector offered only zones for IN2, the user picked one, and the save wrote state: zone.work - a person's state is
+# never that, so the reminder never fired. Who is in a zone is a zone condition; the zone chosen on the card is a state.
+def _person_check(out):
+    found = [n for n in _nodes(out) if isinstance(n, dict) and n.get("condition") in ("state", "zone")
+             and n.get("entity_id") == "person.guy"]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def _nodes(value):
+    if isinstance(value, dict):
+        yield value
+        for v in value.values():
+            yield from _nodes(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _nodes(v)
+
+
+async def test_a_person_in_a_zone_is_written_as_home_assistant_checks_it(hass: HomeAssistant) -> None:
+    import copy
+
+    from custom_components.libi.libi_to_yaml import ast_to_yaml
+    from custom_components.libi.yaml_to_libi import yaml_to_ast
+    chosen = {"condition": "state", "entity_id": "person.guy", "state": "input_select.train_zone", "alias": "Guy is there"}
+    auto = {"id": "train", "alias": "Train", "description": "",
+            "triggers": [{"trigger": "state", "entity_id": "schedule.train", "to": "on", "id": "start"}],
+            "conditions": [], "mode": "single",
+            "actions": [{"choose": [{"conditions": [{"condition": "trigger", "id": "start"}, chosen],
+                                     "sequence": [{"action": "notify.notify", "data": {"message": "Time to leave"}}]}]}]}
+    net = yaml_to_ast(hass, copy.deepcopy(auto))
+    el = next(e for r in net["rungs"] for e in r["elements"] if e.get("sourceA") == "person.guy")
+    assert (el["type"], el["sourceB"]) == ("cmp_eq", "input_select.train_zone")
+    # Untouched: as it was written.
+    assert _person_check(ast_to_yaml(hass, copy.deepcopy(net))) == chosen
+    # A zone picked in its place: a zone condition, its alias kept - never state: zone.work.
+    el["sourceB"] = "zone.work"
+    assert _person_check(ast_to_yaml(hass, copy.deepcopy(net))) == {
+        "condition": "zone", "entity_id": "person.guy", "alias": "Guy is there", "zone": "zone.work"}
+    # A zone's name, as a person's state says it, stays a state.
+    el["sourceB"] = "Guy at work"
+    assert _person_check(ast_to_yaml(hass, copy.deepcopy(net)))["state"] == "Guy at work"
+    # And back: a zone condition whose IN2 became the zone chosen on the card is a state condition of that dropdown.
+    net = yaml_to_ast(hass, {**copy.deepcopy(auto), "actions": [{"choose": [{"conditions": [
+        {"condition": "trigger", "id": "start"}, {"condition": "zone", "entity_id": "person.guy", "zone": "zone.work"}],
+        "sequence": [{"action": "notify.notify", "data": {"message": "Time to leave"}}]}]}]})
+    el = next(e for r in net["rungs"] for e in r["elements"] if e.get("sourceA") == "person.guy")
+    assert (el["type"], el["sourceB"]) == ("cmp_eq", "zone.work")
+    el["sourceB"] = "input_select.train_zone"
+    assert _person_check(ast_to_yaml(hass, copy.deepcopy(net))) == {
+        "condition": "state", "entity_id": "person.guy", "state": "input_select.train_zone"}
+    # Not a person: a state that looks like a zone's id is the state written, as before.
+    net = yaml_to_ast(hass, {**copy.deepcopy(auto), "actions": [{"choose": [{"conditions": [
+        {"condition": "trigger", "id": "start"}, {"condition": "state", "entity_id": "sensor.where", "state": "home"}],
+        "sequence": [{"action": "notify.notify", "data": {"message": "Time to leave"}}]}]}]})
+    el = next(e for r in net["rungs"] for e in r["elements"] if e.get("sourceA") == "sensor.where")
+    el["sourceB"] = "zone.work"
+    out = ast_to_yaml(hass, net)
+    assert [n for n in _nodes(out) if isinstance(n, dict) and n.get("entity_id") == "sensor.where"] == [
+        {"condition": "state", "entity_id": "sensor.where", "state": "zone.work"}]
+
+
+# [ADDED 2026-11-11, v3.95.5] The virtual tests of 2026-11-11, after the user's train reminder was saved with
+# state: zone.work: an edited CMP = / not = was patched into the node it was drawn from and its type never read - a state
+# condition turned into not = stayed = (the logic the other way round), a not drawn as not = got an entity_id beside it
+# (Home Assistant refused it), an edited list of states became one string, and an edited state trigger kept its old
+# entity and state. Each change below is what the Inspector does; each result is what the block shows, and Home
+# Assistant's own validators accept it.
+_AC = {"condition": "state", "entity_id": "climate.ac", "state": "heat", "alias": "AC heats"}
+_BARE = {"condition": "state", "entity_id": "climate.ac", "state": "heat"}
+_LIGHT = {"condition": "state", "entity_id": "light.x", "state": "on"}
+_CONDITION_EDITS = [
+    ("= made not =", _AC, "climate.ac", {"type": "cmp_ne"}, {"condition": "not", "conditions": [_AC]}),
+    ("IN2 of =", _AC, "climate.ac", {"sourceB": "cool"}, {**_AC, "state": "cool"}),
+    ("IN2 of a not", {"condition": "not", "alias": "not heating", "conditions": [_BARE]}, "climate.ac",
+     {"sourceB": "cool"}, {"condition": "not", "alias": "not heating", "conditions": [{**_BARE, "state": "cool"}]}),
+    ("a not made =", {"condition": "not", "alias": "not heating", "conditions": [_BARE]}, "climate.ac",
+     {"type": "cmp_eq"}, {**_BARE, "alias": "not heating"}),
+    ("IN2 of a short not", {"not": [_BARE]}, "climate.ac", {"sourceB": "cool"}, {"not": [{**_BARE, "state": "cool"}]}),
+    ("a list of states", {"condition": "state", "entity_id": "climate.ac", "state": ["heat", "cool"]}, "climate.ac",
+     {"sourceB": "heat, dry"}, {"condition": "state", "entity_id": "climate.ac", "state": ["heat", "dry"]}),
+    ("in a zone made not =", {"condition": "zone", "entity_id": "person.guy", "zone": "zone.work"}, "person.guy",
+     {"type": "cmp_ne"}, {"condition": "not", "conditions": [{"condition": "zone", "entity_id": "person.guy", "zone": "zone.work"}]}),
+    ("a contact of on made NC", _LIGHT, "light.x", {"type": "contact_nc"}, {**_LIGHT, "state": "off"}),
+    ("a contact of a not, its entity", {"condition": "not", "conditions": [_LIGHT]}, "light.x", {"label": "light.y"},
+     {"condition": "not", "conditions": [{**_LIGHT, "entity_id": "light.y"}]}),
+    ("a contact of a not made NO", {"condition": "not", "conditions": [_LIGHT]}, "light.x", {"type": "contact_no"}, _LIGHT),
+    ("a contact of home made NC", {"condition": "state", "entity_id": "person.guy", "state": "home"}, "person.guy",
+     {"type": "contact_nc"}, {"condition": "not", "conditions": [{"condition": "state", "entity_id": "person.guy", "state": "home"}]}),
+    # [ADDED 2026-11-11, v3.95.5] The review of the release (RULE 41).
+    ("a contact of a one-item list, its entity", {**_LIGHT, "state": ["on"]}, "light.x", {"label": "light.y"},
+     {**_LIGHT, "entity_id": "light.y", "state": ["on"]}),
+    ("a contact of a one-item list made NC", {**_LIGHT, "state": ["on"]}, "light.x", {"type": "contact_nc"},
+     {**_LIGHT, "state": ["off"]}),
+    ("a list of zones, its person", {"condition": "zone", "entity_id": "person.guy", "zone": ["zone.home", "zone.work"]},
+     "person.guy", {"sourceA": "person.yulia"},
+     {"condition": "zone", "entity_id": "person.yulia", "zone": ["zone.home", "zone.work"]}),
+    # [ADDED 2026-11-11, v3.95.5] The second pass of the review: several entities stay, a not turned off stays off, an
+    # empty IN2 writes no empty state.
+    ("IN2 of a check of several entities", {**_BARE, "entity_id": ["climate.ac", "climate.bedroom"]}, "climate.ac",
+     {"sourceB": "cool"}, {**_BARE, "entity_id": ["climate.ac", "climate.bedroom"], "state": "cool"}),
+    ("a not that is off made =", {"condition": "not", "enabled": False, "conditions": [_BARE]}, "climate.ac",
+     {"type": "cmp_eq"}, {**_BARE, "enabled": False}),
+    ("IN2 emptied", _AC, "climate.ac", {"sourceB": ""}, _AC),
+]
+
+
+def _with_condition(check):
+    return {"id": "x", "alias": "x", "description": "", "mode": "single",
+            "triggers": [{"trigger": "state", "entity_id": "input_button.go", "id": "go"}], "conditions": [],
+            "actions": [{"choose": [{"conditions": [{"condition": "trigger", "id": "go"}, check],
+                                     "sequence": [{"action": "light.turn_on", "target": {"entity_id": "light.z"}}]}]}]}
+
+
+def _the(net, entity):
+    return next(e for r in net["rungs"] for e in r["elements"] if entity in (e.get("sourceA"), e.get("label")))
+
+
+@pytest.mark.parametrize("name, check, entity, change, expected", _CONDITION_EDITS, ids=[c[0] for c in _CONDITION_EDITS])
+async def test_an_edited_condition_is_what_its_block_shows(hass: HomeAssistant, name, check, entity, change, expected) -> None:
+    import copy
+
+    from homeassistant.helpers import condition as cond_helper
+    from homeassistant.helpers import config_validation as cv
+
+    from custom_components.libi.libi_to_yaml import ast_to_yaml
+    from custom_components.libi.yaml_to_libi import yaml_to_ast
+    net = yaml_to_ast(hass, _with_condition(copy.deepcopy(check)))
+    _the(net, entity).update(change)
+    got = ast_to_yaml(hass, net)["actions"][0]["choose"][0]["conditions"][1]
+    assert got == expected
+    await cond_helper.async_validate_condition_config(hass, cv.CONDITION_SCHEMA(copy.deepcopy(got)))
+
+
+async def test_a_new_not_in_a_zone_is_a_not_around_the_zone(hass: HomeAssistant) -> None:
+    from custom_components.libi.libi_to_yaml import ast_to_yaml
+    net = {"id": "n", "name": "x", "level": "automation", "links": [], "rungs": [{"id": "r1", "elements": [
+        {"id": "e1", "type": "contact_no", "isTrigger": True, "label": "input_button.go"},
+        {"id": "e2", "type": "cmp_ne", "sourceA": "person.guy", "sourceB": "zone.work"},
+        {"id": "e3", "type": "coil_s", "label": "light.z"}]}]}
+    out = ast_to_yaml(hass, net)
+    assert {"condition": "not", "conditions": [{"condition": "zone", "entity_id": "person.guy", "zone": "zone.work"}]} \
+        in [c for n in [out] for c in (n.get("conditions") or [])] + [
+            c for s in out["actions"] if isinstance(s, dict) for o in s.get("choose", []) for c in o["conditions"]] + [
+            c for s in out["actions"] if isinstance(s, dict) and "if" in s for c in s["if"]], out
+
+
+_GO_AC = {"trigger": "state", "entity_id": "climate.ac", "to": "heat", "id": "go"}
+_TRIGGER_EDITS = [
+    ("the state it changes to", _GO_AC, "climate.ac", {"sourceB": "cool"}, {**_GO_AC, "to": "cool"}),
+    ("its entity", _GO_AC, "climate.ac", {"sourceA": "climate.bedroom"}, {**_GO_AC, "entity_id": "climate.bedroom"}),
+    ("a list it changes to", {**_GO_AC, "to": ["heat", "cool"]}, "climate.ac", {"sourceB": "heat, dry"},
+     {**_GO_AC, "to": ["heat", "dry"]}),
+    ("a person arriving in a zone", {"trigger": "state", "entity_id": "person.guy", "to": "Guy at work", "id": "go"},
+     "person.guy", {"sourceB": "zone.work"},
+     {"trigger": "zone", "entity_id": "person.guy", "zone": "zone.work", "event": "enter", "id": "go"}),
+    # [ADDED 2026-11-11, v3.95.5] The review of the release (RULE 41): a trigger of from alone gets no to.
+    ("a trigger of from alone, its entity", {"trigger": "state", "entity_id": "person.a", "from": "home", "id": "go"},
+     "person.a", {"sourceA": "person.b"}, {"trigger": "state", "entity_id": "person.b", "from": "home", "id": "go"}),
+    # [ADDED 2026-11-11, v3.95.5] The second pass of the review.
+    ("IN2 of a trigger of several entities", {**_GO_AC, "entity_id": ["climate.ac", "climate.bedroom"]}, "climate.ac",
+     {"sourceB": "cool"}, {**_GO_AC, "entity_id": ["climate.ac", "climate.bedroom"], "to": "cool"}),
+    ("a person leaving a zone", {"trigger": "state", "entity_id": "person.guy", "to": "Guy at work", "id": "go"},
+     "person.guy", {"type": "cmp_ne", "sourceB": "zone.work"},
+     {"trigger": "zone", "entity_id": "person.guy", "zone": "zone.work", "event": "leave", "id": "go"}),
+    ("IN2 of a trigger emptied", _GO_AC, "climate.ac", {"sourceB": ""}, _GO_AC),
+    # A zone has no from: the trigger stays a state trigger - the panel refuses the block.
+    ("a person's trigger with a from, IN2 a zone",
+     {"trigger": "state", "entity_id": "person.guy", "from": "home", "to": "Guy at work", "id": "go"}, "person.guy",
+     {"sourceB": "zone.work"}, {"trigger": "state", "entity_id": "person.guy", "from": "home", "to": "zone.work", "id": "go"}),
+]
+
+
+async def test_the_fourth_pass_of_the_review_compiler(hass: HomeAssistant) -> None:
+    """[ADDED 2026-11-11, v3.95.5] A not = with a TON after it is held for a time, which Home Assistant cannot say: the
+    for is never put inside the not - "not (x for that time)" - but beside it, which Home Assistant refuses (and the panel
+    first); a TON taken away takes the check's own for with it; a list whose text did not change is written back as it
+    was - an item may hold a comma; "zone.a, zone.b" is a list of zones."""
+    import copy
+
+    from homeassistant.helpers import condition as cond_helper
+    from homeassistant.helpers import config_validation as cv
+
+    from custom_components.libi.libi_to_yaml import ast_to_yaml
+    from custom_components.libi.yaml_to_libi import yaml_to_ast
+    timed = {**_BARE, "for": {"minutes": 5}}
+
+    def first(net):
+        return ast_to_yaml(hass, net)["actions"][0]["choose"][0]["conditions"][1]
+    net = yaml_to_ast(hass, _with_condition(copy.deepcopy(timed)))
+    assert any(e.get("type") == "timer_ton" for r in net["rungs"] for e in r["elements"])
+    _the(net, "climate.ac")["type"] = "cmp_ne"
+    got = first(net)
+    assert got["condition"] == "not" and "for" not in got["conditions"][0] and got["for"] == {"minutes": 5}, got
+    with pytest.raises(Exception):  # noqa: B017 - Home Assistant refuses it: nothing that means something else is saved
+        await cond_helper.async_validate_condition_config(hass, cv.CONDITION_SCHEMA(copy.deepcopy(got)))
+    # The TON taken away: no for left inside the not.
+    for rung in net["rungs"]:
+        rung["elements"] = [e for e in rung["elements"] if e.get("type") != "timer_ton"]
+    assert first(net) == {"condition": "not", "conditions": [_BARE]}
+    # A list whose text did not change, its entity changed: the list as it was.
+    listed = {"condition": "state", "entity_id": "input_select.mode", "state": ["Morning, early", "Night"]}
+    net = yaml_to_ast(hass, _with_condition(copy.deepcopy(listed)))
+    _the(net, "input_select.mode")["sourceA"] = "input_select.mode2"
+    assert first(net) == {**listed, "entity_id": "input_select.mode2"}
+    # A person's state with a for (its TON), IN2 a zone: a zone with that for, which Home Assistant refuses - the panel
+    # refuses the block first; with the TON taken away, the zone has no for.
+    timed_person = {"condition": "state", "entity_id": "person.guy", "state": "Guy at work", "for": "00:05:00"}
+    net = yaml_to_ast(hass, _with_condition(copy.deepcopy(timed_person)))
+    _the(net, "person.guy")["sourceB"] = "zone.work"
+    got = first(net)
+    assert (got["condition"], got["zone"], got.get("for")) == ("zone", "zone.work", "00:05:00"), got
+    with pytest.raises(Exception):  # noqa: B017
+        await cond_helper.async_validate_condition_config(hass, cv.CONDITION_SCHEMA(copy.deepcopy(got)))
+    for rung in net["rungs"]:
+        rung["elements"] = [e for e in rung["elements"] if e.get("type") != "timer_ton"]
+    assert first(net) == {"condition": "zone", "entity_id": "person.guy", "zone": "zone.work"}
+    # Zones as a list's text: a list of zones.
+    net = yaml_to_ast(hass, _with_condition({"condition": "zone", "entity_id": "person.guy", "zone": "zone.home"}))
+    _the(net, "person.guy")["sourceB"] = "zone.a, zone.b"
+    assert first(net) == {"condition": "zone", "entity_id": "person.guy", "zone": ["zone.a", "zone.b"]}
+
+
+async def test_an_untouched_not_keeps_its_own_for(hass: HomeAssistant) -> None:
+    """[ADDED 2026-11-11, v3.95.5] The sixth pass of the review of the release (RULE 5): a not LIBI did not change is
+    written as it was - a for of no time inside it, which the importer draws with no TON, too. Edited, the TON's rule
+    holds: no TON, no for."""
+    import copy
+
+    from custom_components.libi.libi_to_yaml import ast_to_yaml
+    from custom_components.libi.yaml_to_libi import yaml_to_ast
+    check = {"condition": "not", "conditions": [{**_BARE, "for": "00:00:00"}]}
+    net = yaml_to_ast(hass, _with_condition(copy.deepcopy(check)))
+    assert ast_to_yaml(hass, copy.deepcopy(net))["actions"][0]["choose"][0]["conditions"][1] == check
+    _the(net, "climate.ac")["sourceB"] = "cool"
+    assert ast_to_yaml(hass, net)["actions"][0]["choose"][0]["conditions"][1] == \
+        {"condition": "not", "conditions": [{**_BARE, "state": "cool"}]}
+
+
+def test_the_third_pass_of_the_review_compiler(hass: HomeAssistant) -> None:
+    """[ADDED 2026-11-11, v3.95.5] A zone trigger inside a wait keeps its id; IN2 "heat, dry" of a block drawn new is
+    two states where the entity's states never hold a comma, one text where they may."""
+    from custom_components.libi import libi_to_yaml as l2y
+    el = {"type": "cmp_eq", "sourceA": "person.guy", "sourceB": "zone.work", "sig": "edited",
+          "raw": {"trigger": "state", "entity_id": "person.guy", "to": "Guy at work", "id": "arrived"}}
+    assert l2y._element_to_trigger(el, None) == {"trigger": "zone", "entity_id": "person.guy", "zone": "zone.work",
+                                                  "event": "enter", "id": "arrived"}
+    assert l2y._element_to_condition({"type": "cmp_eq", "sourceA": "climate.ac", "sourceB": "heat, dry"}) == \
+        {"condition": "state", "entity_id": "climate.ac", "state": ["heat", "dry"]}
+    assert l2y._element_to_condition({"type": "cmp_eq", "sourceA": "input_text.note", "sourceB": "a, b"}) == \
+        {"condition": "state", "entity_id": "input_text.note", "state": "a, b"}
+    assert l2y._element_to_trigger({"type": "cmp_eq", "sourceA": "climate.ac", "sourceB": "heat, dry"}, "go") == \
+        {"trigger": "state", "entity_id": "climate.ac", "to": ["heat", "dry"], "id": "go"}
+
+
+@pytest.mark.parametrize("name, trigger, entity, change, expected", _TRIGGER_EDITS, ids=[c[0] for c in _TRIGGER_EDITS])
+async def test_an_edited_state_trigger_is_what_its_block_shows(hass: HomeAssistant, name, trigger, entity, change, expected) -> None:
+    import copy
+
+    from homeassistant.helpers import config_validation as cv
+    from homeassistant.helpers import trigger as trig_helper
+
+    from custom_components.libi.libi_to_yaml import ast_to_yaml
+    from custom_components.libi.yaml_to_libi import yaml_to_ast
+    auto = {"id": "x", "alias": "x", "description": "", "mode": "single", "triggers": [copy.deepcopy(trigger)],
+            "conditions": [], "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.z"}}]}
+    net = yaml_to_ast(hass, auto)
+    _the(net, entity).update(change)
+    got = ast_to_yaml(hass, net)["triggers"]
+    assert got == [expected]
+    await trig_helper.async_validate_trigger_config(hass, cv.TRIGGER_SCHEMA(copy.deepcopy(got)))

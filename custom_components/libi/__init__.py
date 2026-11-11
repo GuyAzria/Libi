@@ -12,17 +12,15 @@
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
 """The LIBI integration: a ladder editor panel for Home Assistant automations."""
-# v3.94.3
+# v3.95.5
 # [ADDED v3.34.0 | 2026-10-26] Purpose: The static path and the websocket commands are registered once
 #   in async_setup, so reloading the config entry no longer fails on a route that already exists. The
 #   panel is admin only and is removed through the frontend API on unload, the entry data lives on
 #   entry.runtime_data, and CONFIG_SCHEMA declares that LIBI is set up from the UI only.
-# [CHANGED v3.94.0 | 2026-11-07] Purpose: LIBI_VERSION 3.94.0 (Online: FORCE on the block clicked, a trigger fired
-#   for real in Home Assistant); the browser must load the new online engine, panel and styles, not keep 3.93.0.
-# [CHANGED v3.94.3 | 2026-11-09] Purpose: LIBI_VERSION 3.94.3 (Traces: a CMP DAY's days by name, an action green only
-#   while its target is on, CMP = / ≠ against a list or a zone as Home Assistant checks it, room under every block
-#   for its lines - IN2 was cut off); the browser must load the new core, online engine and panel, not keep 3.94.1
-#   (on H: since 2026-11-08 11:43) or 3.94.2.
+# [CHANGED v3.95.4 | 2026-11-11] Purpose: LIBI_VERSION 3.95.4 (a person against a zone offers the zone chosen on the
+#   dashboard in the Inspector); the browser must load the new panel, not keep 3.95.3 (on H: since 2026-11-11).
+# [CHANGED v3.95.5 | 2026-11-11] Purpose: LIBI_VERSION 3.95.5 (a CMP against an entity read as text is red; IN2 says
+#   "Value or helper"); the browser must load the new core and panel, not keep 3.95.4 (on H: since 2026-11-11 07:48).
 import logging
 import os
 
@@ -47,7 +45,7 @@ _PANEL_ELEMENT = "libi-panel"
 _DAYS_ROW_JS = "libi-days-row.js"
 # One version number for the whole integration. The panel and every module it imports are served
 # with this string, so the browser can never mix an old file with a new one.
-LIBI_VERSION = "3.94.3"
+LIBI_VERSION = "3.95.5"
 
 # [CHANGED v3.15.2] The frontend used to be served from /local/libi. /local is Home Assistant's own
 # alias for the config/www folder and it is registered before any custom integration, so if a folder

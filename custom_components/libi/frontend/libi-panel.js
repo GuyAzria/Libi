@@ -14,26 +14,25 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.94.3
+ * v3.95.5
  */
-// [CHANGED v3.94.0 | 2026-11-07] Purpose: The user's screenshot (2026-11-07) - they could not find FORCE, nor fire the
-//   trigger they wanted in Real. In Online a click on a block opens its own menu, by the block: FORCE TRUE / FALSE and
-//   Release in Simulate; in Real, FORCE TRUE on a trigger runs the automation in Home Assistant as if that trigger fired
-//   (libi/online_fire, asked first), and a condition offers Simulate. What a real run can reach is checked by LIBI's
-//   backend from Home Assistant, areas and devices too. Traces is read only - the user's rule, the same day: while it is
-//   on, a click follows the run or FORCEs, nothing edits (TRACE_ALLOWED, _traceGuard); editing comes back with it off.
-// [CHANGED v3.94.3 | 2026-11-09] Purpose: The user's screenshot: in Traces, IN2 under a time trigger was cut off.
-//   _netCanvasHtml lays a NET out with room under every block (LIVE_ROOM) while Traces is on, without it for
-//   editing. LIBI_BUILD 3.94.3, so the browser loads this, the core and the online engine, not 3.94.2.
-import { LibiCore } from './libi-core.js?v=3.94.3';
-import { getStyles } from './libi-css.js?v=3.94.3';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.94.3';
-import { LibiOnline, LIVE_ROOM } from './libi-online.js?v=3.94.3';
-import { LibiAiChat } from './libi-ai.js?v=3.94.3';
+// [CHANGED v3.95.4 | 2026-11-11] Purpose: The user's train reminder got a fixed zone (zone.work) in place of the zone
+//   chosen on the card: a person against a zone offered only zones for IN2. It offers the zone chosen on the dashboard
+//   too - a dropdown of the zones (input_select) - and says what it is. LIBI_BUILD 3.95.4.
+// [CHANGED v3.95.5 | 2026-11-11] Purpose: IN2 of a CMP of a value is "Value or helper": an entity there is read as text
+//   (libi-core checkLiteral). LOAD offers a NET its own automation again (_loadListHtml, in_use nets), as the backend
+//   allows - the review of the release (RULE 41). LIBI_BUILD 3.95.5. Its third pass: a trigger's zone is a zone only (a
+//   trigger reads no helper); "default" is the project when none is open, as the backend has it; the schedule editor
+//   says "Nothing was saved" also when the schedule is gone or carries data by then.
+import { LibiCore } from './libi-core.js?v=3.95.5';
+import { getStyles } from './libi-css.js?v=3.95.5';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.95.5';
+import { LibiOnline, LIVE_ROOM } from './libi-online.js?v=3.95.5';
+import { LibiAiChat } from './libi-ai.js?v=3.95.5';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.94.3';
+export const LIBI_BUILD = '3.95.5';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -805,10 +804,54 @@ class LibiPanel extends HTMLElement {
             const response = await this._hass.connection.sendMessagePromise({ type: 'libi/list_automations' });
             if (response && response.automations) { 
                 this._automationList = response.automations; 
+                // [ADDED v3.95.0] The projects LIBI could not read: they may hold any automation (_loadListHtml).
+                this._automationUnreadable = Array.isArray(response.unreadable) ? response.unreadable : [];
                 this._modal = 'list_automations'; 
                 this._render(); 
             }
         } catch (err) { alert("Failed to fetch automations from HA: " + err.message); }
+    }
+
+    // [ADDED v3.95.0] The window LOAD opens - the user's rule (2026-11-10): an automation belongs to one project. On top,
+    // the automations no project holds, to choose; under IN USE the others - held by a project (in_use of
+    // libi/list_automations) or shown by another NET of this page - each with where it is, not to choose: they carry no
+    // data-id, so the click handler of .auto-item never sees them. While a project cannot be read it may hold any
+    // automation, so none is offered (the backend refuses too).
+    _loadListHtml() {
+        const esc = (s) => this._esc(s);
+        // [CHANGED v3.95.5] "default" when no project is open, as libi/get_automation has it.
+        const slug = this._project ? this._project.slug : 'default';
+        const onPage = new Map();
+        this.core.nets.forEach((n, i) => {
+            if (n && n.ha_id && n.id !== this._activeNetForLoad) onPage.set(String(n.ha_id), `NET ${i + 1} on this page`);
+        });
+        const unreadable = Array.isArray(this._automationUnreadable) ? this._automationUnreadable : [];
+        const list = Array.isArray(this._automationList) ? this._automationList : [];
+        const free = [], used = [];
+        for (const a of list) {
+            // [CHANGED v3.95.5] A NET may load its own automation again: this project holding it only by that NET (or
+            // by nothing but what it made) is no holder, as libi/get_automation allows it.
+            const own = (u) => !!slug && u.slug === slug && Array.isArray(u.nets) && u.nets.every(n => String(n) === String(this._activeNetForLoad));
+            const holders = (Array.isArray(a.in_use) ? a.in_use : []).filter(u => u && u.name && !own(u))
+                .map(u => (slug && u.slug === slug) ? `${u.name} (this project)` : String(u.name));
+            const page = onPage.get(String(a.id));
+            if (page && !(slug && (a.in_use || []).some(u => u && u.slug === slug && !own(u)))) holders.push(page);
+            (holders.length || unreadable.length ? used : free).push({ a, holders });
+        }
+        const pick = ({ a }) => `<div class="auto-item" data-id="${esc(a.id)}"><div class="auto-item-name" dir="auto">${esc(a.name)}</div><div class="auto-item-id">ID: ${esc(a.id)}</div></div>`;
+        const shown = ({ a, holders }) => `<div class="auto-used" aria-disabled="true"><div class="auto-item-name" dir="auto">${esc(a.name)}</div><div class="auto-item-id"><span class="auto-where" dir="auto">${esc(holders.join(', ') || 'Not known')}</span> · ID: ${esc(a.id)}</div></div>`;
+        let body;
+        if (unreadable.length) {
+            body = used.map(shown).join('') || '<div class="auto-none">No automations found.</div>';
+        } else {
+            body = (free.length ? free.map(pick).join('')
+                : `<div class="auto-none">${list.length ? 'Every automation is in a project already.' : 'No automations found.'}</div>`)
+                + (used.length ? '<div class="auto-sec">IN USE</div><div class="auto-sec-note">An automation belongs to one project. '
+                    + 'To load one of these here, take it out of its project first: Delete NET… ▸ Remove from LIBI only.</div>'
+                    + used.map(shown).join('') : '');
+        }
+        const warn = unreadable.length ? `<p class="auto-warn">LIBI could not read the project file of ${esc(unreadable.join(', '))}, so it cannot tell which project holds which automation. Nothing can be loaded until that file is fixed or removed.</p>` : '';
+        return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 500px;"><h2 class="modal-title">Select HA Automation</h2><p style="font-size:13px; color:var(--secondary-text-color, #757575); margin:0;">Choose an automation to load into this Net.</p>${warn}<div class="auto-list" style="max-height:50vh;">${body}</div><div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div></div></div>`;
     }
 
     async _importAutomation(haId) {
@@ -834,7 +877,13 @@ class LibiPanel extends HTMLElement {
                 }
                 this._modal = null; this._activeNetForLoad = null; this._render();
             }
-        } catch (err) { alert("Failed to load automation AST: " + err.message); }
+        } catch (err) {
+            // [CHANGED v3.95.0] An automation a project holds is refused by the backend too: its words say why, and the
+            // list is fetched again, as it is now.
+            const said = !!err && (err.code === 'in_use' || err.code === 'projects_unreadable');
+            alert(said ? err.message : "Failed to load automation AST: " + (err && err.message));
+            if (said) this._fetchAutomationsList();
+        }
     }
 
     _netNoticeHtml(net) {
@@ -1118,8 +1167,8 @@ class LibiPanel extends HTMLElement {
         
         let modalHtml = '';
         if (this._modal === 'list_automations') {
-            const items = this._automationList.map(a => `<div class="auto-item" data-id="${this._esc(a.id)}"><div class="auto-item-name">${this._esc(a.name)}</div><div class="auto-item-id">ID: ${this._esc(a.id)}</div></div>`).join('');
-            modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 500px;"><h2 class="modal-title">Select HA Automation</h2><p style="font-size:13px; color:var(--secondary-text-color, #757575); margin:0;">Choose an automation to load into this Net.</p><div class="auto-list" style="max-height:50vh;">${items || '<div style="padding:16px;text-align:center;">No automations found.</div>'}</div><div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div></div></div>`;
+            // [CHANGED v3.95.0] Only what no project holds can be chosen; the rest under IN USE (_loadListHtml).
+            modalHtml = this._loadListHtml();
         } else if (this._modal === 'project_new') {
             modalHtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width:460px;">
                 <h2 class="modal-title">New project</h2>
@@ -3296,8 +3345,14 @@ class LibiPanel extends HTMLElement {
             if (kind === 'zone') {
                 slot.appendChild(this._picker('person', el.sourceA, v => { el.sourceA = v; this.core.pushHistory(); this._render(); },
                     { label: 'Person', id: 'sourceA' }));
-                slot.appendChild(this._picker('zone', el.sourceB, v => { el.sourceB = v; this.core.pushHistory(); this._render(); },
-                    { label: 'Zone', id: 'sourceB' }));
+                // [CHANGED v3.95.4] Or the zone chosen on the dashboard: a dropdown of the zones (input_select), as the AI
+                // chat makes it. Only zones were offered, and the user's reminder got a fixed zone in its place.
+                slot.appendChild(this._picker('entity', el.sourceB, v => { el.sourceB = v; this.core.pushHistory(); this._render(); },
+                    el.isTrigger ? { label: 'Zone', id: 'sourceB', domains: ['zone'] }
+                        : { label: 'Zone, or the zone chosen on the dashboard', id: 'sourceB', domains: ['zone', 'input_select'] }));
+                if (!el.isTrigger && String(el.sourceB || '').startsWith('input_select.')) {
+                    slot.insertAdjacentHTML('beforeend', `<div class="insp-note zone-chosen">The zone chosen on the dashboard: when it runs, the person must be in the zone picked in ${this._esc(el.sourceB)}.</div>`);
+                }
             } else if (kind === 'device') {
                 slot.appendChild(this._picker('device', el.deviceId, v => {
                     el.deviceId = v; this.core.pushHistory(); this._render();
@@ -3342,13 +3397,8 @@ class LibiPanel extends HTMLElement {
                 // [CHANGED v3.70.0] A schedule as well: the importer draws schedule.x on as the date and time = schedule.x.
                 slot.appendChild(this._picker('entity', el.sourceB, v => { el.sourceB = v; this.core.pushHistory(); this._render(); },
                     { label: 'Date and time helper or schedule', id: 'sourceB', domains: ['input_datetime', 'sensor', 'schedule'] }));
-                // [ADDED v3.71.0] What the schedule holds, and where its days and hours are set.
-                const week = String(el.sourceB || '').startsWith('schedule.') ? this._scheduleText(el.sourceB) : '';
-                if (week) {
-                    slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Days and hours</label>
-                        <div class="insp-note" dir="ltr">${this._esc(week)}</div>
-                        <div class="insp-note">Set in the schedule itself: Settings ▸ Devices &amp; services ▸ Helpers.</div></div>`);
-                }
+                // [CHANGED v3.95.3] What the schedule holds, set here: its days and hours, saved in the schedule itself.
+                if (String(el.sourceB || '').startsWith('schedule.')) slot.appendChild(this._scheduleEditor(el));
             } else if (kind === 'sun') {
                 el.sourceA = 'sun';
                 slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">Event</label><select id="inp_sourceB">
@@ -3357,7 +3407,7 @@ class LibiPanel extends HTMLElement {
             } else {
                 slot.appendChild(this._picker('entity', el.sourceA, v => { el.sourceA = v; this.core.pushHistory(); this._render(); },
                     { label: isCmp ? 'Entity (IN1)' : 'Variable A (IN1)', id: 'sourceA' }));
-                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">${isCmp ? 'Value or entity (IN2)' : 'Variable B (IN2)'}</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`);
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">${isCmp ? 'Value or helper (IN2)' : 'Variable B (IN2)'}</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`);
             }
             
             const inpB = slot.querySelector('#inp_sourceB');
@@ -4167,6 +4217,11 @@ class LibiPanel extends HTMLElement {
     // hours differ. '' when they are not known.
     _scheduleText(entityId) {
         const item = (this._schedules || {})[String(entityId || '').split('.').slice(1).join('.')];
+        return item ? this._weekText(item) : '';
+    }
+
+    // [ADDED v3.95.3] The days and hours of a schedule's settings, as _scheduleText says them (it was its body).
+    _weekText(item) {
         if (!item) return '';
         const hm = (t) => String(t || '').replace(/^(\d{1,2}:\d{2}):00$/, '$1');
         const spans = (day) => (Array.isArray(item[day]) ? item[day] : []).map(s => `${hm(s.from)}–${hm(s.to)}`).join(', ');
@@ -4175,6 +4230,213 @@ class LibiPanel extends HTMLElement {
         const first = spans(marked[0][0]);
         if (marked.every(([day]) => spans(day) === first)) return `${marked.map(([, name]) => name).join(' ')} ${first}`;
         return marked.map(([day, name]) => `${name} ${spans(day)}`).join(' · ');
+    }
+
+    // [ADDED v3.95.3] The user (2026-11-11): "in the INSPECTOR, when I click the CMP, let me choose the days and the
+    // time, and update the schedule - and if LIBI is deleted everything keeps working". The days and the hours of the
+    // schedule on IN2 of a CMP DATETIME, set here and saved at once in Home Assistant's own schedule - schedule/update,
+    // the API of its own editor, admin only. LIBI keeps no copy: without LIBI the schedule works as it is, and its
+    // settings (the cog) change it. The draft lives here (_schedEdit), not in the fields, so a redraw keeps it.
+    _scheduleEditor(el) {
+        const eid = String(el.sourceB || '');
+        const wrap = document.createElement('div');
+        wrap.className = 'fgrp sched-edit';
+        const head = document.createElement('label');
+        head.textContent = 'Days and hours';
+        wrap.appendChild(head);
+        const note = (text, cls = '') => {
+            const d = document.createElement('div');
+            d.className = `insp-note ${cls}`.trim();
+            d.textContent = text;
+            wrap.appendChild(d);
+            return d;
+        };
+        let ed = this._schedEdit;
+        // A click on a block gives a new _inspectedEl: the schedule is read again then, and kept while it redraws.
+        if (!ed || ed.eid !== eid || ed.inspected !== this._inspectedEl) {
+            ed = this._schedEdit = { eid, inspected: this._inspectedEl, state: 'loading', days: new Set(), from: '', to: '' };
+            this._openScheduleEdit(ed);
+        }
+        if (ed.state === 'loading') { note('Reading the schedule…'); return wrap; }
+        if (ed.state === 'error') { note(ed.error, 'sched-warn'); return wrap; }
+        // [ADDED v3.95.5] A save that found the schedule gone, or carrying data, says so whatever is shown now.
+        if (ed.error && ed.state !== 'ready') note(ed.error, 'sched-warn sched-error').setAttribute('role', 'alert');
+        if (ed.state === 'yaml') {
+            const known = this._scheduleText(eid);
+            if (known) note(known).dir = 'ltr';
+            note('LIBI cannot change this schedule: it is not a helper made in Home Assistant\'s settings (it may be written in YAML). Change it where it is set.');
+            return wrap;
+        }
+        note(`Now: ${this._weekText(ed.item)}`, 'sched-now').dir = 'ltr';
+        if (ed.state === 'data') {
+            note('Its blocks carry extra data, which LIBI does not change: set its days and hours in its own settings - Settings ▸ Devices & services ▸ Helpers.');
+            return wrap;
+        }
+        const days = document.createElement('div');
+        days.className = 'sched-days';
+        days.setAttribute('role', 'group');
+        days.setAttribute('aria-label', 'Days');
+        this.WEEK_DAYS().forEach(([day, name]) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = `sched-day${ed.days.has(day) ? ' on' : ''}`;
+            b.dataset.day = day;
+            b.textContent = name;
+            b.setAttribute('aria-pressed', ed.days.has(day) ? 'true' : 'false');
+            b.disabled = !!ed.busy;
+            b.addEventListener('click', () => {
+                if (ed.days.has(day)) ed.days.delete(day); else ed.days.add(day);
+                ed.status = ''; ed.error = '';
+                this._render();
+            });
+            days.appendChild(b);
+        });
+        wrap.appendChild(days);
+        const times = document.createElement('div');
+        times.className = 'sched-times';
+        [['From', 'from'], ['To', 'to']].forEach(([text, prop]) => {
+            const box = document.createElement('label');
+            box.className = 'sched-time';
+            const name = document.createElement('span');
+            name.textContent = text;
+            const input = document.createElement('input');
+            input.type = 'time';
+            input.className = `sched-${prop}`;
+            input.value = ed[prop] || '';
+            input.disabled = !!ed.busy;
+            const keep = (e) => { ed[prop] = e.target.value; ed.status = ''; ed.error = ''; };
+            input.addEventListener('input', keep);
+            input.addEventListener('change', keep);
+            box.append(name, input);
+            times.appendChild(box);
+        });
+        wrap.appendChild(times);
+        note('The same hours on every day ticked. To 00:00 is midnight.');
+        if (ed.mixed) note('Its days have different hours now. Saving sets these hours on every day ticked, and none on the others.', 'sched-warn');
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'btn btn-primary sched-save';
+        save.textContent = ed.busy ? 'Saving…' : 'Save to the schedule';
+        save.disabled = !!ed.busy;
+        save.addEventListener('click', () => this._saveScheduleEdit(ed));
+        wrap.appendChild(save);
+        if (ed.error) note(ed.error, 'sched-warn sched-error').setAttribute('role', 'alert');
+        if (ed.status) note(ed.status, 'sched-status').setAttribute('role', 'status');
+        note('It is saved at once in Home Assistant\'s own schedule, not with SAVE & COMPILE, and every automation that reads it follows. Without LIBI it stays as it is, and its own settings change it.');
+        return wrap;
+    }
+
+    // [ADDED v3.95.3] The schedule of an editor: its helper, by the entity registry (its unique id is the helper's id,
+    // whatever its entity id was renamed to), and its settings as Home Assistant has them now.
+    async _openScheduleEdit(ed) {
+        try {
+            let id = '';
+            if (!(this._hass && this._hass.states && this._hass.states[ed.eid])) {
+                ed.state = 'error';
+                ed.error = `${ed.eid} is not in Home Assistant.`;
+            } else {
+                try {
+                    const entry = await this._hass.connection.sendMessagePromise({ type: 'config/entity_registry/get', entity_id: ed.eid });
+                    if (entry && entry.platform === 'schedule' && entry.unique_id) id = String(entry.unique_id);
+                } catch (err) { /* not in the entity registry: not a helper LIBI can change */ }
+                this._schedEditFrom(ed, id ? await this._readSchedule(id) : null);
+            }
+        } catch (err) {
+            ed.state = 'error';
+            ed.error = `LIBI could not read the schedule: ${err && err.message ? err.message : String(err)}`;
+        }
+        if (this._schedEdit === ed && this._initialized) this._render();
+    }
+
+    // [ADDED v3.95.3] A schedule helper's settings now, by its id: null when Home Assistant has no such helper.
+    async _readSchedule(id) {
+        const res = await this._hass.connection.sendMessagePromise({ type: 'schedule/list' });
+        const items = Array.isArray(res) ? res : (res && res.items) || [];
+        return items.find(it => it && String(it.id) === String(id)) || null;
+    }
+
+    // [ADDED v3.95.3] What the editor shows of a schedule: the days that have a block, and their hours when every one of
+    // them has the same one block in whole minutes; otherwise the days, the hours to be set again (mixed). A block that
+    // carries data is not LIBI's to change.
+    _schedEditFrom(ed, item) {
+        ed.item = item;
+        if (!item) { ed.state = 'yaml'; return; }
+        ed.id = String(item.id);
+        ed.base = this._schedSig(item);
+        const blocks = (d) => (Array.isArray(item[d]) ? item[d] : []);
+        const order = this.WEEK_DAYS().map(([d]) => d);
+        if (order.some(d => blocks(d).some(b => b && b.data && typeof b.data === 'object' && Object.keys(b.data).length))) {
+            ed.state = 'data';
+            return;
+        }
+        ed.state = 'ready';
+        const marked = order.filter(d => blocks(d).length);
+        const whole = (t) => /^\d{2}:\d{2}:00$/.test(String(t || ''));
+        const first = marked.length ? blocks(marked[0])[0] : null;
+        const one = !!first && marked.every(d => blocks(d).length === 1 && whole(blocks(d)[0].from) && whole(blocks(d)[0].to)
+            && blocks(d)[0].from === first.from && blocks(d)[0].to === first.to);
+        ed.days = new Set(marked);
+        ed.mixed = !!marked.length && !one;
+        ed.from = one ? String(first.from).slice(0, 5) : '';
+        ed.to = one ? (first.to === '24:00:00' ? '00:00' : String(first.to).slice(0, 5)) : '';
+    }
+
+    // [ADDED v3.95.3] A schedule's settings as one string: its name, its icon and every block of every day.
+    _schedSig(item) {
+        return JSON.stringify([String((item && item.name) || ''), String((item && item.icon) || ''),
+            this.WEEK_DAYS().map(([d]) => (item && Array.isArray(item[d]) ? item[d] : [])
+                .map(b => [String(b.from), String(b.to), b.data || null]))]);
+    }
+
+    // [ADDED v3.95.3] Save the editor's days and hours in the schedule. Home Assistant's update REPLACES the whole
+    // schedule, so the name, the icon and all seven days are sent. Nothing is written when nothing changed, when the user
+    // does not confirm, or when the schedule changed in Home Assistant since it was read: it is read again right before.
+    async _saveScheduleEdit(ed) {
+        if (ed.busy || this._schedEdit !== ed || ed.state !== 'ready') return;
+        if (this.online && this.online.enabled) return;  // Traces is read only
+        ed.error = ''; ed.status = '';
+        const from = String(ed.from || ''), to = String(ed.to || '');
+        const ticked = this.WEEK_DAYS().filter(([d]) => ed.days.has(d)).length;
+        const hhmm = /^\d{2}:\d{2}$/;
+        const end = to === '00:00' ? '24:00' : to;
+        if (ticked && (!hhmm.test(from) || !hhmm.test(to))) ed.error = 'Set the time it starts and the time it ends.';
+        else if (ticked && end <= from) ed.error = 'It must end after it starts (To 00:00 is midnight).';
+        if (ed.error) { this._render(); return; }
+        const week = {};
+        this.WEEK_DAYS().forEach(([d]) => { week[d] = ed.days.has(d) ? [{ from: `${from}:00`, to: `${end}:00` }] : []; });
+        const next = { ...ed.item, ...week };
+        if (this._schedSig(next) === ed.base) {
+            ed.status = 'Nothing changed: the schedule already has these days and hours.';
+            this._render();
+            return;
+        }
+        const ask = `Save the days and hours of the schedule "${ed.item.name}" in Home Assistant?\n\n`
+            + `Now: ${this._weekText(ed.item)}\nNew: ${this._weekText(next)}\n\n`
+            + 'Every automation that reads this schedule follows the new days and hours. It is saved now, not with SAVE & COMPILE.';
+        if (!window.confirm(ask)) return;
+        ed.busy = true;
+        this._render();
+        try {
+            // Read again just before the write: a change made in Home Assistant in the meantime is never overwritten.
+            const fresh = await this._readSchedule(ed.id);
+            if (!fresh || this._schedSig(fresh) !== ed.base) {
+                this._schedEditFrom(ed, fresh);
+                ed.error = fresh ? 'The schedule was changed in Home Assistant since LIBI showed it. LIBI read it again: check it, and save again. Nothing was saved.'
+                    : 'The schedule is no longer in Home Assistant. Nothing was saved.';
+                return;
+            }
+            const msg = { type: 'schedule/update', schedule_id: ed.id, name: fresh.name, ...week };
+            if (fresh.icon) msg.icon = fresh.icon;
+            const saved = await this._hass.connection.sendMessagePromise(msg);
+            this._schedEditFrom(ed, saved && typeof saved === 'object' && saved.id !== undefined ? saved : await this._readSchedule(ed.id));
+            ed.status = `Saved in Home Assistant: ${this._weekText(ed.item)}.`;
+            await this._loadSchedules(false);
+        } catch (err) {
+            ed.error = `Not saved: ${err && err.message ? err.message : String(err)}`;
+        } finally {
+            ed.busy = false;
+            if (this._schedEdit === ed) this._render();
+        }
     }
 
     _hkPickKind(domain) {

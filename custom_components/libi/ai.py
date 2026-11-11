@@ -13,11 +13,25 @@
 # more details. <https://www.gnu.org/licenses/>.
 """The AI chat: an LLM drafts, Home Assistant decides.
 
-[ADDED v3.87.0 | 2026-11-04] Purpose: The phones for the panel's MOVE NOTIFY / TTS block, each with the action that sends to
-it (phone_list), and the notify actions an entry calls that Home Assistant does not have (notify_action_problems): the
-user's train reminder had a phone's notify entity as its action, was saved, and said nothing at its time.
-[ADDED v3.88.0 | 2026-11-05] Purpose: notify_action_problems also stops an entry that sends to a recipient of LIBI Global
-no longer in Home Assistant; the walk over an entry's steps is yaml_to_libi.called_actions, shared with LIBI Global.
+[ADDED v3.95.0 | 2026-11-10] Purpose: The user's choice (2026-11-10): the days and the time set on the dashboard are a
+switch for each day and a start time, or ONE schedule whose blocks start and end the logic - each day its own hours. LIBI
+asks which (days_question); both are Home Assistant's own helpers and card rows, so the card works without LIBI. A
+schedule the user names is used as it is. The days helper of 3.76.0 is kept only where a net already has it. And the
+user's language is the one of the user's own last message, in its letters (language_rule); a text the model shows the
+user in other letters goes back to it (language_problems) - a request in English got Hebrew names and a Hebrew reply.
+The phones list offers the recipients of LIBI Global first (global_recipients); one the user ticks is sent to as a
+phone is, by its script (message_targets) - the user got only the phones themselves, not "Guy My PHONE". A rung that
+ends with no action goes back to the model (rungs_without_action), and the end of a schedule's block is LIBI's line only
+when the logic turns something on - the user's train reminder had an end option with no steps, drawn in red.
+[CHANGED v3.95.5 | 2026-11-11] Purpose: A check that compares a state with an entity's id goes back to the model
+(literal_checks), lists too: it never holds. And the review of the release (RULE 41): the language check leaves the
+names of the house out (house_names) - the model must quote them, and could never correct them; a switch for each day is
+offered only when its seven roles fit the plan (MAX_ROLES) - with the roles a yes to LIBI's questions adds - or some
+days would be dropped; and a check is counted only where its entity can never hold an entity's id (FIXED_STATE_DOMAINS),
+and never one of an attribute. The third pass: a letter is counted by its script only (scripts_of) - a sign such as
+µ is none, and Japanese is one script - and the names of the house are left out with one pattern, all of them. The
+fourth: a schedule trigger written to [on] is the week schedule too - in the check of the request's lines as well (the
+fifth) - and a drawn rung that holds no block is skipped.
 
 [ADDED v3.36.0 | 2026-10-26] Purpose: Turn a request written in any language into a ladder net.
 
@@ -47,6 +61,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from typing import Any
 
 import aiohttp
@@ -59,7 +74,8 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import slugify
 
-from .libi_to_yaml import ast_to_yaml, net_level
+from .libi_to_yaml import FIXED_STATE_DOMAINS, ast_to_yaml, net_level
+from .recipients import ALIAS_PREFIX
 from .yaml_to_libi import DAY_BITS_DOMAINS, called_actions, day_bits_entity, day_bits_template, is_recipient_action
 from .const import (
     AI_MODE_CLOUD,
@@ -361,6 +377,8 @@ PLAN_SCHEMA: dict = {
 }
 
 PLAN_SYSTEM_TEMPLATE = """You help a Home Assistant user describe an automation, script or scene that LIBI will build.
+The user's language is the language of the user's LAST message (USER LANGUAGE at the end of the message says which) -
+never the language the nets, helpers, zones or devices of the house are named in.
 You do NOT know the user's devices and you must NOT name any entity_id, device_id or area_id.
 Instead, describe every device the logic needs as a ROLE with search criteria. LIBI searches the
 user's Home Assistant with them and the user picks the entities from a list.
@@ -375,7 +393,7 @@ helper the logic reads or sets is a role, like a device: when the user names one
 its domain and the words of its name as keywords - not a new helper, not a new device. It may also list
 NAMED, NOT FOUND: names the user's message quotes that nothing in this Home Assistant has. A helper the user says
 they have that is listed there is gone: propose it in new_helpers under that very name, with its settings, in its
-role - and days and hours the user sets on the screen are the alarm clock below, not a schedule.
+role.
 
 Answer with JSON only, matching the schema:
 - intent: "answer" when the user only asks a question (about a net, or in general) - then give the
@@ -425,12 +443,11 @@ Answer with JSON only, matching the schema:
   days helper, a number of 8 bits whose bits are the days - bit 1 (value 1) Sunday, bit 2 (2) Monday,
   bit 3 (4) Tuesday ... bit 7 (64) Saturday (input_number, settings {"min": 0, "max": 255, "step": 1,
   "mode": "box"}, role "days", named "<what it is> - days" in the user's language). The user sets the
-  time and ticks the days as checkboxes on the card - never a switch for each day. So
-  also when the user names a schedule helper of their own for the days and hours they choose on the
-  screen: a schedule's days and hours are set only in its own settings, never on a dashboard card -
-  propose the alarm clock, give the schedule no role, and say so in the reply. A schedule helper (a
+  time and the days on the card; LIBI then asks the user whether the days are a switch for each day or
+  a schedule, and makes them so. When the user names a schedule helper of their own for the days and
+  hours, use it instead: give it a role, and propose no time and no days helper. A new schedule helper (a
   weekly calendar; settings days, from, to, e.g. {"days": ["mon","tue","thu"], "from": "06:00",
-  "to": "06:30"}) only when the user asks for a schedule that is not set from the screen.
+  "to": "06:30"}) only when the user asks for a schedule with fixed days and hours.
   For an amount, an input_number with min, max, step and unit_of_measurement, which the card shows next to
   the value (e.g. litres: min 0, max 500, step 5, unit_of_measurement "L"; minutes: unit_of_measurement
   "min"). So "days and times chosen in the UI, and the amount from a variable" is a time helper,
@@ -483,7 +500,8 @@ BUILD_SCHEMA: dict = {
 }
 
 BUILD_SYSTEM_TEMPLATE = """You write a Home Assistant configuration that LIBI turns into a ladder diagram.
-Answer with JSON only, matching the schema.
+Answer with JSON only, matching the schema. The user's language is the language of the user's LAST request (USER
+LANGUAGE at the end of the message says which) - never the language the house's nets, helpers or zones are named in.
 
 Devices: you never write an entity_id. Every device is written as "role:<role id>" from the ROLES
 list, e.g. "entity_id": "role:trigger_buttons". A role may hold several entities; LIBI fills them in.
@@ -663,8 +681,8 @@ def clean_plan(hass: HomeAssistant, raw: dict, net_ids: set[str] | None = None) 
         if not isinstance(q, dict):
             continue
         qid = _clean_id(q.get("id"), f"q{i + 1}")
-        # [CHANGED v3.80.0] Six of the model's, and LIBI's own (SAFETY_QUESTIONS), which come back from the browser.
-        mine = qid in SAFETY_QUESTIONS
+        # [CHANGED v3.80.0] Six of the model's, and LIBI's own (LIBI_QUESTIONS), which come back from the browser.
+        mine = qid in LIBI_QUESTIONS
         if qid in qseen or (not mine and theirs >= 6):
             continue
         qseen.add(qid)
@@ -1045,9 +1063,52 @@ def helpers_for_open_roles(plan: dict, candidates: dict, named: dict | None = No
     # chat of 2026-11-01, after NET 3 was deleted with its helpers), or one the model planned that found no schedule -
     # LIBI would have proposed a new schedule for it, and a card cannot set one either.
     left = [r["id"] for r in plan["roles"] if _open_schedule(r, candidates, filled, named)]
-    if ((schedules and named is not None) or left) and (_alarm_proposed(plan) or _set_on_a_card(plan)):
-        _alarm_clock_for(plan, named if named is not None else {}, schedules, left)
+    # [CHANGED v3.95.0] The user's choice (2026-11-10): a schedule is one of the two ways to set the days and their hours
+    # from the screen (tap it on the card, then its settings). One the user names - or names and no longer has, proposed
+    # again under that name - is used as it is, as the week schedule, and the alarm clock the model proposed beside it
+    # goes. Only a schedule role that nothing fills and the user did not name gives way to the alarm clock, whose days LIBI
+    # then asks the user how to set (days_question).
+    screen = _alarm_proposed(plan) or _set_on_a_card(plan)
+    keep = [rid for rid, _eid in schedules if any(r["id"] == rid for r in plan["roles"])] if named is not None else []
+    keep += [rid for rid in left if any(r["id"] == rid and r.get("missing") for r in plan["roles"])]
+    # A change of a net keeps the way the net sets its days (keep_net_alarm_clock marks those roles kept): beside the
+    # time and the days it has, a schedule the message names gives way, as before.
+    net_alarm = any(r.get("kept") and r["id"] != SCHEDULE_ROLE for r in plan["roles"])
+    if net_alarm:
+        if ((schedules and named is not None) or left) and screen:
+            _alarm_clock_for(plan, named if named is not None else {}, schedules, left)
+    elif keep and screen:
+        _use_week_schedule(plan, candidates, named if named is not None else {}, keep[0])
+    elif left and screen:
+        _alarm_clock_for(plan, named if named is not None else {}, [], left)
     _days_as_bits(plan)
+
+
+def _use_week_schedule(plan: dict, candidates: dict, named: dict, rid: str) -> None:
+    """[ADDED v3.95.0] A schedule the user names for the days and hours set from the screen is the week schedule: its role
+    is SCHEDULE_ROLE - the logic starts when one of its blocks starts and ends when the block ends - and the alarm clock
+    the model proposed beside it goes: a start time, the days, a switch for a day."""
+    gone = {h["role"] for h in plan["new_helpers"]
+            if _is_days_bits(h) or _is_day_switch(h) or (_is_clock_time(h) and h["role"] == "start_time")}
+    gone |= {r["id"] for r in plan["roles"]
+             if (_is_days_role(r) or _is_day_role(r) or r["id"] == "start_time") and not r.get("named")}
+    gone.discard(rid)
+    plan["new_helpers"] = [h for h in plan["new_helpers"] if h["role"] not in gone]
+    plan["roles"] = [r for r in plan["roles"] if r["id"] not in gone]
+    for g in gone:
+        candidates.pop(g, None)
+    if rid == SCHEDULE_ROLE or any(r["id"] == SCHEDULE_ROLE for r in plan["roles"]):
+        return
+    for role in plan["roles"]:
+        if role["id"] == rid:
+            role["id"], role["purpose"] = SCHEDULE_ROLE, "trigger"
+    for helper in plan["new_helpers"]:
+        if helper["role"] == rid:
+            helper["role"] = SCHEDULE_ROLE
+    if rid in candidates:
+        candidates[SCHEDULE_ROLE] = candidates.pop(rid)
+    if rid in named:
+        named[SCHEDULE_ROLE] = named.pop(rid)
 
 
 def _open_schedule(role: dict, candidates: dict, filled: set[str], named: dict | None) -> bool:
@@ -1149,7 +1210,10 @@ def _alarm_clock_for(plan: dict, named: dict, schedules: list[tuple[str, str]], 
             named[rid] = rest
         else:
             named.pop(rid, None)
-    replaced = {rid for rid, _eid in schedules} | gone
+    # [CHANGED v3.95.0] A schedule role nothing fills is taken out, no longer kept as "not used": LIBI asks how the days are
+    # set (days_question), and a schedule is one of the answers.
+    plan["roles"] = [r for r in plan["roles"] if r["id"] not in gone]
+    replaced = {rid for rid, _eid in schedules}
     for role in plan["roles"]:
         if role["id"] in replaced:
             role["optional"], role["replaced"] = True, True
@@ -1162,7 +1226,9 @@ def _days_as_bits(plan: dict) -> None:
     named as the switches were ("<what it is> - days"), else after the plan, for the user to rename. Every days helper
     gets the 8 bits' settings, so all seven days can be ticked, and starts at 0: nothing runs on a day nobody ticked."""
     switches = [h for h in plan["new_helpers"] if _is_day_switch(h)]
-    gone = {h["role"] for h in switches} | {r["id"] for r in plan["roles"] if _is_day_role(r) and not r.get("named")}
+    # [CHANGED v3.95.0] Not the switches of a net being changed (kept): a net with a switch for each day keeps them.
+    gone = {h["role"] for h in switches} | {r["id"] for r in plan["roles"]
+                                            if _is_day_role(r) and not r.get("named") and not r.get("kept")}
     if gone:
         first = next((h for d in _DAY_ORDER for h in switches if _day_of(h["role"]) == d), None)
         base, sep, _day = (first["name"] if first else "").rpartition(" - ")
@@ -1193,18 +1259,35 @@ def picked_alarm_clock(hass: HomeAssistant, plan: dict, selections: dict) -> dic
     one of the role start_time, else the only one picked. The user's NET 3 of 2026-10-31 had the days of an alarm clock
     and started when the schedule the user had named turned on, so the time set on the card was in no rung, and not
     on the card either.
-    [CHANGED v3.76.0] The days are the one 8-bit helper of the days role. {} without it."""
+    [CHANGED v3.76.0] The days are the one 8-bit helper of the days role. {} without it.
+    [CHANGED v3.95.0] mode "bits" (that helper, kept where a net has it), "switches" (a switch for each day, in the roles
+    day_sun ... day_sat) or "schedule" (the week schedule, SCHEDULE_ROLE: its blocks start and end the logic, no time)."""
     days = ("", "")
     times: list[tuple[str, str]] = []
+    switches: dict[str, tuple[str, str]] = {}
+    week = ""
     for role in plan.get("roles") or []:
         picks = selections.get(role["id"]) or []
         if _is_days_role(role) and len(picks) == 1 and picks[0].split(".")[0] in DAY_BITS_DOMAINS and not days[1]:
             days = (role["id"], picks[0])
+        day = _day_of(role["id"])
+        if day and "input_boolean" in (role.get("domains") or []) and len(picks) == 1 \
+                and picks[0].startswith("input_boolean."):
+            switches.setdefault(day, (role["id"], picks[0]))
+        if role["id"] == SCHEDULE_ROLE and len(picks) == 1 and picks[0].startswith("schedule."):
+            week = picks[0]
         times += [(role["id"], eid) for eid in picks if _is_clock_entity(hass, eid)]
-    if not days[1]:
-        return {}
+    if week:
+        return {"mode": "schedule", "schedule_role": SCHEDULE_ROLE, "schedule": week, "time_role": "", "time": "",
+                "days": ""}
     start = next((t for t in times if t[0] == "start_time"), None) or (times[0] if len(times) == 1 else ("", ""))
-    return {"time_role": start[0], "time": start[1], "days_role": days[0], "days": days[1]}
+    if days[1]:
+        return {"mode": "bits", "time_role": start[0], "time": start[1], "days_role": days[0], "days": days[1]}
+    if switches:
+        return {"mode": "switches", "time_role": start[0], "time": start[1], "days": "",
+                "switches": {d: eid for d, (_rid, eid) in switches.items()},
+                "switch_roles": {d: rid for d, (rid, _eid) in switches.items()}}
+    return {}
 
 
 def _yaml_mapping(text: str) -> dict:
@@ -1223,24 +1306,46 @@ def net_alarm_clock(hass: HomeAssistant, config: Any) -> dict:
     the time of day named as its days are: LIBI names the time "<name>" and the days "<name> - days" (and in 3.73.0 -
     3.75.0 "<name> - Sun" ... "<name> - Sat"), and the user's NET 3 had the days only.
     [CHANGED v3.76.0] days: the 8-bit helper its CMP DAY reads; switches: the switch it checks on each day, as a net of
-    3.73.0 - 3.75.0 does. {} when the net has neither."""
+    3.73.0 - 3.75.0 does. {} when the net has neither.
+    [CHANGED v3.95.0] schedule: its week schedule - one a trigger starts the net with when it turns on and another ends it
+    with when it turns off, as LIBI builds it."""
     bits = next((e for e in config_day_bits(config) if hass.states.get(e) is not None), "")
     switches: dict[str, str] = {}
     for eid, index in config_days(config).items():
         if hass.states.get(eid) is not None:
             switches.setdefault(_DAY_ORDER[index], eid)
-    if not bits and not switches:
+    week = net_week_schedule(hass, config)
+    if not bits and not switches and not week:
         return {}
     time = ""
     for node in _walk_nodes(config):
         at = node.get("at") if node.get("trigger") == "time" else None
         time = time or next((v for v in (at if isinstance(at, list) else [at])
                              if isinstance(v, str) and _is_clock_entity(hass, v)), "")
+    if week:
+        return {"time": "", "days": "", "switches": {}, "base": "", "schedule": week}
     base = _base_name(hass, [bits] if bits else list(switches.values()))
     if not time and base:
         time = next((s.entity_id for s in hass.states.async_all("input_datetime")
                      if _norm(s.name) == _norm(base) and _is_clock_entity(hass, s.entity_id)), "")
-    return {"time": time, "days": bits, "switches": switches, "base": base}
+    return {"time": time, "days": bits, "switches": switches, "base": base, "schedule": ""}
+
+
+def net_week_schedule(hass: HomeAssistant, config: Any) -> str:
+    """[ADDED v3.95.0] The week schedule of a net: a schedule that starts it (a state trigger to "on") and ends it (to "off"),
+    as LIBI builds it; "" without one. A schedule that only starts a net is the model's own (fixed days), not this."""
+    ups, downs = set(), set()
+    for node in _walk_nodes(config):
+        if node.get("trigger") != "state":
+            continue
+        for eid in _ids_in(node):
+            if eid.startswith("schedule.") and hass.states.get(eid) is not None:
+                # [CHANGED v3.95.5] to: [on] - the one-item list - is to: on.
+                to = node.get("to")
+                to = str(to[0] if isinstance(to, list) and len(to) == 1 else to)
+                (ups if to == "on" else downs if to == "off" else set()).add(eid)
+    both = sorted(ups & downs)
+    return both[0] if both else ""
 
 
 def _base_name(hass: HomeAssistant, entity_ids: list[str]) -> str:
@@ -1267,9 +1372,18 @@ def keep_net_alarm_clock(hass: HomeAssistant, plan: dict, net_yaml: str) -> dict
     if not clock:
         return {}
     picks: dict[str, list[str]] = {}
+    # [CHANGED v3.95.0] And the switch of each day, or the week schedule: a change keeps the way the net sets its days.
     wanted = ([("start_time", clock["time"], "trigger")] if clock["time"] else []) + (
-        [("days", clock["days"], "condition")] if clock["days"] else [])
+        [("days", clock["days"], "condition")] if clock["days"] else []) + [
+        (f"day_{day}", eid, "condition") for day, eid in clock["switches"].items()] + (
+        [(SCHEDULE_ROLE, clock["schedule"], "trigger")] if clock.get("schedule") else [])
+    # The model's own roles for the days go first, so the net's switches find room (MAX_ROLES): with seven roles of the
+    # model's for the days, two of the net's switches were left out.
+    ours = {rid for rid, _eid, _purpose in wanted}
+    plan["roles"] = [r for r in plan["roles"] if r.get("named") or r["id"] in ours or not (
+        _is_day_role(r) or ((clock["switches"] or clock.get("schedule")) and _is_days_role(r)))]
     for rid, eid, purpose in wanted:
+        # A day's switch in the role day_<day> LIBI names: a role the model named for a day goes (gone, below).
         role = next((r for r in plan["roles"] if r["id"] == rid or (rid == "days" and _is_days_role(r))), None)
         domain = eid.split(".")[0]
         if role is None:
@@ -1280,20 +1394,20 @@ def keep_net_alarm_clock(hass: HomeAssistant, plan: dict, net_yaml: str) -> dict
             plan["roles"].append(role)
         elif domain not in role["domains"]:
             role["domains"].append(domain)
+        # [ADDED v3.95.0] Kept: neither the days helper (_days_as_bits) nor the week schedule takes its place.
+        role["kept"] = True
         picks[role["id"]] = [eid]
     purpose = {r["id"]: r["purpose"] for r in plan["roles"]}
+    week = bool(clock.get("schedule"))
     gone = {h["role"] for h in plan["new_helpers"] if h["role"] not in picks and (
-        (clock["time"] and _is_clock_time(h) and (purpose.get(h["role"]) == "trigger" or "start" in h["role"]))
-        or (clock["days"] and _is_days_bits(h)) or _is_day_switch(h))}
-    gone |= {r["id"] for r in plan["roles"] if _is_day_role(r) and not r.get("named")}
+        ((clock["time"] or week) and _is_clock_time(h) and (purpose.get(h["role"]) == "trigger" or "start" in h["role"]))
+        or ((clock["days"] or week or clock["switches"]) and _is_days_bits(h)) or _is_day_switch(h))}
+    gone |= {r["id"] for r in plan["roles"] if r["id"] not in picks and not r.get("named") and (
+        _is_day_role(r) or ((week or clock["switches"]) and _is_days_role(r)) or (week and r["id"] == "start_time"))}
     plan["new_helpers"] = [h for h in plan["new_helpers"] if h["role"] not in picks and h["role"] not in gone]
     plan["roles"] = [r for r in plan["roles"] if r["id"] not in gone or r.get("named")]
-    if clock["switches"] and not clock["days"] and not any(_is_days_role(r) for r in plan["roles"]) \
-            and len(plan["new_helpers"]) < MAX_NEW_HELPERS and len(plan["roles"]) < MAX_ROLES:
-        base = clock["base"] or str(plan.get("name") or "").strip()[:50] or "Days"
-        kept, plan["roles"] = clean_new_helpers([{"role": "days", "domain": "input_number", "name": f"{base} - days"[:60],
-                                                  "settings": dict(DAY_BITS_SETTINGS)}], plan["roles"])
-        plan["new_helpers"].extend(kept)
+    # [CHANGED v3.95.0] A net with a switch for each day keeps them (the user's choice, 2026-11-10): no days helper is
+    # proposed in their place any more.
     return picks
 
 
@@ -1905,6 +2019,10 @@ class _Draft:
         self.services.add(value)
         if domain in MESSAGE_DOMAINS or value in MESSAGE_SERVICES:
             return value
+        # [ADDED v3.95.0] A recipient of LIBI Global the user ticked in the phones list: sent to as a phone is. One the user
+        # did not tick is no service an AI draft may call (RULE 7: LIBI fills it in from the user's tick).
+        if is_recipient_action(value) and value in (self.sel.get(PHONES_ROLE) or []):
+            return value
         if value in GENERIC_SERVICES:
             if not _targets(step):
                 self.err(f"{value} needs a target.")
@@ -1948,7 +2066,8 @@ def clean_selections(hass: HomeAssistant, plan: dict, raw: Any) -> tuple[dict, l
             eid = str(eid)
             if hass.states.get(eid) is None:
                 errors.append(f"{eid} does not exist.")
-            elif eid.split(".")[0] not in role["domains"]:
+            # [CHANGED v3.95.0] The phones list holds the recipients of LIBI Global too - and no other script.
+            elif eid.split(".")[0] not in role["domains"] and not (rid == PHONES_ROLE and is_recipient_action(eid)):
                 errors.append(f"{eid} does not fit '{role['label']}'.")
             else:
                 keep.append(eid)
@@ -2003,6 +2122,42 @@ def phone_services(hass: HomeAssistant) -> dict[str, str]:
 
 
 @callback
+def global_recipients(hass: HomeAssistant) -> dict[str, str]:
+    """[ADDED v3.95.0] The recipients of LIBI Global this Home Assistant has loaded - the user's one place for the phones a
+    message goes to ("Guy My PHONE") - each script's entity_id, which is also the action that sends to it, with its name
+    (the script's alias without "LIBI Global: ")."""
+    out: dict[str, str] = {}
+    for state in hass.states.async_all("script"):
+        if not is_recipient_action(state.entity_id) or not hass.services.has_service("script", state.object_id):
+            continue
+        name = str(state.name or "")
+        name = name[len(ALIAS_PREFIX):] if name.startswith(ALIAS_PREFIX) else name
+        out[state.entity_id] = _sanitize(name)[:60] or state.entity_id
+    return out
+
+
+@callback
+def message_targets(hass: HomeAssistant) -> dict[str, str]:
+    """[ADDED v3.95.0] Where each pick of the phones list sends: a phone's notify entity by its own notify service
+    (phone_services), a recipient of LIBI Global by its own script."""
+    return {**phone_services(hass), **{eid: eid for eid in global_recipients(hass)}}
+
+
+@callback
+def _message_items(hass: HomeAssistant) -> list[dict]:
+    """[ADDED v3.95.0] The phones list: the recipients of LIBI Global first - the user (2026-11-10): "why didn't the chat
+    let me pick my phone from the Global list" - then each phone with its own notify service, whose it is and what."""
+    services = phone_services(hass)
+    owners = phone_owners(hass)
+    phones = [dict(i, **owners.get(i["entity_id"], {}))
+              for i in find_candidates(hass, {"domains": ["notify"], "keywords": [], "area_keywords": [],
+                                              "device_classes": []})["items"] if i["entity_id"] in services]
+    recipients = sorted(global_recipients(hass).items(), key=lambda item: item[1].casefold())
+    return [{"entity_id": eid, "name": name, "area": "", "state": "", "device": "", "global": True}
+            for eid, name in recipients] + phones
+
+
+@callback
 def phone_owners(hass: HomeAssistant) -> dict[str, dict[str, str]]:
     """[ADDED v3.66.0] Whose each phone is and what it is, for the list the user picks from: the person whose user
     registered the Companion app on it, and the maker and model the app reported ("Guy", "samsung SM-N985F"). Read
@@ -2033,9 +2188,9 @@ def phones_role(hass: HomeAssistant, plan: dict, found: list[str], candidates: d
         return None
     services = phone_services(hass)
     # [CHANGED v3.65.0] Only phones with a notify service of their own: the message goes to each by that service,
-    # one MOVE NOTIFY per phone, as the user's other automations send it.
-    items = [i for i in find_candidates(hass, {"domains": ["notify"], "keywords": [], "area_keywords": [],
-                                               "device_classes": []})["items"] if i["entity_id"] in services]
+    # one MOVE NOTIFY per phone, as the user's other automations send it. [CHANGED v3.95.0] After the recipients of
+    # LIBI Global (_message_items).
+    items = _message_items(hass)
     if not items:
         return None
     by_service = {service: eid for eid, service in services.items()}
@@ -2051,8 +2206,6 @@ def phones_role(hass: HomeAssistant, plan: dict, found: list[str], candidates: d
     plan["roles"].insert(0, {"id": PHONES_ROLE, "label": "Phones to notify", "purpose": "target", "domains": ["notify"],
                              "device_classes": [], "keywords": [], "area_keywords": [], "optional": False,
                              "named": False, "phones": True})
-    owners = phone_owners(hass)
-    items = [dict(i, **owners.get(i["entity_id"], {})) for i in items]
     first = [dict(i, named=True) for i in items if i["entity_id"] in ticked]
     candidates[PHONES_ROLE] = {"items": first + [i for i in items if i["entity_id"] not in ticked], "exact": True}
     return ticked
@@ -2297,7 +2450,8 @@ async def async_build_draft(hass: HomeAssistant, plan: dict, selections: dict, r
     # NOTIFY per phone, which the ladder shows with the phone - and to no phone the user did not tick.
     phones = selections.get(PHONES_ROLE) or []
     if phones and not unreadable:
-        known = phone_services(hass)
+        # [CHANGED v3.95.0] And the recipients of LIBI Global, each by its own script.
+        known = message_targets(hass)
         wanted = {known[eid] for eid in phones if eid in known}
         missed = sorted(wanted - draft.services)
         if missed:
@@ -2465,18 +2619,113 @@ def shared_options(actions: Any) -> list[tuple[str, list[int]]]:
     return found
 
 
+# [ADDED v3.95.0] The blocks a rung of the panel may end with (libi-core.js, isAction).
+_ACTION_TYPES = frozenset(("coil", "coil_s", "coil_r", "coil_t", "move", "ctu", "notify", "repeat"))
+
+
+def _is_action(element: Any) -> bool:
+    kind = str(element.get("type") or "") if isinstance(element, dict) else ""
+    return kind in _ACTION_TYPES or kind.startswith("math_")
+
+
+def _path_ends(elements: Any) -> bool:
+    """[ADDED v3.95.0] A path of a rung ends as the panel requires (libi-core.js, checkPathEnd): with an action, a wait,
+    or open branches that each end so; a loop by its own steps."""
+    if not isinstance(elements, list) or not elements:
+        return True
+    last = elements[-1]
+    if not isinstance(last, dict):
+        return False
+    if last.get("waitFor"):
+        return True
+    if last.get("type") == "parallel":
+        return not last.get("closed") and all(_path_ends(b) for b in last.get("branches") or [])
+    if last.get("type") == "repeat":
+        return _path_ends(last.get("sequence"))
+    return _is_action(last)
+
+
+def rungs_without_action(net: Any) -> list[tuple[int, str]]:
+    """[ADDED v3.95.0] The rungs of a drawn net that end with no action - the panel's Terminal Cap Error, which it marks
+    red and does not save - each by its number and the id of its trigger. Rungs drawn side by side (links) end well
+    when one of them does. The user's train reminder (2026-11-10): an option of the block's end with no steps was a
+    rung of the trigger alone."""
+    rungs = [r for r in (net.get("rungs") if isinstance(net, dict) else None) or [] if isinstance(r, dict)]
+    group: dict[Any, Any] = {r.get("id"): r.get("id") for r in rungs}
+
+    def root(rid: Any) -> Any:
+        while group.get(rid, rid) != rid:
+            rid = group[rid]
+        return rid
+    linked: set[Any] = set()
+    for link in (net.get("links") if isinstance(net, dict) else None) or []:
+        if isinstance(link, dict) and link.get("aRung") in group and link.get("bRung") in group:
+            linked |= {link["aRung"], link["bRung"]}
+            group[root(link["aRung"])] = root(link["bRung"])
+    ends_well = {root(r.get("id")) for r in rungs if r.get("elements") and isinstance(r["elements"][-1], dict) and (
+        _is_action(r["elements"][-1]) or r["elements"][-1].get("waitFor")
+        or (r["elements"][-1].get("type") == "parallel" and not r["elements"][-1].get("closed")))}
+    out: list[tuple[int, str]] = []
+    for number, rung in enumerate(rungs, start=1):
+        elements = rung.get("elements") if isinstance(rung.get("elements"), list) else []
+        bad = (bool(elements) and root(rung.get("id")) not in ends_well) if rung.get("id") in linked \
+            else not _path_ends(elements)
+        if bad:
+            tid = next((str(n["id"]) for n in _rung_nodes(rung) if "trigger" in n and n.get("id") is not None), "")
+            out.append((number, tid))
+    return out
+
+
+# [ADDED v3.95.5] A state compared with an entity's id: Home Assistant compares the text, and the check never holds - the
+# user's train reminder was saved with state: zone.work (2026-11-11). In a condition an input helper is read as its value.
+_ENTITY_TEXT_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
+_INPUT_HELPER_RE = re.compile(r"^input_(?:select|text|number|boolean|datetime)\.")
+
+
+def literal_checks(config: Any) -> list[str]:
+    """[ADDED v3.95.5] The checks of a configuration that compare a state with an entity's id, which Home Assistant reads
+    as plain text: they never hold. A state condition may name an input helper (Home Assistant reads its value); a state
+    trigger reads none."""
+    found: list[str] = []
+    for node in _walk_nodes(config):
+        if node.get("condition") == "state":
+            values, helpers = node.get("state"), True
+        elif node.get("trigger") == "state" or node.get("platform") == "state":
+            values, helpers = [node.get("to"), node.get("from")], False
+        else:
+            continue
+        entities = node.get("entity_id") if isinstance(node.get("entity_id"), list) else [node.get("entity_id")]
+        # An attribute may hold an entity's id (a person's source is a tracker): only the state itself is counted.
+        if node.get("attribute") is not None or not any(str(e or "").split(".")[0] in FIXED_STATE_DOMAINS for e in entities):
+            continue
+        flat = [v for x in (values if isinstance(values, list) else [values]) for v in (x if isinstance(x, list) else [x])]
+        for value in flat:
+            if isinstance(value, str) and _ENTITY_TEXT_RE.match(value) and not (helpers and _INPUT_HELPER_RE.match(value)):
+                found.append(f"{node.get('entity_id')} is compared with the text \"{value}\", which its state never is: compare it "
+                             "with a value - a condition reads an input helper as its value, and a person in a zone is a "
+                             "zone condition.")
+    return list(dict.fromkeys(found))[:5]
+
+
 def draft_problems(draft: dict, drawn: dict) -> list[str]:
     """[ADDED v3.62.0] Why a build answer is not ready: LIBI's or Home Assistant's checks, the drawing, or what the
     ladder could not keep as written. [] when it is ready.
     [CHANGED v3.65.0] And a branch inside another step, which the ladder can only show as one block.
     [CHANGED v3.72.0] And a wait inside a run, which the ladder way never needs.
-    [CHANGED v3.75.0] And two options of one trigger id, which do not run as the ladder shows them (shared_options)."""
+    [CHANGED v3.75.0] And two options of one trigger id, which do not run as the ladder shows them (shared_options).
+    [CHANGED v3.95.0] And a rung that ends with no action, which the panel marks red and does not save
+    (rungs_without_action); and a check that compares a state with an entity's id (literal_checks)."""
     if not draft["ok"]:
         return list(draft["errors"])
     if drawn.get("error"):
         return [drawn["error"]]
     problems = [f"LIBI's ladder could not keep this part as written: {issue}"
                 for issue in (drawn.get("round_trip") or {}).get("issues", [])[:5]]
+    problems += [f"LIBI's ladder ends every rung with an action - a coil, a MOVE, a message: rung {number}"
+                 f"{f' (trigger id {chr(34)}{tid}{chr(34)})' if tid else ''} ends with none, and is drawn as an error. "
+                 "Leave out an option with no steps, and a trigger only it was for."
+                 for number, tid in rungs_without_action(drawn.get("net"))[:5]]
+    problems += literal_checks(draft["auto"])
     problems += [f"LIBI's ladder draws an if or a choose only at the top of the actions: {where} sits inside "
                  "another step." for where in nested_branches(draft["auto"].get("actions"))[:5]]
     problems += [f"LIBI's ladder does not wait inside a run: {where}."
@@ -2590,7 +2839,7 @@ _KIND_TESTS = {
     "amount": lambda n: "numeric_state" in (n.get("trigger"), n.get("condition")),
     "time_limit": lambda n: "delay" in n or (bool(n.get("for")) and ("trigger" in n or "condition" in n)),
     "message": lambda n: (str(n.get("action") or "").split(".")[0] in MESSAGE_DOMAINS
-                          or n.get("action") in MESSAGE_SERVICES),
+                          or n.get("action") in MESSAGE_SERVICES or is_recipient_action(n.get("action") or "")),
 }
 # What the logic lacks when a line of that kind is not in it: said to the model, and to the user.
 _KIND_MISSING = {
@@ -2609,6 +2858,18 @@ _ALARM_MISSING = {
     "time": "it does not start at the time set on the card",
     "schedule": "a schedule starts it - only the time set on the card may",
     "days": "it does not check the days ticked on the card (CMP DAY of the days helper)",
+    # [ADDED v3.95.0]
+    "switches": "it does not check, on each day, that day's switch on the card",
+}
+# [ADDED v3.95.0] With the week schedule: a block starts it - the time and the days of the request - and the end of the
+# block ends it, a line LIBI always checks (its own test, by its id). A time limit of the request (the most minutes a
+# valve may run) is still checked as such, or by the block's end.
+_WEEK_START = {"id": "week_start", "text": "It starts when a block of the schedule starts", "kind": "time"}
+_WEEK_END = {"id": "week_end", "text": "It ends when the block ends", "kind": "time_limit"}
+_WEEK_MISSING = {
+    "time": "it does not start when a block of the schedule starts (a state trigger of the schedule to on)",
+    "days": "it does not start when a block of the schedule starts (a state trigger of the schedule to on)",
+    "week_end": "it does not end when the block ends (a state trigger of the schedule to off)",
 }
 # [ADDED v3.75.0]
 _FORECAST_UNCHECKED = ("it reads the forecast, but no step checks it before the next action - a condition right after "
@@ -2670,8 +2931,15 @@ def requirement_report(plan: dict, draft: dict, drawn: dict, raw: dict, alarm: d
     alarm = alarm or {}
     lines = list(plan.get("requirements") or [])
     kinds = {line["kind"] for line in lines}
-    lines += [{"id": f"alarm_{kind}", "text": text, "kind": kind} for kind, text in _ALARM_LINES.items()
-              if kind not in kinds and alarm.get(kind)]
+    week = alarm.get("schedule") if alarm.get("mode") == "schedule" else ""
+    if week:
+        # [CHANGED v3.95.0] The end of the block only when the logic turns something on: a reminder has nothing to end,
+        # and the line had the model write an end option with no steps - a rung drawn in red (the user's train reminder).
+        lines += ([dict(_WEEK_START)] if "time" not in kinds else []) + (
+            [dict(_WEEK_END)] if _turns_something_on(draft.get("auto") or {}) else [])
+    else:
+        lines += [{"id": f"alarm_{kind}", "text": text, "kind": kind} for kind, text in _ALARM_LINES.items()
+                  if kind not in kinds and (alarm.get(kind) or (kind == "days" and alarm.get("switches")))]
     asked = bool(safety and (safety.get("enable") or safety.get("offline") or safety.get("battery")))
     if not (lines or asked) or not draft.get("ok"):
         return []
@@ -2683,6 +2951,23 @@ def requirement_report(plan: dict, draft: dict, drawn: dict, raw: dict, alarm: d
         missing["time"] = _ALARM_MISSING["time"]
     if alarm.get("days"):
         missing["days"] = _ALARM_MISSING["days"]
+    if alarm.get("switches"):
+        missing["days"] = _ALARM_MISSING["switches"]
+    by_id: dict[str, Any] = {}
+    if week:
+        # [ADDED v3.95.0] The week schedule's block is the time and the days; its end is LIBI's own line (week_end), and
+        # it also holds a time limit the request asks for.
+        def turns(to: str):
+            # [CHANGED v3.95.5] platform: state, and to: [on] - the one-item list - too.
+            def one(value: Any) -> str:
+                return str(value[0] if isinstance(value, list) and len(value) == 1 else value)
+            return lambda n: "state" in (n.get("trigger"), n.get("platform")) and one(n.get("to")) == to and week in _ids_in(n)
+        limit = tests.get("time_limit")
+        tests.update({"time": turns("on"), "days": turns("on"),
+                      "time_limit": lambda n: turns("off")(n) or bool(limit and limit(n))})
+        by_id["week_end"] = turns("off")
+        missing.update({"time": _WEEK_MISSING["time"], "days": _WEEK_MISSING["days"],
+                        "time_limit": _WEEK_MISSING["week_end"]})
     by_schedule = bool(alarm.get("time")) and any(
         node.get("trigger") == "state" and any(e.startswith("schedule.") for e in _ids_in(node))
         for node in _walk_nodes(auto.get("triggers")))
@@ -2703,7 +2988,7 @@ def requirement_report(plan: dict, draft: dict, drawn: dict, raw: dict, alarm: d
         cover = covers.get(line["id"]) or {}
         item = {"id": line["id"], "text": line["text"], "kind": line["kind"], "ok": None, "rung": 0,
                 "how": _sanitize(str(cover.get("how") or ""))[:200], "missing": ""}
-        test = tests.get(line["kind"])
+        test = by_id.get(line["id"]) or tests.get(line["kind"])
         if line["kind"] == "card":
             item["ok"] = bool(draft.get("card_yaml"))
         elif test is not None:
@@ -2711,10 +2996,14 @@ def requirement_report(plan: dict, draft: dict, drawn: dict, raw: dict, alarm: d
             item["rung"] = next((n for n, nodes in enumerate(rungs, start=1) if any(test(x) for x in nodes)), 0)
         if line["kind"] == "days" and alarm.get("days"):
             item["ok"] = alarm["days"] in bits_checked
+        # [ADDED v3.95.0] Each day's switch, checked on its own day.
+        if line["kind"] == "days" and alarm.get("switches"):
+            checked = config_days(auto)
+            item["ok"] = all(checked.get(eid) == _DAY_ORDER.index(day) for day, eid in alarm["switches"].items())
         if line["kind"] != "card" and not item["rung"]:
             item["rung"] = by_trigger.get(str(cover.get("trigger_id") or ""), 0)
         if item["ok"] is False:
-            item["missing"] = missing.get(line["kind"], "")
+            item["missing"] = _WEEK_MISSING["week_end"] if line["id"] in by_id else missing.get(line["kind"], "")
         if line["kind"] == "time" and by_schedule:
             item["ok"], item["missing"] = False, _ALARM_MISSING["schedule"]
         if line["kind"] == "forecast" and item["ok"] and not forecast_checked:
@@ -2734,6 +3023,98 @@ def requirement_problems(report: list[dict]) -> list[str]:
     return [(f'The user answered "{item["text"]}"' if str(item.get("id", "")).startswith("libi_")
              else f'The request asks "{item["text"]}" ({item["kind"]})') + f', and the logic does not do it: {item["missing"]}.'
             for item in report if item["ok"] is False][:6]
+
+
+# [ADDED v3.95.0] The user (2026-11-10): "my question was in English, and it named the variables in Hebrew and answered in
+# Hebrew - everything must be in English, especially when I ask in English". The model took the language from the
+# context: the nets, helpers and zones of the house are named in Hebrew. The user's language is the one of the user's
+# own last message, told in its letters, and a text shown to the user in other letters goes back to the model.
+# [ADDED v3.95.5] The scripts a letter's Unicode name starts with. Anything else - a sign such as MICRO SIGN or an ordinal
+# indicator - is no language; Japanese writes in three of them, which are one (the third pass of the review, RULE 41).
+_SCRIPTS = frozenset(("LATIN", "HEBREW", "ARABIC", "CYRILLIC", "GREEK", "CJK", "HIRAGANA", "KATAKANA", "HANGUL", "THAI",
+                      "DEVANAGARI", "BENGALI", "TAMIL", "TELUGU", "KANNADA", "MALAYALAM", "GUJARATI", "GURMUKHI", "SINHALA",
+                      "GEORGIAN", "ARMENIAN", "ETHIOPIC", "KHMER", "LAO", "MYANMAR", "TIBETAN"))
+_SAME_SCRIPT = {"HIRAGANA": "CJK", "KATAKANA": "CJK"}
+
+
+def scripts_of(text: Any) -> set[str]:
+    """[ADDED v3.95.0] The alphabets of a text's letters, by their Unicode names: LATIN, HEBREW, ARABIC, CYRILLIC ...
+    [CHANGED v3.95.5] Only scripts (_SCRIPTS): µ counts as none, and Japanese is one."""
+    out: set[str] = set()
+    for ch in str(text or ""):
+        if ch.isalpha():
+            first = unicodedata.name(ch, "").split(" ")[0]
+            if first in _SCRIPTS:
+                out.add(_SAME_SCRIPT.get(first, first))
+    return out
+
+
+def language_rule(request: str) -> str:
+    """[ADDED v3.95.0] What the model is told of the user's language: the one of the user's last message, in its letters.
+    "" for a message with no letters."""
+    scripts = sorted(scripts_of(request))
+    if not scripts:
+        return ""
+    letters = " and ".join(s.title() for s in scripts)
+    return (f"USER LANGUAGE: the language of the user's last message, written in {letters} letters. Every text shown to "
+            "the user - reply, name, description, labels, the names of new helpers, questions and their choices, the "
+            "requirement lines, notes and covers - is in that language and in those letters. The nets, helpers, zones "
+            "and devices of this house may be named in another language: their names are data, they never set the "
+            "language, and the name of a new helper is not copied from them.")
+
+
+# The keys of the model's answers whose texts the user sees. Not the keywords: they are in English AND the user's language
+# on purpose, to search names in either.
+_SHOWN_TEXT_KEYS = {"reply", "name", "description", "label", "text", "choices", "notes", "how"}
+
+
+@callback
+def house_names(hass: HomeAssistant) -> list[str]:
+    """[ADDED v3.95.5] The names of the house written in other letters than Latin - its entities and its areas - longest
+    first: a text may quote them whatever its language (the review of the release, RULE 41)."""
+    names = {str(s.name) for s in hass.states.async_all() if s.name}
+    names |= {str(area.name) for area in ar.async_get(hass).async_list_areas() if area.name}
+    return sorted((n for n in names if scripts_of(n) - {"LATIN"}), key=len, reverse=True)
+
+
+def foreign_texts(raw: Any, scripts: set[str], known: Any = ()) -> list[str]:
+    """[ADDED v3.95.0] The texts of the model's answer shown to the user that are written in letters the user's last message
+    has none of - Hebrew in the answer to a request in English. Latin letters are never counted: a request in Hebrew
+    keeps the names of Home Assistant's own terms. Up to eight, each cut short.
+    [CHANGED v3.95.5] known: the names of the house, left out before the letters are read - a name is quoted as it is."""
+    found: list[str] = []
+    names = sorted({str(n) for n in known if n}, key=len, reverse=True)
+    pattern = re.compile("|".join(map(re.escape, names))) if names else None
+
+    def letters(text: str) -> set[str]:
+        return scripts_of(pattern.sub(" ", text) if pattern else text)
+
+    def walk(node: Any, key: str = "") -> None:
+        if len(found) >= 8:
+            return
+        if isinstance(node, dict):
+            for k, v in node.items():
+                # The configuration and the card are data, not texts the user reads.
+                if k not in ("config", "ui_card"):
+                    walk(v, str(k))
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, key)
+        elif isinstance(node, str) and key in _SHOWN_TEXT_KEYS and letters(node) - scripts - {"LATIN"}:
+            found.append(node.strip()[:80])
+    walk(raw)
+    return found
+
+
+def language_problems(raw: Any, request: str, known: Any = ()) -> list[str]:
+    """[ADDED v3.95.0] The texts shown to the user in letters of another language than the user's last message, as
+    problems the model corrects (repair_request). [CHANGED v3.95.5] The names of the house (known) are not counted."""
+    scripts = scripts_of(request)
+    if not scripts:
+        return []
+    letters = " and ".join(sorted(s.title() for s in scripts))
+    return [f'"{text}" is shown to the user, and it is not in the language of the user\'s last message ({letters} '
+            "letters): write it in that language" for text in foreign_texts(raw, scripts, known)]
 
 
 def repair_request(raw: dict, problems: list[str], selections: dict) -> list[dict]:
@@ -2813,7 +3194,10 @@ def _card(hass: HomeAssistant, entities: list[str], title: str, days: dict[str, 
         return {**row, "name": _row_name(row["name"], list(heads), default or row["name"])}
 
     clock = [named(row, "Enabled", (title, row["name"].rpartition(" - ")[0] or title)) for row in switches]
-    clock += [named(row, "Start time" if _is_clock_entity(hass, row["entity"]) else None, tuple(clock_heads))
+    # [CHANGED v3.95.0] The week schedule's row, under the card's title, reads "Schedule": tapped, its settings set the
+    # days and the hours of each.
+    clock += [named(row, "Start time" if _is_clock_entity(hass, row["entity"])
+                    else "Schedule" if row["entity"].startswith("schedule.") else None, tuple(clock_heads))
               for row in times]
     clock += [named(row, "Days", tuple(clock_heads)) for row in bits_rows]
     if day_rows:
@@ -2894,6 +3278,16 @@ def config_days(config: Any) -> dict[str, int]:
                 and str(switch.get("state")) == "on":
             out.setdefault(ids[0], _DAY_ORDER.index(day))
     return out
+
+
+def days_switches_condition(switches: dict[str, str]) -> dict:
+    """[ADDED v3.95.0] The days of a switch for each day, as the build writes them and config_days reads them: one "or" of an
+    "and" per day - the time condition of that weekday, and that day's switch on. LIBI draws it as a PARALLEL, a CMP DAY
+    and a contact in each branch."""
+    return {"condition": "or", "conditions": [
+        {"condition": "and", "conditions": [{"condition": "time", "weekday": day},
+                                            {"condition": "state", "entity_id": switches[day], "state": "on"}]}
+        for day in _DAY_ORDER if day in switches]}
 
 
 def config_day_bits(config: Any) -> set[str]:
@@ -2980,7 +3374,12 @@ START_QUESTION = "libi_start_message"
 END_QUESTION = "libi_end_message"
 OFFLINE_QUESTION = "libi_offline"
 BATTERY_QUESTION = "libi_battery"
+# [ADDED v3.95.0] How the days and the time are set on the dashboard (days_question).
+DAYS_QUESTION = "libi_days"
 SAFETY_QUESTIONS = (ENABLE_QUESTION, START_QUESTION, END_QUESTION, OFFLINE_QUESTION, BATTERY_QUESTION)
+# [ADDED v3.95.0] Every question of LIBI's own: the safety ones and how the days are set. They come back from the browser
+# (clean_plan), and the build is not told of them as the model's (build_context).
+LIBI_QUESTIONS = (*SAFETY_QUESTIONS, DAYS_QUESTION)
 _MESSAGE_CHOICES = {"notify": "A notification", "speak": "Spoken", "both": "Notification and spoken", "no": "No"}
 SAFETY_CHOICES: dict[str, dict[str, str]] = {
     ENABLE_QUESTION: {"yes": "Yes", "no": "No"},
@@ -2988,6 +3387,8 @@ SAFETY_CHOICES: dict[str, dict[str, str]] = {
     END_QUESTION: dict(_MESSAGE_CHOICES),
     OFFLINE_QUESTION: {"tell": "Tell me, and do not start", "skip": "Do not start, no message", "nothing": "Nothing"},
     BATTERY_QUESTION: {"20": "Yes, below 20%", "10": "Yes, below 10%", "no": "No"},
+    DAYS_QUESTION: {"switches": "A switch for each day, and a start time",
+                    "schedule": "A schedule: the days, and the hours of each day"},
 }
 # [ADDED v3.81.0] The state a device is in once the process is over: off - or closed, or locked.
 _OFF_STATE = {"valve": "closed", "cover": "closed", "lock": "locked"}
@@ -3254,16 +3655,14 @@ def offer_phones(hass: HomeAssistant, plan: dict, candidates: dict) -> bool:
     optional: with none ticked a message goes to Home Assistant's notifications. False when there is no phone to offer."""
     if len(plan["roles"]) >= MAX_ROLES:
         return False
-    services = phone_services(hass)
-    items = [i for i in find_candidates(hass, {"domains": ["notify"], "keywords": [], "area_keywords": [],
-                                               "device_classes": []})["items"] if i["entity_id"] in services]
+    # [CHANGED v3.95.0] The recipients of LIBI Global first, then the phones (_message_items).
+    items = _message_items(hass)
     if not items:
         return False
-    owners = phone_owners(hass)
     plan["roles"].insert(0, {"id": PHONES_ROLE, "label": "Phones to notify", "purpose": "target", "domains": ["notify"],
                              "device_classes": [], "keywords": [], "area_keywords": [], "optional": True,
                              "named": False, "phones": True, "offered": True})
-    candidates[PHONES_ROLE] = {"items": [dict(i, **owners.get(i["entity_id"], {})) for i in items], "exact": True}
+    candidates[PHONES_ROLE] = {"items": items, "exact": True}
     return True
 
 
@@ -3319,7 +3718,7 @@ def safety_questions(hass: HomeAssistant, plan: dict, candidates: dict, preselec
     one of LIBI's ids goes, and so does a switch the model planned itself: LIBI asks for it. A yes to the switch adds
     its role and its helper in the chat (adds); the batteries are found again at the build, on the devices the user
     picked (safety_answers)."""
-    plan["questions"] = [q for q in plan.get("questions") or [] if q.get("id") not in SAFETY_QUESTIONS]
+    plan["questions"] = [q for q in plan.get("questions") or [] if q.get("id") not in LIBI_QUESTIONS]
     if plan.get("intent") == "answer" or plan.get("level") != "automation":
         return
     switched = _likely_picks(_switched_roles(plan), candidates, preselect)
@@ -3365,6 +3764,91 @@ def safety_questions(hass: HomeAssistant, plan: dict, candidates: dict, preselec
         asked.append(_question(BATTERY_QUESTION, f"A message when a battery is low? Now: {levels}.",
                                "LIBI found the battery on the device itself; the message names the battery and its level."))
     plan["questions"] += asked
+
+
+# [ADDED v3.95.0] The role of the week schedule (days_question): its blocks start and end the logic.
+SCHEDULE_ROLE = "week_schedule"
+_DAY_NAMES = {"sun": "Sunday", "mon": "Monday", "tue": "Tuesday", "wed": "Wednesday", "thu": "Thursday", "fri": "Friday",
+              "sat": "Saturday"}
+# A setting that limits how long the logic runs: what the end of a schedule's block takes the place of.
+_TIME_LIMIT_RE = re.compile(r"minute|duration|how long|time limit|max time|run time|length|second|\bhours?\b", re.I)
+
+
+def _limits_time(role: dict, helper: dict | None) -> bool:
+    """[ADDED v3.95.0] A setting role for how long the logic runs (the minutes): with the week schedule, the block's end."""
+    if role["id"] == "start_time" or not set(role.get("domains") or []) <= SETTING_DOMAINS:
+        return False
+    text = " ".join([role["id"], str(role.get("label") or ""), str((helper or {}).get("name") or "")]).replace("_", " ")
+    return bool(_TIME_LIMIT_RE.search(text))
+
+
+@callback
+def days_question(hass: HomeAssistant, plan: dict, candidates: dict, preselect: dict, config_text: str = "",
+                  keep: set[str] | None = None) -> None:
+    """[ADDED v3.95.0] The user's choice (2026-11-10): days and a time set from the screen are set either with a switch for
+    each day and a start time, or with ONE schedule - its blocks, each day its own hours, the start of a block starting
+    the logic and its end ending it. Both are Home Assistant's own helpers and card rows, so the card works without LIBI.
+    Asked when the plan proposes the days helper of a new alarm clock (not where a net being changed has its own days):
+    that helper goes, and each answer brings its own variables (variants) - the switches; or the schedule, in place of
+    the start time and the minutes as well (drop). The chat applies the answer chosen; the build reads the picks
+    (picked_alarm_clock)."""
+    plan["questions"] = [q for q in plan.get("questions") or [] if q.get("id") != DAYS_QUESTION]
+    if plan.get("intent") == "answer" or plan.get("level") != "automation":
+        return
+    days = {r["id"] for r in plan["roles"] if _is_days_role(r) and r["id"] not in preselect}
+    proposed = [h for h in plan["new_helpers"] if _is_days_bits(h) and h["role"] in days]
+    if not proposed:
+        return
+    head, sep, _tail = proposed[0]["name"].rpartition(" - ")
+    base = (head.strip() if sep else "") or str(plan.get("name") or "").strip()[:50] or "Days"
+    helpers = {h["role"]: h for h in plan["new_helpers"]}
+    drop = [r["id"] for r in plan["roles"] if r["id"] not in days and (
+        r["id"] == "start_time" or (r["id"] in helpers and _is_clock_time(helpers[r["id"]])
+                                    and r.get("purpose") == "trigger")
+        or _limits_time(r, helpers.get(r["id"])))]
+    plan["roles"] = [r for r in plan["roles"] if r["id"] not in days]
+    plan["new_helpers"] = [h for h in plan["new_helpers"] if h["role"] not in days]
+    plan["alternatives"] = [h for h in plan.get("alternatives") or [] if h["role"] not in days]
+    for rid in days:
+        candidates.pop(rid, None)
+
+    def role(rid: str, label: str, purpose: str, domain: str) -> dict:
+        return {"id": rid, "label": label, "purpose": purpose, "domains": [domain], "device_classes": [],
+                "keywords": [], "area_keywords": [], "optional": False, "named": False, "variable": True}
+
+    switches = {"roles": [], "helpers": [], "candidates": {}, "drop": []}
+    for day in _DAY_ORDER:
+        rid = f"day_{day}"
+        switches["roles"].append(role(rid, _DAY_NAMES[day], "condition", "input_boolean"))
+        switches["helpers"].append({"role": rid, "domain": "input_boolean", "settings": {"icon": "mdi:calendar-today"},
+                                    "name": _unique_name(hass, "input_boolean", f"{base} - {_DAY_NAMES[day][:3]}")})
+        switches["candidates"][rid] = {"items": [], "exact": False}
+    found = find_candidates(hass, {"domains": ["schedule"], "keywords": [base], "area_keywords": [], "device_classes": []})
+    drop_used_helpers(hass, {SCHEDULE_ROLE: found}, config_text, keep)
+    helper = {"role": SCHEDULE_ROLE, "domain": "schedule", "settings": _clean_schedule({}),
+              "name": _unique_name(hass, "schedule", base)}
+    own = next((i for i in found["items"] if _norm(i.get("name")) == _norm(base)), None)
+    if own:
+        own["exists"] = True
+        helper["pick"] = own["entity_id"]
+    schedule = {"roles": [role(SCHEDULE_ROLE, "Schedule", "trigger", "schedule")], "helpers": [helper],
+                "candidates": {SCHEDULE_ROLE: found}, "drop": drop}
+    choices = SAFETY_CHOICES[DAYS_QUESTION]
+    note = ("A switch for each day: a row of day buttons on the card, and one start time - the same time every day. "
+            "A schedule: the days, and for each day its own hours - a block's start turns it on and its end turns "
+            "it off; you set it by tapping it on the card, then its settings. Both are Home Assistant's own "
+            "helpers, so the card works without LIBI.")
+    variants = {choices["switches"]: switches, choices["schedule"]: schedule}
+    # [CHANGED v3.95.5] A switch for each day only when its seven roles fit the plan: clean_plan keeps MAX_ROLES of them,
+    # and the days past it would have been dropped without a word (the review of the release, RULE 41).
+    added = sum(1 for q in plan["questions"] if isinstance(q.get("adds"), dict) and q["adds"].get("role"))
+    if len(plan["roles"]) + added + len(switches["roles"]) > MAX_ROLES:
+        variants.pop(choices["switches"])
+        note += (" A switch for each day does not fit this plan: it has too many settings and devices already, so the "
+                 "days are a schedule.")
+    plan["questions"].append({
+        "id": DAYS_QUESTION, "libi": True, "choices": list(variants), "note": note,
+        "text": "How do you want to set the days and the time on the dashboard?", "variants": variants})
 
 
 def _level(hass: HomeAssistant, entity_id: str) -> str:
@@ -3414,14 +3898,17 @@ def safety_answers(hass: HomeAssistant, plan: dict, selections: dict, answers: d
                                            for e in ids if hass.states.get(e)))[:120]
     if choice[OFFLINE_QUESTION] in ("tell", "skip") and out["switched"]:
         out["offline"] = choice[OFFLINE_QUESTION]
-    known = phone_services(hass)
+    # [CHANGED v3.95.0] And to a recipient of LIBI Global ticked, by its own script.
+    known = message_targets(hass)
     ticked = [known[e] for e in selections.get(PHONES_ROLE) or [] if e in known]
     # [CHANGED v3.81.1] With phones ticked, a phone the message names is a phone only when it is ticked: the user's ticks
     # win (build_context says so). A named service that is no phone (a group) still gets the message.
     named = [s for s in services or [] if not (ticked and s in set(known.values()))]
     out["phones"] = list(dict.fromkeys(ticked + named))
     speak = phones_that_speak(hass)
-    out["speakers"] = [s for s in out["phones"] if s in speak]
+    # [CHANGED v3.95.0] A recipient of LIBI Global speaks: its script has each Android phone read the message aloud, and
+    # gives an iPhone the spoken text as its message.
+    out["speakers"] = [s for s in out["phones"] if s in speak or is_recipient_action(s)]
     for qid, key in ((START_QUESTION, "start"), (END_QUESTION, "end")):
         kind = choice[qid] if choice[qid] in ("notify", "speak", "both") and out["switched"] else ""
         if kind in ("speak", "both") and not out["speakers"]:
@@ -3605,10 +4092,18 @@ def _switches(step: Any, entities: list[str], services: tuple[str, ...]) -> bool
     return action.split(".")[-1] in services and bool(set(map(str, _targets(step))) & set(entities))
 
 
+def _turns_something_on(auto: dict) -> bool:
+    """[ADDED v3.95.0] The logic turns something on (turn_on, open_valve, open_cover) - which the end of a schedule's block
+    turns off. A logic that only sends a message has nothing to end."""
+    return any(str(n.get("action") or n.get("service") or "").split(".")[-1] in _ON_SERVICES
+               for n in _walk_nodes(auto.get("actions")))
+
+
 def _sends(steps: list) -> bool:
     """[ADDED v3.80.0] Steps that send a message or speak."""
     return any(isinstance(s, dict) and (str(s.get("action") or "").split(".")[0] in MESSAGE_DOMAINS
-                                         or s.get("action") in MESSAGE_SERVICES) for s in steps)
+                                         or s.get("action") in MESSAGE_SERVICES
+                                         or is_recipient_action(s.get("action") or "")) for s in steps)
 
 
 def _triggers_of(auto: dict, entity: str, kind: str, test) -> set[str]:
@@ -3938,7 +4433,7 @@ def build_context(plan: dict, selections: dict, answers: dict, hass: HomeAssista
         lines.append(f"- role:{role['id']} ({role['purpose']}) = {len(picked)} entity(ies) of domain "
                      f"{', '.join(kinds)}: {', '.join(names)}")
     # [CHANGED v3.80.0] Not the answers to LIBI's own questions: what they mean is said below (safety_context).
-    theirs = [q for q in plan.get("questions") or [] if q["id"] in answers and q["id"] not in SAFETY_QUESTIONS]
+    theirs = [q for q in plan.get("questions") or [] if q["id"] in answers and q["id"] not in LIBI_QUESTIONS]
     if theirs:
         lines.append("ANSWERS:")
         for q in theirs:
@@ -3950,13 +4445,27 @@ def build_context(plan: dict, selections: dict, answers: dict, hass: HomeAssista
         lines += [f"- {r['id']} ({r['kind']}): {r['text']}" for r in plan["requirements"]]
     # [ADDED v3.75.0] The alarm clock the user picked: its time starts the logic, and its days are checked right after.
     alarm = picked_alarm_clock(hass, plan, selections)
-    if alarm:
+    if alarm.get("mode") == "schedule":
+        # [ADDED v3.95.0] The week schedule: its blocks are the days and the hours - a block starts it, its end ends it.
+        role = f"role:{alarm['schedule_role']}"
+        # [CHANGED v3.95.0] The end only for what the start turned on: a message alone has none (the user's reminder).
+        lines.append("SCHEDULE (the user sets its blocks - the days, and the hours of each day): it starts when a block "
+                     f'starts, {{"trigger": "state", "entity_id": "{role}", "to": "on", "id": "start"}}, and the option '
+                     f'of {{"trigger": "state", "entity_id": "{role}", "to": "off", "id": "end"}} turns off what the start '
+                     "turned on. No time trigger, no days check and no other time limit: the end of the block is the end. "
+                     "A logic that turns nothing on - a message, a reminder - has no end trigger and no end option.")
+    elif alarm:
         start = "ALARM CLOCK (the user sets it on the card): "
         if alarm["time"]:
             start += (f'it starts with {{"trigger": "time", "at": "role:{alarm["time_role"]}", "id": "start"}}, never '
                       "by a schedule; ")
-        # [CHANGED v3.76.0] The days: the CMP DAY of the days helper, written exactly so.
-        days = json.dumps({"condition": "template", "value_template": day_bits_template(f"role:{alarm['days_role']}")})
+        if alarm["mode"] == "switches":
+            # [ADDED v3.95.0] A switch for each day: the day's switch is checked on its own day, written exactly so.
+            days = json.dumps(days_switches_condition(
+                {day: f"role:{rid}" for day, rid in alarm["switch_roles"].items()}))
+        else:
+            # [CHANGED v3.76.0] The days: the CMP DAY of the days helper, written exactly so.
+            days = json.dumps({"condition": "template", "value_template": day_bits_template(f"role:{alarm['days_role']}")})
         lines.append(start + f"the start option checks the days right after it, exactly so: {days}.")
     # [ADDED v3.84.0] The zone chosen on the card, and how it is read.
     lines += zone_choice_context(plan, selections)
@@ -3967,13 +4476,19 @@ def build_context(plan: dict, selections: dict, answers: dict, hass: HomeAssista
     unticked: list[str] = []
     # [CHANGED v3.65.0] The phones the user ticked, by the notify service each one is sent to.
     if selections.get(PHONES_ROLE):
-        known = phone_services(hass)
+        # [CHANGED v3.95.0] And the recipients of LIBI Global ticked, each by its own script.
+        known = message_targets(hass)
         reached = [known[eid] for eid in selections[PHONES_ROLE] if eid in known]
         # [CHANGED v3.81.1] The ticks win over the message: a phone it names that the user left unticked is left out. It
         # was told "exists, use it as written", the draft sent to it, and the check of the ticks sent it back.
         unticked = [name for name in found if name in set(known.values()) and name not in reached]
         found = [name for name in found if name not in set(known.values())]
         lines.append("PHONES (send each message to every one of these, one action each): " + ", ".join(reached))
+        if any(is_recipient_action(r) for r in reached):
+            lines.append("A script.libi_send_to_... in PHONES is a recipient of LIBI Global - the phones the user keeps in "
+                         "one place. Send to it as to a phone's notify service, with the same data: "
+                         '{"action": "script.libi_send_to_...", "data": {"message": "...", "title": "..."}}; spoken: '
+                         '"message": "TTS" and "data": {"tts_text": "..."} in data.')
     if found or missing or unticked:
         lines.append("MESSAGE SERVICES THE USER NAMED:")
         lines += [f"- {name}: exists, use it as written" for name in found]

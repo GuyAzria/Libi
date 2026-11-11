@@ -6,9 +6,9 @@
   the wait at the end of a rung included; online they have power only while the trigger has; a rung opened among
   them hangs too; with no trigger above, a hanging rung is red and the save is refused. With two triggers, the drop
   comes down from the link that joins them. The schedule's CMP DATETIME block says its days and hours.
-  [ADDED v1.1.0 | 2026-10-29] Purpose: The ladder way (one trigger per rung, a for as the TON after its trigger)
-  draws with no hanging rung and no red block; the rungs below a trigger with a for come down after its TON.
   [CHANGED v1.2.0 | 2026-11-06] Purpose: Online keeps its results per NET (LIBI 3.93.0): rungPowerOf(net, rung).
+  [CHANGED v1.3.0 | 2026-11-11] Purpose: The inspector sets the schedule's days and hours (LIBI 3.95.3): it shows them
+  in its editor, the days ticked, read from the helper the entity registry names.
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi shared trigger test</title></head>
 <body style="margin:0; width:1280px; height:800px;">
@@ -51,6 +51,7 @@ const hass = {
       if (m.type === 'libi/ai_status') return { configured: false };
       if (m.type === 'libi/project_list') return { projects: [] };
       if (m.type === 'schedule/list') return SCHEDULES;
+      if (m.type === 'config/entity_registry/get') return { entity_id: m.entity_id, platform: 'schedule', unique_id: SCHEDULES[0].id };
       // [CHANGED 2026-11-04, v3.85.0] SAVE & COMPILE: compile, Home Assistant's config API, then what reached it.
       if (m.type === 'libi/compile_project') return { ok: true, errors: [], upserts: [], removals: [], unchanged: 1, stamp: 's' };
       if (m.type === 'libi/save_done') return { status: 'ok', saved: true, message: 'Saved.', written: [], reloaded: [], errors: [] };
@@ -115,9 +116,11 @@ try {
         [panel._scheduleText('schedule.other'), panel._scheduleText('schedule.empty')].join(' | '));
   panel._inspectedEl = { netId: net.id, rungId: r1.id, elId: trig.id };
   panel._render();
-  const insp = [...sr.querySelectorAll('.insp-note')].map(n => n.textContent.trim());
-  check('the inspector says the days and hours and where they are set', insp[0] === 'Tue Thu Sun 06:00–06:30'
-        && /Helpers/.test(insp[1] || ''), JSON.stringify(insp));
+  for (let i = 0; i < 100 && !sr.querySelector('.sched-now'); i++) await sleep(10);
+  const shown = (sr.querySelector('.sched-now') || {}).textContent || '';
+  const ticked = [...sr.querySelectorAll('.sched-day.on')].map(b => b.dataset.day).join();
+  check('the inspector says the days and hours, the days ticked to change them', shown === 'Now: Tue Thu Sun 06:00–06:30'
+        && ticked === 'tuesday,thursday,sunday', `${shown} | ${ticked}`);
   panel._inspectedEl = null;
   panel._render(); await sleep(20);
 

@@ -1,0 +1,27 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-11] Purpose: the Inspector of a CMP DATETIME sets the days and hours of its schedule and saves
+  them in Home Assistant's own schedule (schedule_edit_fixture.js), on a desktop.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi schedule edit test</title></head>
+<body style="margin:0; width:1280px; height:800px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+import { scheduleEditChecks } from './schedule_edit_fixture.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+try {
+  await scheduleEditChecks(check);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

@@ -811,6 +811,28 @@ try {
       && !phoneList.textContent.includes('Optional:'), phoneList && phoneList.textContent);
     check('and Build waits for one', chat.root.querySelector('.ai-build').disabled === true && chat.root.querySelector('.ai-build').title.includes('Phones to notify'),
       chat.root.querySelector('.ai-build').title);
+    // [v3.95.0] The user (2026-11-10): "why didn't the chat let me pick my phone from the Global list". The recipients of
+    // LIBI Global come first, tagged Global, and one tick of them is enough.
+    const withGlobal = JSON.parse(JSON.stringify(asMessage));
+    withGlobal.candidates.phones_to_notify.items.unshift({ entity_id: 'script.libi_send_to_guy_my_phone', name: XSS, area: '', state: '', device: '', global: true });
+    responses['libi/ai_plan'] = withGlobal;
+    chat.draft = 'a reminder to my phone'; await chat.send();
+    const globalList = [...chat.root.querySelectorAll('.ai-role')].find(r => r.querySelector('.ai-role-head strong')?.textContent === 'Phones to notify');
+    const rows = globalList ? [...globalList.querySelectorAll('.ai-item')] : [];
+    const tags = row => [...row.querySelectorAll('.ai-global')].map(t => t.textContent).join();
+    check('a recipient of LIBI Global is listed first, by its name as text, tagged Global', rows.length === 3
+      && rows[0].querySelector('input').value === 'script.libi_send_to_guy_my_phone' && tags(rows[0]) === 'Global'
+      && rows[0].querySelector('.ai-item-name').textContent.startsWith(XSS) && !rows[0].querySelector('img') && !window.pwned
+      && rows[0].querySelector('.ai-item-id').textContent === 'script.libi_send_to_guy_my_phone'
+      && tags(rows[1]) === '' && tags(rows[2]) === '', rows.map(r => r.textContent).join(' | '));
+    check('the list says what a global variable is', (globalList?.querySelector('.ai-phones-global')?.textContent || '')
+      === 'Global: a global variable of LIBI ▸ Global - one tick sends the message to every phone it holds.'
+      && globalList.querySelectorAll('.ai-phones-global').length === 1);
+    rows[0].querySelector('input').click();
+    check('ticking it is the pick, and Build no longer waits', chat.selections.phones_to_notify.has('script.libi_send_to_guy_my_phone')
+      && chat.selections.phones_to_notify.size === 1 && !chat.root.querySelector('.ai-build').title.includes('Phones to notify'),
+      chat.root.querySelector('.ai-build').title);
+    check('a list without a global variable says nothing of one', !!phoneList && !phoneList.querySelector('.ai-phones-global'));
     responses['libi/ai_plan'] = offered;
     chat.draft = 'with messages again'; await chat.send();
     check('LIBI asks for a message when it starts and when it ends, in its box, with four choices', [...chat.root.querySelectorAll('.ai-libi-asks .ai-libi-question')].map(q => q.dataset.question).join() === 'libi_enable,libi_start_message,libi_end_message,libi_offline,libi_battery'

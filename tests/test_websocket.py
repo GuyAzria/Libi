@@ -1249,10 +1249,13 @@ async def test_a_copy_never_replaces_another_projects_copy(hass, libi, hass_ws_c
     await home_assistant_files(hass, libi, automations=[copy.deepcopy(AUTO)])
     client, http = await hass_ws_client(hass), await hass_client()
     p1 = await _opened(client, slug="p")
+    # [CHANGED v3.95.0] An automation another project holds is no longer loaded (test_an_automation_another_project_
+    # holds_is_never_loaded). Two projects that both hold a1, as this needs, are projects from before 3.95.0 - made here
+    # by opening a1 in both before either is saved.
+    q1 = await _opened(client, slug="q")
     p2 = json.loads(json.dumps(_copy_as_390(p1, "n2")).replace("light.x", "light.p"))
     _plan, done = await save(client, http, [p1, p2])
     assert done["status"] == "ok" and "a1_copy" in _project(libi, "p")["owned"]["automations"], done
-    q1 = await _opened(client, slug="q")
     q2 = json.loads(json.dumps(_copy_as_390(q1, "n2")).replace("light.x", "light.q"))
     plan, done = await save(client, http, [q1, q2], slug="q")
     assert done is None and any("(a1_copy) is already in Home Assistant" in e for e in plan["errors"]), plan
@@ -1544,3 +1547,118 @@ async def test_the_key_of_each_net_is_given_to_the_panel(hass, libi, hass_ws_cli
     assert opened["keys"] == done["keys"], opened
     fresh = (await send(client, {"type": "libi/project_create", "name": "Fresh"}))["result"]
     assert (await send(client, {"type": "libi/project_open", "slug": fresh["slug"]}))["result"]["keys"] == {}
+
+
+# [ADDED 2026-11-10, v3.95.0] The user's rule: an automation belongs to one project. LOAD's list says, for each automation,
+# the projects that hold it (the panel shows those under IN USE), and libi/get_automation never loads into a NET one that
+# another project - or another NET of the same project - holds. Taken out of its project, it is free again.
+HALL = {**AUTO, "id": "a2", "alias": "Hall"}
+
+
+async def _garden_holds_a1(hass, libi, hass_ws_client, hass_client):
+    """a1 loaded into NET n1 of project p ("Garden") and saved there, as the panel does; a2 in no project."""
+    await home_assistant_files(hass, libi, automations=[copy.deepcopy(AUTO), copy.deepcopy(HALL)])
+    client, http = await hass_ws_client(hass), await hass_client()
+    net = await _opened(client, "a1", "n1", "p")
+    await save(client, http, [net], slug="p", name="Garden")
+    return client, http
+
+
+def _listed(res) -> dict:
+    assert res["success"], res
+    return {a["id"]: a for a in res["result"]["automations"]}
+
+
+async def test_the_load_list_says_which_project_holds_each_automation(hass, libi, hass_ws_client, hass_client):
+    client, _http = await _garden_holds_a1(hass, libi, hass_ws_client, hass_client)
+    res = await send(client, {"type": "libi/list_automations"})
+    listed = _listed(res)
+    # [CHANGED 2026-11-11, v3.95.5] With the NETs of the project that hold it: the panel offers a NET its own automation
+    # again, as libi/get_automation allows (the review of the release, RULE 41).
+    assert listed["a1"]["in_use"] == [{"slug": "p", "name": "Garden", "nets": ["n1"]}], listed
+    assert listed["a2"]["in_use"] == [], listed
+    assert listed["a1"]["name"] == "Lamp" and res["result"]["unreadable"] == []
+
+
+async def test_an_automation_another_project_holds_is_never_loaded(hass, libi, hass_ws_client, hass_client):
+    client, _http = await _garden_holds_a1(hass, libi, hass_ws_client, hass_client)
+    refused = await send(client, {"type": "libi/get_automation", "automation_id": "a1", "slug": "q", "net_id": "n1"})
+    assert not refused["success"] and refused["error"]["code"] == "in_use", refused
+    assert "Garden" in refused["error"]["message"]
+    # Nothing was recorded for the project it was refused to: no V1, no V2.
+    assert not (libi / "libi" / "q.versions.json").exists()
+    # Nor into another NET of the project that holds it.
+    other_net = await send(client, {"type": "libi/get_automation", "automation_id": "a1", "slug": "p", "net_id": "n2"})
+    assert not other_net["success"] and other_net["error"]["code"] == "in_use", other_net
+    # Its own NET may load it again; one no project holds loads anywhere; a look without a NET is answered as before.
+    own = await send(client, {"type": "libi/get_automation", "automation_id": "a1", "slug": "p", "net_id": "n1"})
+    assert own["success"], own
+    free = await send(client, {"type": "libi/get_automation", "automation_id": "a2", "slug": "q", "net_id": "n1"})
+    assert free["success"], free
+    look = await send(client, {"type": "libi/get_automation", "automation_id": "a1"})
+    assert look["success"], look
+    # [ADDED 2026-11-11, v3.95.5] A load into a project with no NET named is checked too (the second pass of the review
+    # of the release): the panel sends "" when it has none.
+    for no_net in ({"slug": "q"}, {"slug": "q", "net_id": ""}):
+        refused = await send(client, {"type": "libi/get_automation", "automation_id": "a1", **no_net})
+        assert not refused["success"] and refused["error"]["code"] == "in_use", (no_net, refused)
+
+
+async def test_taken_out_of_its_project_an_automation_is_free_again(hass, libi, hass_ws_client, hass_client):
+    client, _http = await _garden_holds_a1(hass, libi, hass_ws_client, hass_client)
+    gone = await send(client, {"type": "libi/net_removed", "slug": "p", "net_id": "n1", "mode": "kept",
+                               "domain": "automation", "key": "a1"})
+    assert gone["success"] and gone["result"]["errors"] == [], gone
+    assert _listed(await send(client, {"type": "libi/list_automations"}))["a1"]["in_use"] == []
+    loaded = await send(client, {"type": "libi/get_automation", "automation_id": "a1", "slug": "q", "net_id": "n1"})
+    assert loaded["success"], loaded
+    # The automation itself was never touched.
+    assert [a["id"] for a in _automations(libi)] == ["a1", "a2"]
+
+
+async def test_a_project_from_before_keys_holds_what_its_nets_were_loaded_from(hass, libi, hass_ws_client):
+    """A project saved by a LIBI older than 3.90/3.91 has no keys and no owned: the ha_id of its NETs is what it holds."""
+    (libi / "automations.yaml").write_text(_dump([AUTO, HALL]), encoding="utf-8")
+    (libi / "libi").mkdir(exist_ok=True)
+    (libi / "libi" / "old.libi").write_text(json.dumps({"name": "Old one", "nets": [
+        {"id": "n4", "ha_id": "a2", "name": "Hall", "level": "automation", "rungs": []}]}), encoding="utf-8")
+    client = await hass_ws_client(hass)
+    listed = _listed(await send(client, {"type": "libi/list_automations"}))
+    assert listed["a2"]["in_use"] == [{"slug": "old", "name": "Old one", "nets": ["n4"]}] and listed["a1"]["in_use"] == [], listed
+    refused = await send(client, {"type": "libi/get_automation", "automation_id": "a2", "slug": "q", "net_id": "n1"})
+    assert not refused["success"] and refused["error"]["code"] == "in_use", refused
+    # And the old project still opens, as it was.
+    opened = await send(client, {"type": "libi/project_open", "slug": "old"})
+    assert opened["success"], opened
+
+
+async def test_a_project_that_cannot_be_read_stops_every_load(hass, libi, hass_ws_client):
+    """It may hold any automation, so none is loaded until it is fixed (CLAUDE.md RULE 31); the list says which one."""
+    (libi / "automations.yaml").write_text(_dump([AUTO, HALL]), encoding="utf-8")
+    (libi / "libi").mkdir(exist_ok=True)
+    (libi / "libi" / "broken.libi").write_text("{ not json", encoding="utf-8")
+    client = await hass_ws_client(hass)
+    res = await send(client, {"type": "libi/list_automations"})
+    assert res["success"] and res["result"]["unreadable"] == ["broken"], res
+    refused = await send(client, {"type": "libi/get_automation", "automation_id": "a2", "slug": "q", "net_id": "n1"})
+    assert not refused["success"] and refused["error"]["code"] == "projects_unreadable", refused
+    assert "broken" in refused["error"]["message"]
+    assert not (libi / "libi" / "q.versions.json").exists()
+    # The file LIBI could not read is left exactly as it was.
+    assert (libi / "libi" / "broken.libi").read_text(encoding="utf-8") == "{ not json"
+
+
+async def test_a_net_drawn_in_libi_holds_its_automation_from_the_other_nets_of_its_project(hass, libi, hass_ws_client,
+                                                                                           hass_client):
+    """A NET drawn in LIBI has no ha_id: the key its save gave it (keys) is what holds the automation, so another NET of
+    the same project cannot load it, while the NET itself may load it again."""
+    await home_assistant_files(hass, libi)
+    drawn = _net(hass)
+    drawn.pop("ha_id", None)
+    drawn["id"] = "n1"
+    client, http = await hass_ws_client(hass), await hass_client()
+    await save(client, http, [drawn], slug="p", name="Garden")
+    other_net = await send(client, {"type": "libi/get_automation", "automation_id": "n1", "slug": "p", "net_id": "n2"})
+    assert not other_net["success"] and other_net["error"]["code"] == "in_use", other_net
+    again = await send(client, {"type": "libi/get_automation", "automation_id": "n1", "slug": "p", "net_id": "n1"})
+    assert again["success"], again

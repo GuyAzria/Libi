@@ -11,10 +11,22 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.88.0 | 2026-11-05] Purpose: A MOVE TTS to a recipient of LIBI Global is written as to a phone - the data the
-#   phone's app reads, which the recipient's script passes to each of its phones - not as tts.speak on a speaker.
 # [ADDED v3.94.0 | 2026-11-07] Purpose: trigger_place - where the trigger an element of a NET is sits in the automation
 #   it compiles to, so Online's Real fires that trigger of a NET drawn in LIBI.
+# [CHANGED v3.95.5 | 2026-11-11] Purpose: An edited CMP = / not = and contact of a state compile to what the block shows
+#   (_compare_condition, _contact_condition): not = is a not around the check and = none - it was written without the
+#   not, the logic turned round; a not the importer drew as not = keeps its form; a list of states stays a list; a
+#   person in a zone is a zone condition (the user's train reminder was saved with state: zone.work and never fired),
+#   the zone chosen on the card a state condition. An edited state trigger takes its new entity and state - they were
+#   ignored. Found by the virtual tests of 2026-11-11; the review of the release (RULE 41) added: a one-item list state and a
+#   list of zones keep their form, a trigger of from alone gets no to, and a check with options a zone has none of (for,
+#   attribute ...) is never turned into a zone - the panel says so instead; a check of several entities keeps them all,
+#   a not's enabled goes with its check, an empty IN2 never writes an empty state, and a person leaving a zone drawn
+#   from a state trigger is a zone trigger (leave) - the second pass of that review; the third: a zone trigger keeps its id,
+#   and IN2 "heat, dry" of a block drawn new is two states where the entity's states never hold a comma. The fourth and
+#   fifth: a not = with a TON after it is held for a time, which Home Assistant cannot say - the panel refuses it, and its
+#   for is never put inside the not, which would mean "not (x for that time)"; a TON taken away takes the check's own for
+#   with it; a list whose text did not change is written back as it was; "zone.a, zone.b" is a list of zones.
 # [ADDED v1.69.0] Output perfectly formed logic for standard triggers, retrieving native YAML dictionary if present via raw_trigger.
 # [ADDED v3.5.0 | 2026-08-24] Purpose: A net now carries a level. automation compiles to the
 #   automation schema exactly as before, script compiles to alias plus sequence, and scene
@@ -36,6 +48,7 @@ from .yaml_to_libi import (
     norm_service, norm_kind, domain_of, short,
     element_sig, EVENT_TRIGGER_KEYS, target_spec,
     hms_to_seconds, yaml_to_ast, repeat_loop, for_to_hms, duration_label, wait_parts, is_recipient_action,
+    ON_STATES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -331,6 +344,23 @@ def _element_to_trigger(el, trig_id):
             out["event"] = "leave" if t == "cmp_ne" else "enter"
         elif t in ("cmp_eq", "cmp_ne") and norm_kind(raw) == "time":
             out["at"] = el.get("sourceB")
+        elif t in ("cmp_eq", "cmp_ne") and norm_kind(raw) == "state":
+            # [ADDED v3.95.5] A state trigger the block was drawn from, edited: its entity and the state it changes to are
+            # the block's - both were ignored, the drawing said one thing and the automation another. A person arriving
+            # in or leaving a zone is a zone trigger. Any other not = here has no form in Home Assistant: the panel
+            # refuses it, and the node stays as it was. An empty IN2 writes no to (a trigger of from alone has none).
+            val = el.get("sourceB")
+            if _is_person(el.get("sourceA")) and isinstance(val, str) and val.startswith("zone.") \
+                    and not set(raw) - _ZONE_TRIGGER_KEYS:
+                out = _patch(out, _entity_update(raw, el.get("sourceA")))
+                key = "platform" if "platform" in raw and "trigger" not in raw else "trigger"
+                out = {key: "zone", "entity_id": out.get("entity_id"), "zone": val,
+                       "event": "leave" if t == "cmp_ne" else "enter",
+                       **{k: raw[k] for k in ("alias", "enabled", "id") if k in raw}}
+            elif t == "cmp_eq":
+                out = _patch(out, _entity_update(raw, el.get("sourceA")))
+                if val not in (None, ""):
+                    out["to"] = _states(val, raw.get("to"))
         elif el.get("deviceNode") or norm_kind(out) == "device":
             # [ADDED v3.26.0] The inspector edits the node itself, so it already carries the device
             # and the trigger that were chosen. Patching an entity_id in would break it.
@@ -375,7 +405,7 @@ def _element_to_trigger(el, trig_id):
             out = {"trigger": "zone", "entity_id": ent, "zone": val,
                    "event": "leave" if t == "cmp_ne" else "enter"}
         else:
-            out = {"trigger": "state", "entity_id": ent, "to": val}
+            out = {"trigger": "state", "entity_id": ent, "to": _new_states(ent, val)}
     elif t == "cmp_rng":
         out = {"trigger": "numeric_state", "entity_id": ent, "above": _num(el.get("sourceB")), "below": _num(el.get("sourceC"))}
     elif t == "cmp_gt":
@@ -427,6 +457,152 @@ def _clock_condition(el, raw):
     return out
 
 
+# [ADDED v3.95.5] The virtual tests of 2026-11-11 (the user's train reminder had been saved with state: zone.work, a check
+# that never holds): an edited CMP = / not = was patched into the node it was drawn from, and the type was never read -
+# a state condition turned into not = stayed =, the logic the other way round; a not the importer drew as not = got an
+# entity_id beside it, which Home Assistant refused; an edited list of states became one string.
+# [ADDED v3.95.5] The keys a zone check has: a state check with any other (for, attribute, match ...) cannot become one
+# without losing it - the panel refuses such a block instead (libi-core checkLiteral).
+# A for is the TON drawn after the block: the panel refuses a zone with one, and with none it is gone.
+_ZONE_CONDITION_KEYS = frozenset(("condition", "entity_id", "state", "alias", "enabled", "for"))
+_ZONE_TRIGGER_KEYS = frozenset(("trigger", "platform", "entity_id", "to", "id", "alias", "enabled", "for"))
+
+
+def _zone_value(value):
+    """[ADDED v3.95.5] IN2 as zones: "zone.a, zone.b" - as the importer shows a list - is the list of them."""
+    if isinstance(value, str) and "," in value:
+        return [s.strip() for s in value.split(",") if s.strip()]
+    return value
+
+
+def _is_zone(value):
+    """[ADDED v3.95.5] A zone, or a list of zones - a zone condition may hold several."""
+    value = _zone_value(value)
+    if isinstance(value, list):
+        return bool(value) and all(str(v).startswith("zone.") for v in value)
+    return str(value or "").startswith("zone.")
+
+
+# [ADDED v3.95.5] The entities whose state is never an entity's id and never holds a comma: on and off, open and closed, a
+# person's home or zone, a number, a date. A dropdown, a text, a select or a sensor may hold either as its value - "which
+# speaker" is media_player.kitchen. ai.literal_checks and libi-core's FIXED_STATE use the same set.
+FIXED_STATE_DOMAINS = frozenset((
+    "person", "device_tracker", "binary_sensor", "switch", "light", "fan", "cover", "lock", "climate", "media_player",
+    "vacuum", "alarm_control_panel", "input_boolean", "sun", "weather", "water_heater", "humidifier", "valve", "siren",
+    "update", "timer", "schedule", "automation", "script", "remote", "lawn_mower", "input_number", "number", "counter",
+    "input_datetime", "date", "time", "datetime", "zone"))
+
+
+def _new_states(entity, value):
+    """[ADDED v3.95.5] IN2 of a block drawn new: "heat, dry" - as the importer shows a list - is two states where the
+    entity's states never hold a comma; one state otherwise."""
+    if isinstance(value, str) and "," in value and str(entity or "").split(".")[0] in FIXED_STATE_DOMAINS:
+        return [s.strip() for s in value.split(",") if s.strip()]
+    return value
+
+
+def _is_person(entity):
+    """[ADDED v3.95.5] Who can be in a zone: a person or a tracker."""
+    return str(entity or "").split(".")[0] in ("person", "device_tracker")
+
+
+def _states(value, given):
+    """[ADDED v3.95.5] IN2 as the node holds it: a list stays a list - "heat, dry" back into its items - one state
+    stays one."""
+    if isinstance(value, list):
+        return value
+    if isinstance(given, list):
+        # Not changed: the list as it was - an item may hold a comma ("Morning, early").
+        if str(value) == ", ".join(str(x) for x in given):
+            return given
+        return [s.strip() for s in str(value or "").split(",") if s.strip()]
+    return value
+
+
+def _entity_update(node, shown):
+    """[ADDED v3.95.5] What IN1 changes in a node: nothing while it still shows the first of the node's several
+    entities ("binary_sensor.a +1"), which would otherwise all be replaced by that one; else the entity shown."""
+    have = node.get("entity_id") if isinstance(node, dict) else None
+    if isinstance(have, list) and have and clean_target(shown) == clean_target(have[0]):
+        return {}
+    return {"entity_id": shown}
+
+
+def _compared_node(raw):
+    """[ADDED v3.95.5] The state or zone condition a block was drawn from, and the not around it - the importer draws
+    not [x] as the opposite block: (the not or None, the check). None for any other node."""
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("condition") in ("state", "zone"):
+        return None, raw
+    kids = raw.get("conditions") if raw.get("condition") == "not" else (raw.get("not") if "condition" not in raw else None)
+    if isinstance(kids, list) and len(kids) == 1 and isinstance(kids[0], dict) and kids[0].get("condition") in ("state", "zone"):
+        return raw, kids[0]
+    return None
+
+
+def _wrap_not(wrapper, check):
+    """[ADDED v3.95.5] A not around a check: the one it was drawn from, every key of it and its form (condition: not, or
+    the short not:) kept; a new one otherwise."""
+    if wrapper is None:
+        return {"condition": "not", "conditions": [check]}
+    out = dict(wrapper)
+    out["conditions" if wrapper.get("condition") == "not" else "not"] = [check]
+    return out
+
+
+def _unwrap(wrapper, check):
+    """[ADDED v3.95.5] The check without its not - the user turned the block round: the not's alias goes with the check
+    when the check has none, and a not that was turned off (enabled: false) leaves the check off."""
+    if not isinstance(wrapper, dict):
+        return check
+    out = dict(check)
+    if "alias" in wrapper and "alias" not in out:
+        out["alias"] = wrapper["alias"]
+    if wrapper.get("enabled") is False:
+        out["enabled"] = False
+    return out
+
+
+def _compare_condition(el, wrapper, inner):
+    """[ADDED v3.95.5] CMP = / not = edited: IN1 and IN2 written into its check, the check kept as it was in all else;
+    not = is a not around it. Who is in a zone is a zone condition, and the zone chosen on the card - a dropdown of the
+    zones' names - a state condition, which Home Assistant reads an input helper in (v3.95.4)."""
+    val = el.get("sourceB")
+    out = _patch(dict(inner), _entity_update(inner, el.get("sourceA")))
+    if val in (None, ""):
+        pass  # an empty IN2 never writes an empty state: the panel says so instead (libi-core checkLiteral)
+    elif _is_person(el.get("sourceA")) and out.get("condition") == "state" and _is_zone(val) \
+            and not set(inner) - _ZONE_CONDITION_KEYS:
+        out = {"condition": "zone", **{k: v for k, v in out.items() if k not in ("condition", "state")}, "zone": _zone_value(val)}
+    elif out.get("condition") == "zone" and not _is_zone(val):
+        out = {"condition": "state", **{k: v for k, v in out.items() if k not in ("condition", "zone")}, "state": val}
+    elif out.get("condition") == "zone":
+        out["zone"] = _zone_value(val)
+    else:
+        out["state"] = _states(val, inner.get("state"))
+    return _wrap_not(wrapper, out) if el.get("type") == "cmp_ne" else _unwrap(wrapper, out)
+
+
+def _contact_condition(el, wrapper, inner):
+    """[ADDED v3.95.5] A contact of a state, edited: its entity written in. On and off follow the block; any other
+    state (home, open ...) stays as it was, and the opposite block is a not around it - never a word guessed for the
+    opposite. Drawn from not [x], the block shows the opposite of x: still that block, the not stays."""
+    out = _patch(dict(inner), _entity_update(inner, el.get("label")))
+    on = el.get("type") == "contact_no"
+    # The one-item list Home Assistant's editor writes ([on]) is that state, as the importer reads it; its form is kept.
+    given = inner.get("state")
+    listed = isinstance(given, list)
+    state = str(given[0] if listed and len(given) == 1 else given).lower()
+    if wrapper is None and state in ("on", "off"):
+        out["state"] = ["on" if on else "off"] if listed else ("on" if on else "off")
+        return out
+    shows_on = (state in ON_STATES) != (wrapper is not None)
+    if wrapper is None:
+        return out if on == shows_on else _wrap_not(None, out)
+    return _wrap_not(wrapper, out) if on == shows_on else _unwrap(wrapper, out)
+
+
 def _element_to_condition(el):
     t = el.get("type", "")
     raw = el.get("raw")
@@ -458,6 +634,14 @@ def _element_to_condition(el):
     if t == "cmp_eq" and str(el.get("sourceA")) == "weekday":
         return _day_condition(el.get("sourceB"), raw)
 
+    # [ADDED v3.95.5] CMP = / not = and a contact of a state, edited, from the check they were drawn from and the not around
+    # it (_compared_node): what the block shows, = or not =, on or off.
+    node = _compared_node(raw)
+    if node and t in ("cmp_eq", "cmp_ne"):
+        return _compare_condition(el, *node)
+    if node and t in ("contact_no", "contact_nc") and node[1].get("condition") == "state":
+        return _contact_condition(el, *node)
+
     if isinstance(raw, dict) and raw.get("condition"):
         out = dict(raw)
         if t.startswith("contact_"):
@@ -465,11 +649,9 @@ def _element_to_condition(el):
             if out.get("condition") == "state":
                 out["state"] = "off" if t in ("contact_nc", "contact_n") else "on"
         elif t in ("cmp_eq", "cmp_ne"):
+            # [CHANGED v3.95.5] A state or zone check is _compare_condition's (above); any other keeps its node, IN1
+            # written in.
             out = _patch(out, {"entity_id": el.get("sourceA")})
-            if out.get("condition") == "zone":
-                out["zone"] = el.get("sourceB")
-            elif out.get("condition") == "state":
-                out["state"] = el.get("sourceB")
         elif t in ("cmp_gt", "cmp_lt"):
             out = _patch(out, {"entity_id": el.get("sourceA")})
             if t == "cmp_gt":
@@ -494,12 +676,11 @@ def _element_to_condition(el):
 
     if t.startswith("contact_"):
         return {"condition": "state", "entity_id": ent, "state": "off" if t in ("contact_nc", "contact_n") else "on"}
-    if t == "cmp_eq":
-        if domain_of(val) == "zone" or str(val).startswith("zone."):
-            return {"condition": "zone", "entity_id": ent, "zone": val}
-        return {"condition": "state", "entity_id": ent, "state": val}
-    if t == "cmp_ne":
-        return {"condition": "not", "conditions": [{"condition": "state", "entity_id": ent, "state": val}]}
+    if t in ("cmp_eq", "cmp_ne"):
+        # [CHANGED v3.95.5] Not in a zone is a not around the zone condition: state: zone.work never holds.
+        check = ({"condition": "zone", "entity_id": ent, "zone": _zone_value(val)} if _is_zone(val)
+                 else {"condition": "state", "entity_id": ent, "state": _new_states(ent, val)})
+        return check if t == "cmp_eq" else {"condition": "not", "conditions": [check]}
     if t == "cmp_rng":
         if str(ent).lower() == "time" or el.get("kind") == "time":
             return {"condition": "time", "after": el.get("sourceB"), "before": el.get("sourceC")}
@@ -1163,6 +1344,16 @@ def _rung_conditions(head, trig_ids, use_trigger_refs, skip_base=False):
             # any for the node used to carry is gone, because the timer was taken off the rung.
             held = _for_after(head, head.index(el)) if el in head else None
             cond = dict(cond)
+            # [CHANGED v3.95.5] A not = held for a time is no form of Home Assistant's: its for goes beside the not, which
+            # Home Assistant refuses - never inside it, where it would mean "not (x for that time)". The panel refuses
+            # the block first (checkLiteral). With no TON, the check inside a not loses its own for too - only in a
+            # block the user edited: a node LIBI did not change is written as it was (RULE 5; the sixth pass of the
+            # review of the release - a for of no time inside a not, which the importer draws with no TON).
+            key = "conditions" if cond.get("condition") == "not" else ("not" if "condition" not in cond else "")
+            kids = cond.get(key) if key else None
+            if not _untouched(el) and isinstance(kids, list) and len(kids) == 1 and isinstance(kids[0], dict) \
+                    and "for" in kids[0]:
+                cond[key] = [{k: v for k, v in kids[0].items() if k != "for"}]
             if held:
                 cond["for"] = held
             else:

@@ -811,8 +811,9 @@ def test_days_and_a_time_set_on_the_screen_are_an_alarm_clock():
     clock, where I choose the days and the hour", and then "a variable for each day was not needed - one 8-bit variable,
     bit 1 Sunday, bit 2 Monday ..., shown as checkboxes". The days are ONE days helper: the switches the model still
     proposes for some days become it, named as they were, where they stood; its settings are the 8 bits', whatever the
-    model gave; twice is the same as once. A schedule the user names gives way to the alarm clock when the days and
-    hours are chosen on the screen. (v3.53.0 made a time and day switches one schedule, 3.73.0 a switch for each day.)"""
+    model gave; twice is the same as once. (v3.53.0 made a time and day switches one schedule, 3.73.0 a switch for each
+    day.) [CHANGED 2026-11-10, v3.95.0] A schedule the user names is used as it is - the week schedule; LIBI then asks
+    how new days are set (days_question), and this days helper is what that question replaces."""
     days = [{"role": f"day_{d}", "domain": "input_boolean", "name": f"Watering - {d}", "settings": {}}
             for d in ("thu", "sun", "tue")]
     time = {"role": "start_time", "domain": "input_datetime", "name": "Watering time", "settings": {"has_time": True}}
@@ -848,30 +849,35 @@ def test_days_and_a_time_set_on_the_screen_are_an_alarm_clock():
     own_plan = {"intent": "create", "name": "x", "roles": roles, "new_helpers": own}
     ai.helpers_for_open_roles(own_plan, {"days": {"items": [], "exact": True}})
     assert own_plan["new_helpers"][0]["settings"] == {"icon": "mdi:calendar", **bits}
-    # [CHANGED 2026-10-31, v3.74.0] A schedule the user names gives way to the alarm clock proposed for the days and the
-    # hours - a card cannot set a schedule: it is no longer ticked, and its role, kept, says why.
+    # [CHANGED 2026-11-10, v3.95.0] The user's choice: a schedule is one of the two ways to set the days and their hours
+    # from the screen. One the user names is used as it is - the week schedule, still ticked - and the alarm clock the
+    # model proposed beside it goes. (From v3.74.0 it gave way to the alarm clock, listed and not ticked.)
     named = planned()
     named["roles"].append({"id": "garden_schedule", "label": "Garden schedule", "purpose": "trigger",
                            "domains": ["schedule"], "device_classes": [], "keywords": [], "area_keywords": [],
                            "optional": True, "named": True})
     picks = {"garden_schedule": ["schedule.garden"], "litres": ["input_number.l"]}
     # As roles_for_named_helpers leaves it: the named schedule found, so the role needs no new helper of its own.
-    ai.helpers_for_open_roles(named, {"garden_schedule": {"items": [{"entity_id": "schedule.garden"}], "exact": True}}, picks)
-    assert [h["role"] for h in named["new_helpers"]] == [h["role"] for h in plan["new_helpers"]]
-    assert picks == {"litres": ["input_number.l"]}
-    role = next(r for r in named["roles"] if r["id"] == "garden_schedule")
-    assert role["optional"] is True and role["replaced"] is True
-    # The request asks for a card and the days, and the model proposed no alarm clock: LIBI proposes it, named after the
-    # plan for the user to rename.
-    on_card = {"intent": "create", "name": "Garden watering", "roles": [], "new_helpers": [],
+    found = {"garden_schedule": {"items": [{"entity_id": "schedule.garden"}], "exact": True}}
+    ai.helpers_for_open_roles(named, found, picks)
+    assert [h["role"] for h in named["new_helpers"]] == ["litres"]
+    assert picks == {ai.SCHEDULE_ROLE: ["schedule.garden"], "litres": ["input_number.l"]}
+    role = next(r for r in named["roles"] if r["id"] == ai.SCHEDULE_ROLE)
+    assert role["purpose"] == "trigger" and not role.get("replaced") and list(found) == [ai.SCHEDULE_ROLE]
+    assert not {"start_time", "days"} & {r["id"] for r in named["roles"]}
+    # The request asks for a card and the days, and the model's schedule role found nothing and is not named: LIBI
+    # proposes the alarm clock, named after the plan for the user to rename, and takes the role out - it asks next how
+    # the days are set (days_question), a schedule being one of the answers.
+    on_card = {"intent": "create", "name": "Garden watering", "new_helpers": [],
+               "roles": [{"id": "when", "label": "When", "purpose": "trigger", "domains": ["schedule"],
+                          "device_classes": [], "keywords": [], "area_keywords": []}],
                "requirements": [{"id": "r1", "text": "the days I choose", "kind": "days"},
                                 {"id": "r2", "text": "a card", "kind": "card"}]}
-    picks = {"garden_schedule": ["schedule.garden"]}
-    ai.helpers_for_open_roles(on_card, {}, picks)
-    assert picks == {}
+    ai.helpers_for_open_roles(on_card, {}, {})
     assert [(h["role"], h["name"], h["settings"]) for h in on_card["new_helpers"]] == [
         ("start_time", "Garden watering", {"has_time": True, "has_date": False}), ("days", "Garden watering - days", bits)]
     assert next(r for r in on_card["roles"] if r["id"] == "start_time")["purpose"] == "trigger"
+    assert "when" not in {r["id"] for r in on_card["roles"]}
     # Nothing to set on the screen: the schedule the user names is still the one used.
     kept = {"intent": "create", "name": "x", "roles": [], "new_helpers": []}
     picks = {"garden_schedule": ["schedule.garden"]}
@@ -1190,9 +1196,11 @@ async def test_the_schedule_trigger_the_build_prompt_teaches_is_accepted(hass, h
     # [CHANGED 2026-10-31] A schedule only when the user asks for one or names one; days and a time are an alarm clock.
     plan_prompt = " ".join(ai.PLAN_SYSTEM.split())
     assert "set as on an alarm clock" in plan_prompt
-    # [CHANGED 2026-10-31, v3.74.0] Also when the user names a schedule of their own: a card cannot set it.
-    assert "also when the user names a schedule helper of their own" in plan_prompt
-    assert "only when the user asks for a schedule that is not set from the screen" in plan_prompt
+    # [CHANGED 2026-11-10, v3.95.0] A schedule the user names is used; LIBI asks how new days are set.
+    assert "LIBI then asks the user whether the days are a switch for each day or a schedule" in plan_prompt
+    assert "When the user names a schedule helper of their own for the days and hours, use it instead" in plan_prompt
+    assert "only when the user asks for a schedule with fixed days and hours" in plan_prompt
+    assert "give the schedule no role" not in plan_prompt
     hass.states.async_set("schedule.garden_watering", "off", {"friendly_name": "Garden watering"})
     plan = ai.clean_plan(hass, {**copy.deepcopy(PLAN), "roles": PLAN["roles"] + [
         {"id": "when", "label": "When", "purpose": "trigger", "domains": ["schedule"],
@@ -1654,7 +1662,8 @@ async def test_a_helper_the_message_names_that_is_gone_is_proposed_again(hass, g
     use it" of the schedule and of the litres. The chat listed the user's other schedules and numbers in those roles as
     exact matches - "schedule" and "number" are in the entity_id of every one - so it proposed no helper for either, no
     alarm clock either, and Build waited for a pick. A named helper that is gone is proposed again under the user's name
-    for it, and the schedule gives way to the alarm clock, as a named one does: the days and hours are set on the card."""
+    for it. [CHANGED 2026-11-10, v3.95.0] The schedule too, as the week schedule - a schedule the user names is used as it
+    is (the user's choice): its blocks start and end the watering, and no alarm clock is proposed beside it."""
     _left_helpers(hass)
     assert ai.helpers_named(hass, GONE_REQUEST) == []
     assert ai.helpers_missing(hass, GONE_REQUEST) == GONE_NAMES
@@ -1666,13 +1675,14 @@ async def test_a_helper_the_message_names_that_is_gone_is_proposed_again(hass, g
         res = (await client.receive_json())["result"]
     plan = res["plan"]
     assert [(h["role"], h["domain"], h["name"]) for h in plan["new_helpers"]] == [
-        ("max_minutes", "input_number", HE["max_watering_minutes"]), ("litres", "input_number", GONE_NAMES[1]),
-        ("start_time", "input_datetime", HE["smart_garden_watering_management"]), ("days", "input_number", HE["smart_garden_watering_management"] + " - days")]
+        ("max_minutes", "input_number", HE["max_watering_minutes"]), (ai.SCHEDULE_ROLE, "schedule", GONE_NAMES[0]),
+        ("litres", "input_number", GONE_NAMES[1])]
     roles = {r["id"]: r for r in plan["roles"]}
     assert roles["litres"]["missing"] == GONE_NAMES[1] and res["candidates"]["litres"]["exact"] is False
-    schedule = roles["watering_schedule"]
-    assert (schedule["missing"], schedule["replaced"], schedule["optional"]) == (GONE_NAMES[0], True, True)
-    assert roles["start_time"]["purpose"] == "trigger" and res["preselect"] == {}
+    schedule = roles[ai.SCHEDULE_ROLE]
+    assert (schedule["missing"], schedule.get("replaced"), schedule["purpose"]) == (GONE_NAMES[0], None, "trigger")
+    assert not {"start_time", "days", "watering_schedule"} & set(roles) and res["preselect"] == {}
+    assert ai.DAYS_QUESTION not in [q["id"] for q in plan["questions"]]
     # The model was told which of the names the message quotes nothing in this Home Assistant has.
     told = sent[0][-1]["content"]
     assert "NAMED, NOT FOUND" in told and all(f'"{name}"' in told for name in GONE_NAMES)
@@ -1682,18 +1692,15 @@ async def test_a_helper_the_message_names_that_is_gone_is_proposed_again(hass, g
         return [(r["id"], r.get("missing"), r.get("replaced"), bool(r.get("optional"))) for r in roles]
     assert marks(ai.clean_plan(hass, copy.deepcopy(plan))["roles"]) == marks(plan["roles"])
 
-    # Created as the chat creates them, then built: the alarm clock starts it, and the schedule is in no part of it.
-    hass.states.async_set("input_datetime.start", "06:00:00", {"friendly_name": HE["smart_garden_watering_management"],
-                                                               "has_time": True, "has_date": False})
-    hass.states.async_set("input_number.days", "0", {"friendly_name": HE["smart_garden_watering_management"] + " - days",
-                                                     "min": 0, "max": 255, "step": 1})
+    # Created as the chat creates them, then built: the week schedule starts it and ends it, and the most minutes still
+    # hold the valve closed after them - the time limit the request asks for.
+    hass.states.async_set("schedule.watering", "off", {"friendly_name": GONE_NAMES[0]})
     hass.states.async_set("input_number.litres", "0", {"friendly_name": GONE_NAMES[1], "min": 0, "max": 100})
     hass.states.async_set("input_number.minutes", "30", {"friendly_name": HE["max_watering_minutes"], "min": 1, "max": 120})
     selections = {"garden_valve": ["switch.garden_valve"], "water_meter": ["sensor.water_meter"],
-                  "weather": ["weather.home"], "start_time": ["input_datetime.start"], "days": ["input_number.days"],
-                  "litres": ["input_number.litres"], "max_minutes": ["input_number.minutes"],
-                  "watering_schedule": ["schedule.tests"]}
-    llm, sent = _model(_alarm_answer())
+                  "weather": ["weather.home"], ai.SCHEDULE_ROLE: ["schedule.watering"],
+                  "litres": ["input_number.litres"], "max_minutes": ["input_number.minutes"]}
+    llm, sent = _model(_week_answer())
     with patch.object(ai, "async_llm_json", new=llm):
         await client.send_json_auto_id({"type": "libi/ai_build", "nets": [garden], "share": True, "plan": plan,
                                         "selections": selections,
@@ -1701,15 +1708,23 @@ async def test_a_helper_the_message_names_that_is_gone_is_proposed_again(hass, g
         built = (await client.receive_json())["result"]
     assert built["ok"], built.get("errors")
     assert [i["ok"] for i in built["checklist"] if i["ok"] is False] == [], built["checklist"]
-    assert "schedule." not in built["yaml"] and "role:watering_schedule" not in sent[0][-1]["content"]
-    # [CHANGED v3.79.0] The card the user pasted: the time and the days were named after the net, so the rows said the
-    # title again ("<name>", "<name> - days"). The alarm clock, the settings, the valve and what the logic reads.
+    told = " ".join(sent[0][-1]["content"].split())
+    assert 'SCHEDULE (the user sets its blocks - the days, and the hours of each day)' in told
+    assert f'"entity_id": "role:{ai.SCHEDULE_ROLE}", "to": "off", "id": "end"' in told and "ALARM CLOCK" not in told
+    doc = yaml.safe_load(built["yaml"])
+    assert {"trigger": "state", "entity_id": "schedule.watering", "to": "on", "id": "start"} in doc["triggers"]
+    assert {"trigger": "state", "entity_id": "schedule.watering", "to": "off", "id": "end"} in doc["triggers"]
+    assert not any(t.get("trigger") == "time" for t in doc["triggers"])
+    # The request has no line for the time: LIBI checks the start of a block with a line of its own, and the end always.
+    assert [i["id"] for i in built["checklist"] if i["id"].startswith("week_")] == ["week_start", "week_end"]
+    # The card: the schedule first - tapped, its settings set the days and the hours - then the settings, the valve and
+    # what the logic reads. Only Home Assistant's own rows: the card works without LIBI.
     rows = yaml.safe_load(built["card_yaml"])["entities"]
     assert [(r.get("entity"), r.get("name")) for r in rows] == [
-        ("input_datetime.start", "Start time"), ("input_number.days", "Days"), (None, None),
+        ("schedule.watering", GONE_NAMES[0]), (None, None),
         ("input_number.litres", GONE_NAMES[1]), ("input_number.minutes", hass.states.get("input_number.minutes").name), (None, None),
         ("switch.garden_valve", "Garden valve"), ("sensor.water_meter", "Water meter"), ("weather.home", "Home")]
-    assert rows[1]["type"] == "custom:libi-days-row"
+    assert "custom:" not in built["card_yaml"]
 
 
 async def test_without_sharing_the_model_is_not_told_but_the_helpers_are_proposed(hass, garden, hass_ws_client):
@@ -1723,7 +1738,7 @@ async def test_without_sharing_the_model_is_not_told_but_the_helpers_are_propose
                                         "messages": [{"role": "user", "content": GONE_REQUEST}]})
         res = (await client.receive_json())["result"]
     assert "NAMED, NOT FOUND" not in sent[0][-1]["content"] and GONE_NAMES[0] in sent[0][-1]["content"]
-    assert [h["role"] for h in res["plan"]["new_helpers"]] == ["max_minutes", "litres", "start_time", "days"]
+    assert [h["role"] for h in res["plan"]["new_helpers"]] == ["max_minutes", ai.SCHEDULE_ROLE, "litres"]
 
 
 async def test_a_quoted_name_is_a_helper_only_where_a_role_for_a_setting_holds_it(hass, home):
@@ -1800,9 +1815,11 @@ def test_a_setting_is_matched_by_its_name_not_by_the_word_of_its_kind(hass):
 
 
 def test_a_schedule_nothing_fills_gives_way_to_the_alarm_clock_only_where_the_screen_sets_the_days():
-    """[ADDED 2026-11-01] A schedule role nothing of the user's fills - named but gone, or found nowhere - gives way to the
-    alarm clock when the days and hours are set on the screen, as a named schedule does (v3.74.0). Without that, the one
-    named is proposed under its name; a schedule the model proposes itself (fixed days) and one the user has stay."""
+    """[ADDED 2026-11-01] A schedule role nothing of the user's fills, set on the screen. [CHANGED 2026-11-10, v3.95.0]
+    The user's choice: one the user names and no longer has is proposed again under its name, as the week schedule - a
+    schedule the user names is used. Only one found nowhere and not named gives way to the alarm clock, and is taken
+    out: LIBI then asks how the days are set (days_question). Nothing set on the screen: the one named is proposed under
+    its name; a schedule the model proposes itself (fixed days) and one the user has stay."""
     card = [{"id": "r1", "text": "the days I choose", "kind": "days"}, {"id": "r2", "text": "a card", "kind": "card"}]
 
     def plan_of(requirements, helpers=(), **role):
@@ -1815,13 +1832,18 @@ def test_a_schedule_nothing_fills_gives_way_to_the_alarm_clock_only_where_the_sc
     ai.helpers_for_open_roles(gone, {"when": {"items": [], "exact": False}}, {})
     assert [(h["domain"], h["name"]) for h in gone["new_helpers"]] == [("schedule", "Garden schedule")]
     assert "replaced" not in gone["roles"][0]
-    for plan in (plan_of(card), plan_of(card, missing="Garden schedule"),
+    nowhere = plan_of(card)
+    ai.helpers_for_open_roles(nowhere, {"when": {"items": [{"entity_id": "schedule.tests"}], "exact": False}}, {})
+    assert [h["role"] for h in nowhere["new_helpers"]] == ["start_time", "days"]
+    assert "when" not in {r["id"] for r in nowhere["roles"]}
+    for plan in (plan_of(card, missing="Garden schedule"),
                  plan_of(card, [{"role": "when", "domain": "schedule", "name": "Garden schedule", "settings": {}}],
                      missing="Garden schedule")):
         ai.helpers_for_open_roles(plan, {"when": {"items": [{"entity_id": "schedule.tests"}], "exact": False}}, {})
-        assert [h["role"] for h in plan["new_helpers"]] == ["start_time", "days"], plan
-        role = next(r for r in plan["roles"] if r["id"] == "when")
-        assert role["replaced"] is True and role["optional"] is True
+        assert [(h["role"], h["domain"], h["name"]) for h in plan["new_helpers"]] == [
+            (ai.SCHEDULE_ROLE, "schedule", "Garden schedule")], plan
+        role = next(r for r in plan["roles"] if r["id"] == ai.SCHEDULE_ROLE)
+        assert not role.get("replaced") and role["missing"] == "Garden schedule" and role["purpose"] == "trigger"
     for plan, found in ((plan_of(card, [{"role": "when", "domain": "schedule", "name": "Water Mon Tue", "settings": {}}]),
                          False), (plan_of(card), True)):
         ai.helpers_for_open_roles(plan, {"when": {"items": [{"entity_id": "schedule.garden"}], "exact": found}}, {})
@@ -2526,9 +2548,10 @@ _TICKED = {"condition": "template", "value_template": ai.day_bits_template("role
 _RAIN = "['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail']"
 
 
-def _alarm_answer(forecast=True):
+def _alarm_answer(forecast=True, days="bits"):
     """The user's watering the ladder way, started as an alarm clock: at the time the user sets, on the days the user
-    ticks. Without the forecast it is the draft the user got on 2026-10-31: only the rain now was checked."""
+    ticks. Without the forecast it is the draft the user got on 2026-10-31: only the rain now was checked.
+    [CHANGED v3.95.0] days "switches": a switch for each day, each checked on its own day (days_switches_condition)."""
     start = [{"action": "switch.turn_on", "target": {"entity_id": "role:garden_valve"}}]
     if forecast:
         start[0:0] = [{"action": "weather.get_forecasts", "target": {"entity_id": "role:weather"},
@@ -2543,7 +2566,8 @@ def _alarm_answer(forecast=True):
          "for": {"minutes": "{{ states('role:max_minutes') | int(30) }}"}, "id": "time_limit"},
         {"trigger": "homeassistant", "event": "start", "id": "restarted"}],
         "actions": [{"choose": [
-            {"conditions": [{"condition": "trigger", "id": "start"}, copy.deepcopy(_TICKED),
+            {"conditions": [{"condition": "trigger", "id": "start"}, copy.deepcopy(_TICKED) if days == "bits" else
+                            ai.days_switches_condition({d: f"role:day_{d}" for d in DAYS}),
                             {"condition": "template", "value_template": "{{ states('role:weather') not in " + _RAIN + " }}"}],
              "sequence": start},
             {"conditions": [{"condition": "trigger", "id": "amount_reached"}],
@@ -2558,6 +2582,20 @@ def _alarm_answer(forecast=True):
             "config": json.dumps(config), "ui_card": "", "notes": [],
             "covers": [{"requirement": "r8", "trigger_id": "", "how": "Nothing opens the valve again once it is closed."},
                        {"requirement": "r6", "trigger_id": "time_limit", "how": "The valve on for the minutes set."}]}
+
+
+def _week_answer():
+    """[ADDED v3.95.0] The same watering on the week schedule: a block starts it, the block's end closes the valve, and
+    the most minutes and the amount still close it within the block."""
+    answer = _alarm_answer()
+    config = json.loads(answer["config"])
+    config["triggers"][0] = {"trigger": "state", "entity_id": f"role:{ai.SCHEDULE_ROLE}", "to": "on", "id": "start"}
+    config["triggers"].insert(1, {"trigger": "state", "entity_id": f"role:{ai.SCHEDULE_ROLE}", "to": "off", "id": "end"})
+    options = config["actions"][0]["choose"]
+    options[0]["conditions"] = [c for c in options[0]["conditions"] if c != _TICKED]
+    options.insert(1, {"conditions": [{"condition": "trigger", "id": "end"}],
+                       "sequence": [{"action": "switch.turn_off", "target": {"entity_id": "role:garden_valve"}}]})
+    return {**answer, "config": json.dumps(config)}
 
 
 def _alarm_plan(hass):
@@ -2689,13 +2727,13 @@ def test_each_kind_of_line_is_seen_in_the_logic_and_nothing_else_is():
             assert not ai._KIND_TESTS[kind](node), (kind, node)
 
 
-async def test_a_schedule_the_user_names_gives_way_to_the_alarm_clock(hass, garden, hass_ws_client):
-    """[CHANGED 2026-10-31, v3.74.0] The user: "still no improvement - no way in the UI to choose the days of the week and
-    the start time". Their message names their schedule ("I already have a helper ..., use it"); in 3.73.0 the schedule
-    held the days and the hours, so the card could not set them. A card cannot set a schedule: when the model proposes
-    the alarm clock, or the request asks for a card and the days, the schedule gives way - listed, not ticked, saying
-    why - and LIBI proposes the alarm clock itself when the model did not. Asked for nothing on the screen, the schedule
-    the user names is still the one used."""
+async def test_a_schedule_the_user_names_is_the_week_schedule(hass, garden, hass_ws_client):
+    """[CHANGED 2026-11-10, v3.95.0] The user: "it is better to have both options ... on a certain day I leave an hour
+    earlier, which 7 variables cannot do", and the card must work without LIBI. Their message names their schedule ("I
+    already have a helper ..., use it"): it is used as it is - the week schedule, ticked - and the alarm clock the model
+    proposed beside it goes, with nothing to ask. (From v3.74.0 to v3.94 it gave way to the alarm clock: "no way in the
+    UI to choose the days".) Without a schedule named, LIBI asks how the days are set: a switch for each day and a start
+    time, or a schedule."""
     _user_helpers(hass)
     alarm = [{"role": "start_time", "domain": "input_datetime", "name": "Watering - start", "settings": {"has_time": True}},
              {"role": "day_sun", "domain": "input_boolean", "name": "Watering - Sun", "settings": {}}]
@@ -2709,24 +2747,29 @@ async def test_a_schedule_the_user_names_gives_way_to_the_alarm_clock(hass, gard
             await client.send_json_auto_id({"type": "libi/ai_plan", "nets": [garden], "share": True,
                                             "messages": [{"role": "user", "content": words}]})
             return (await client.receive_json())["result"]
-    # [CHANGED 2026-10-31, v3.76.0] The days are ONE helper of 8 bits, not a switch for each day.
-    alarm_roles = ["start_time", "days"]
     for plan in ({**base, "new_helpers": alarm}, {**base, "new_helpers": [], "requirements": lines}):
         res = await plan_for(plan)
-        assert [h["role"] for h in res["plan"]["new_helpers"]] == alarm_roles
+        assert res["plan"]["new_helpers"] == []
         schedule = next(r for r in res["plan"]["roles"] if r["domains"] == ["schedule"])
-        assert schedule["optional"] is True and schedule["replaced"] is True
+        assert schedule["id"] == ai.SCHEDULE_ROLE and schedule["purpose"] == "trigger" and not schedule.get("replaced")
+        assert res["preselect"][ai.SCHEDULE_ROLE] == [SCHEDULE]
         ticked = [e for ids in res["preselect"].values() for e in ids]
-        assert SCHEDULE not in ticked and LITRES in ticked and LIMIT in ticked
-    assert [h["name"] for h in res["plan"]["new_helpers"]] == ["Garden watering", "Garden watering - days"]
-    # Nothing to set on the screen: the schedule the user names is the one used, ticked.
+        assert LITRES in ticked and LIMIT in ticked
+        assert not {"start_time", "days", "day_sun"} & {r["id"] for r in res["plan"]["roles"]}
+        assert ai.DAYS_QUESTION not in [q["id"] for q in res["plan"]["questions"]]
+    # Nothing to set on the screen: the schedule the user names is the one used, ticked, in its own role.
     res = await plan_for({**base, "new_helpers": []})
     assert res["plan"]["new_helpers"] == [] and SCHEDULE in [e for ids in res["preselect"].values() for e in ids]
     assert not any(r.get("replaced") for r in res["plan"]["roles"])
-    # Without a schedule named, the day switch the model proposed becomes the days helper, named as it was.
+    # Without a schedule named: the day switch the model proposed becomes the days helper, and LIBI asks how the days
+    # are set - that helper goes, each answer bringing its own variables, named after it.
     res = await plan_for({**base, "new_helpers": alarm}, "water the garden at the time and on the days I set on the card")
-    assert [(h["role"], h["name"]) for h in res["plan"]["new_helpers"]] == [
-        ("start_time", "Watering - start"), ("days", "Watering - days")]
+    assert [(h["role"], h["name"]) for h in res["plan"]["new_helpers"]] == [("start_time", "Watering - start")]
+    question = next(q for q in res["plan"]["questions"] if q["id"] == ai.DAYS_QUESTION)
+    switches, week = (question["variants"][c] for c in question["choices"])
+    assert [h["name"] for h in switches["helpers"]] == [f"Watering - {d.title()}" for d in DAYS]
+    assert [(h["role"], h["domain"], h["name"]) for h in week["helpers"]] == [(ai.SCHEDULE_ROLE, "schedule", "Watering")]
+    assert week["drop"] == ["start_time"]
     # A change of the NET ("update NET 3") ticks what the NET uses - but not the schedule that gave way.
     roles = [{"id": "watering_schedule", "domains": ["schedule"], "replaced": True}, {"id": "litres", "domains": ["input_number"]}]
     assert ai.preselect(hass, {"roles": roles}, f"entity_id: {SCHEDULE} above: {LITRES}") == {"litres": [LITRES]}
@@ -2763,7 +2806,7 @@ async def test_the_time_set_on_the_card_starts_the_logic_and_no_schedule_does(ha
     plan["roles"].append(copy.deepcopy(SCHEDULE_ROLE))
     selections["watering_schedule"] = ["schedule.garden"]
     assert ai.picked_alarm_clock(hass, plan, selections) == {
-        "time_role": "start_time", "time": "input_datetime.garden_start", "days_role": "days",
+        "mode": "bits", "time_role": "start_time", "time": "input_datetime.garden_start", "days_role": "days",
         "days": "input_number.garden_days"}
     client = await hass_ws_client(hass)
     built, sent = await _build(client, plan, selections, _by_schedule(_alarm_answer()), _alarm_answer())
@@ -2933,9 +2976,9 @@ async def test_a_change_of_the_net_keeps_its_alarm_clock_and_its_settings(hass, 
     switches, and the role of the most minutes the litres as well. A change keeps the net's alarm clock - each day's
     switch in its day's role, the time made with them in start_time - and ticks the settings that fit, whatever the
     model planned for them; the schedule that gave way is not ticked. Built, the time set on the card starts it.
-    [CHANGED 2026-10-31, v3.76.0] The user: "a variable for each day was not needed". The net's switches for each day become
-    ONE days helper of 8 bits, proposed in their place, whatever the model planned for the days; a net of the days
-    helper keeps it, ticked."""
+    [CHANGED 2026-11-10, v3.95.0] The user's choice: a switch for each day is one of the two ways to set the days, so a net
+    with them keeps them - each in its day's role, ticked - and nothing is proposed in their place (from v3.76.0 to v3.94
+    one days helper was); a net of the days helper keeps it, ticked."""
     _user_helpers(hass)
     hass.states.async_set("input_datetime.smart_watering", "00:00:00", {"friendly_name": SMART, "has_time": True,
                                                                         "has_date": False})
@@ -2966,7 +3009,7 @@ async def test_a_change_of_the_net_keeps_its_alarm_clock_and_its_settings(hass, 
                                             "messages": [{"role": "user", "content": words}]})
             return (await client.receive_json())["result"]
     clock = {"start_time": ["input_datetime.smart_watering"]}
-    days_helper = [("days", "input_number", f"{SMART} - days", {"min": 0, "max": 255, "step": 1, "mode": "box"})]
+    switches = {f"day_{d}": [f"input_boolean.smart_watering_{d}"] for d in DAYS}
 
     def proposed(res):
         return [(h["role"], h["domain"], h["name"], h["settings"]) for h in res["plan"]["new_helpers"]]
@@ -2974,12 +3017,12 @@ async def test_a_change_of_the_net_keeps_its_alarm_clock_and_its_settings(hass, 
     # The model planned no alarm clock, as Gemini did for the user.
     res = await plan_for(base)
     assert res["plan"]["intent"] == "modify" and res["plan"]["target_net"] == "n4"
-    # The switches for each day become ONE days helper, proposed in their place; no role for a day's switch is left.
-    assert proposed(res) == days_helper
-    assert not any(ai._is_day_role(r) for r in res["plan"]["roles"])
+    # Each day's switch stays, ticked in its day's role; nothing is proposed in their place, and nothing is asked.
+    assert proposed(res) == []
     pre = res["preselect"]
     assert {rid: pre.get(rid) for rid in clock} == clock and "days" not in pre
-    assert not any(e.startswith("input_boolean.smart_watering_") for ids in pre.values() for e in ids)
+    assert {rid: pre.get(rid) for rid in switches} == switches
+    assert ai.DAYS_QUESTION not in [q["id"] for q in res["plan"]["questions"]]
     assert pre["max_minutes"] == [LIMIT] and pre["litres"] == [LITRES]
     assert (pre["garden_valve"], pre["water_meter"], pre["weather"]) == (
         ["switch.garden_valve"], ["sensor.water_meter"], ["weather.home"])
@@ -2999,7 +3042,8 @@ async def test_a_change_of_the_net_keeps_its_alarm_clock_and_its_settings(hass, 
         {"role": f"day_{d}", "domain": "input_boolean", "name": f"{SMART} - {d.title()}", "settings": {}} for d in DAYS] + [
         {"role": "max_minutes", "domain": "input_number", "name": "Most minutes", "settings": {"min": 1, "max": 120}}]
     res = await plan_for({**base, "new_helpers": again})
-    assert proposed(res) == days_helper and {rid: res["preselect"].get(rid) for rid in clock} == clock
+    assert proposed(res) == [] and {rid: res["preselect"].get(rid) for rid in clock} == clock
+    assert {rid: res["preselect"].get(rid) for rid in switches} == switches
     assert res["preselect"]["max_minutes"] == [LIMIT]
 
     # Under names of its own: the days by their full names, the time as a trigger's helper of its own.
@@ -3010,13 +3054,13 @@ async def test_a_change_of_the_net_keeps_its_alarm_clock_and_its_settings(hass, 
     res = await plan_for({**base, "roles": base["roles"] + [role("watering_time", ["input_datetime"], [], "trigger")],
                           "new_helpers": own})
     ids = {r["id"] for r in res["plan"]["roles"]}
-    assert proposed(res) == days_helper and "watering_time" not in ids
-    assert not ids & set(full.values()) and not ids & {f"day_{d}" for d in DAYS}
+    assert proposed(res) == [] and "watering_time" not in ids
+    assert not ids & set(full.values()) and ids >= set(switches)
     assert res["preselect"]["start_time"] == clock["start_time"]
 
     # A start time role of the model's own, under a label no helper has: the net's time fills it, no new one is made.
     res = await plan_for({**base, "roles": base["roles"] + [role("start_time", ["input_datetime"], ["start"], "trigger")]})
-    assert proposed(res) == days_helper and res["preselect"]["start_time"] == clock["start_time"]
+    assert proposed(res) == [] and res["preselect"]["start_time"] == clock["start_time"]
     assert res["candidates"]["start_time"]["exact"] is True
 
     # No card asked for: the schedule the message names still gives way - the net has the alarm clock already.
@@ -3024,34 +3068,47 @@ async def test_a_change_of_the_net_keeps_its_alarm_clock_and_its_settings(hass, 
     assert next(r for r in res["plan"]["roles"] if r["domains"] == ["schedule"])["replaced"] is True
     assert SCHEDULE not in [e for ids in res["preselect"].values() for e in ids]
 
-    # Built from the first plan, once the days helper is created: the same automation, now started at the time set on
-    # the card and run on the days ticked in the days helper - both on the card, the days as LIBI's checkboxes.
+    # Built from the first plan: the same automation, started at the time set on the card and run on the days switched
+    # on - each day's switch checked on its own day - both on the card, the days as one row of Home Assistant's buttons.
     res = await plan_for(base)
-    hass.states.async_set("input_number.smart_watering_days", "0", {"friendly_name": f"{SMART} - days", "min": 0,
-                                                                     "max": 255, "step": 1})
-    selections = {**res["preselect"], "days": ["input_number.smart_watering_days"]}
-    built, sent = await _build(client, res["plan"], selections, _alarm_answer(), nets=nets, words=words)
+    built, sent = await _build(client, res["plan"], res["preselect"], _alarm_answer(days="switches"), nets=nets, words=words)
     assert built["ok"], built.get("errors")
     assert "CURRENT NET" in sent[0][-1]["content"] and len(sent) == 1
+    told = " ".join(sent[0][-1]["content"].split())
+    assert json.dumps(ai.days_switches_condition({d: f"role:day_{d}" for d in DAYS})) in told
     assert built["intent"] == "modify" and built["net"]["ha_id"] == "libi_ai_1793438378596"
     doc = yaml.safe_load(built["yaml"])
     assert doc["triggers"][0] == {"trigger": "time", "at": "input_datetime.smart_watering", "id": "start"}
-    assert {"condition": "template", "value_template": ai.day_bits_template("input_number.smart_watering_days")} in \
+    assert ai.days_switches_condition({d: f"input_boolean.smart_watering_{d}" for d in DAYS}) in \
         doc["actions"][0]["choose"][0]["conditions"]
-    assert not any(f"input_boolean.smart_watering_{d}" in built["yaml"] for d in DAYS)
     rows = yaml.safe_load(built["card_yaml"])["entities"]
     # [CHANGED 2026-11-01, v3.79.0] Named after the net, the time and the days say their part only.
     assert rows[0] == {"entity": "input_datetime.smart_watering", "name": "Start time"}
-    assert rows[1] == {"type": "custom:libi-days-row", "entity": "input_number.smart_watering_days", "name": "Days"}
+    assert rows[1]["type"] == "buttons" and [b["entity"] for b in rows[1]["entities"]] == [
+        f"input_boolean.smart_watering_{d}" for d in DAYS]
+    assert [b["name"] for b in rows[1]["entities"]] == [d.title() for d in DAYS]
+    assert "custom:" not in built["card_yaml"]
     assert SCHEDULE not in built["yaml"] and SCHEDULE not in built["card_yaml"]
     assert all(i["ok"] is not False for i in built["checklist"]) and built["round_trip"]["ok"]
 
-    # A NET of the days helper already: a change keeps it, ticked in its role, and proposes nothing.
-    newer = [garden, other, {**built["net"], "id": "n4"}]
-    res = await plan_for(base, newer)
+    # A NET of the days helper (made by 3.76.0 - 3.94): a change keeps it, ticked in its role, and proposes nothing.
+    hass.states.async_set("input_number.smart_watering_days", "0", {"friendly_name": f"{SMART} - days", "min": 0,
+                                                                     "max": 255, "step": 1})
+
+    def to_bits(node):
+        if isinstance(node, dict):
+            if node.get("condition") == "or" and ai.config_days(node):
+                return {"condition": "template",
+                        "value_template": ai.day_bits_template("input_number.smart_watering_days")}
+            return {k: to_bits(v) for k, v in node.items()}
+        return [to_bits(v) for v in node] if isinstance(node, list) else node
+    bits_net = yaml_to_ast(hass, to_bits(_net3_now()))
+    bits_net["id"] = "n4"
+    res = await plan_for(base, [garden, other, bits_net])
     assert res["plan"]["new_helpers"] == []
     assert (res["preselect"]["start_time"], res["preselect"]["days"]) == (
         ["input_datetime.smart_watering"], ["input_number.smart_watering_days"])
+    assert ai.DAYS_QUESTION not in [q["id"] for q in res["plan"]["questions"]]
 
 
 def test_two_rungs_of_one_trigger_are_found():
@@ -3153,7 +3210,7 @@ async def test_a_change_ticks_a_setting_only_where_it_is_the_one(hass, home):
         "input_number.minutes"]
     assert "enabled" not in ai.preselect(hass, {"roles": roles}, net, taken, {"enabled"})
     assert ai.net_alarm_clock(hass, yaml.safe_load(net)) == {"time": "", "days": "", "base": "W", "switches": {
-        "mon": "input_boolean.w_mon", "tue": "input_boolean.w_tue"}}
+        "mon": "input_boolean.w_mon", "tue": "input_boolean.w_tue"}, "schedule": ""}
 
 
 # ---------------------------------------------------------------- LIBI's own questions (v3.80.0)
@@ -4276,3 +4333,630 @@ def test_the_prompts_make_the_zone_chosen_on_the_card_a_dropdown():
     assert ('A zone the user chooses on the card (ZONE CHOICE in the message): who must be there is in it when their state '
             'is the zone chosen - {"condition": "state", "entity_id": "role:<who>", "state": "role:<zone choice role>"}, '
             "which Home Assistant compares with the state of that dropdown, and LIBI draws as one CMP EQ.") in build
+
+
+# ---------------------------------------------------------------- how the days are set (v3.95.0)
+# The user's choice (2026-11-10): "it is better to have both options - the chat asks whether to use a schedule ... on a
+# certain day I leave an hour earlier, which 7 variables cannot do; the choice in the UI must be easy and work if LIBI is
+# deleted". LIBI asks: a switch for each day and a start time, or one schedule whose blocks start and end the logic.
+KITCHEN = "Kitchen morning light"
+KITCHEN_LINES = [{"id": "r1", "text": "at a time I set on the dashboard", "kind": "time"},
+                 {"id": "r2", "text": "only on the days I pick there", "kind": "days"},
+                 {"id": "r3", "text": "off after the number of minutes I set", "kind": "time_limit"},
+                 {"id": "r4", "text": "a dashboard card", "kind": "card"}]
+KITCHEN_PLAN = {
+    "reply": "Pick the light.", "intent": "create", "target_net": "", "level": "automation", "name": KITCHEN,
+    "roles": [{"id": "light", "label": "Kitchen table light", "purpose": "target", "domains": ["light"],
+               "device_classes": [], "keywords": ["kitchen", "table"], "area_keywords": []}],
+    "questions": [],
+    "new_helpers": [{"role": "start_time", "domain": "input_datetime", "name": KITCHEN,
+                     "settings": {"has_time": True, "has_date": False}},
+                    {"role": "days", "domain": "input_number", "name": f"{KITCHEN} - days",
+                     "settings": {"min": 0, "max": 255, "step": 1, "mode": "box"}},
+                    {"role": "minutes", "domain": "input_number", "name": f"{KITCHEN} - minutes",
+                     "settings": {"min": 1, "max": 120, "step": 1}}],
+    "requirements": KITCHEN_LINES,
+}
+DAY_NAMES = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+
+
+async def test_libi_asks_how_the_days_are_set_and_each_answer_brings_its_own_variables(hass, libi_ai, hass_ws_client):
+    hass.states.async_set("light.kitchen_table", "off", {"friendly_name": "KITCHEN Table"})
+    res = await _safe_plan(hass, hass_ws_client, KITCHEN_PLAN, content="Every morning at a time I set ...")
+    plan = res["plan"]
+    # The days helper the model proposed is what the question replaces: no longer in the plan.
+    ids = {r["id"] for r in plan["roles"]}
+    assert "days" not in ids and {"start_time", "minutes"} <= ids and "days" not in res["candidates"]
+    assert [h["role"] for h in plan["new_helpers"]] == ["start_time", "minutes"]
+    question = next(q for q in plan["questions"] if q["id"] == ai.DAYS_QUESTION)
+    assert question["libi"] is True and question["text"] == "How do you want to set the days and the time on the dashboard?"
+    assert question["choices"] == ["A switch for each day, and a start time",
+                                   "A schedule: the days, and the hours of each day"]
+    assert "the card works without LIBI" in question["note"] and "its own hours" in question["note"]
+    switches, week = (question["variants"][c] for c in question["choices"])
+    # A switch for each day, Sunday first, each a local variable of its own; the start time and the minutes stay.
+    assert [(r["id"], r["label"], r["variable"]) for r in switches["roles"]] == [
+        (f"day_{d}", name, True) for d, name in zip(DAYS, DAY_NAMES, strict=True)]
+    assert [(h["domain"], h["name"]) for h in switches["helpers"]] == [
+        ("input_boolean", f"{KITCHEN} - {d.title()}") for d in DAYS]
+    assert switches["drop"] == [] and set(switches["candidates"]) == {f"day_{d}" for d in DAYS}
+    # One schedule, an empty week - nothing runs until a block is set: its block is the start and the end, so the start
+    # time and the minutes go with it.
+    assert [(r["id"], r["purpose"], r["domains"]) for r in week["roles"]] == [(ai.SCHEDULE_ROLE, "trigger", ["schedule"])]
+    assert week["helpers"] == [{"role": ai.SCHEDULE_ROLE, "domain": "schedule", "name": KITCHEN, "settings": EMPTY_WEEK}]
+    assert week["drop"] == ["start_time", "minutes"]
+    # LIBI's question comes back from the browser with the plan.
+    assert ai.DAYS_QUESTION in [q["id"] for q in ai.clean_plan(hass, copy.deepcopy(plan))["questions"]]
+    # A free schedule of that name is offered first, in place of a new one.
+    hass.states.async_set("schedule.kitchen_morning_light", "off", {"friendly_name": KITCHEN})
+    res = await _safe_plan(hass, hass_ws_client, KITCHEN_PLAN, content="Every morning at a time I set ...")
+    question = next(q for q in res["plan"]["questions"] if q["id"] == ai.DAYS_QUESTION)
+    week = question["variants"][question["choices"][1]]
+    assert week["helpers"][0]["pick"] == "schedule.kitchen_morning_light"
+    assert week["helpers"][0]["name"] == f"{KITCHEN} (2)"
+    assert week["candidates"][ai.SCHEDULE_ROLE]["items"][0]["entity_id"] == "schedule.kitchen_morning_light"
+    # Without the days helper there is nothing to ask.
+    res = await _safe_plan(hass, hass_ws_client, {**KITCHEN_PLAN, "new_helpers": KITCHEN_PLAN["new_helpers"][:1]})
+    assert ai.DAYS_QUESTION not in [q["id"] for q in res["plan"]["questions"]]
+
+
+def _kitchen_states(hass):
+    hass.states.async_set("light.kitchen_table", "off", {"friendly_name": "KITCHEN Table"})
+    hass.states.async_set("input_datetime.kitchen_start", "06:30:00", {"friendly_name": KITCHEN, "has_time": True,
+                                                                       "has_date": False})
+    hass.states.async_set("input_number.kitchen_minutes", "10", {"friendly_name": f"{KITCHEN} - minutes", "min": 1,
+                                                                  "max": 120})
+    for d in DAYS:
+        hass.states.async_set(f"input_boolean.kitchen_{d}", "off", {"friendly_name": f"{KITCHEN} - {d.title()}"})
+    hass.states.async_set("schedule.kitchen", "off", {"friendly_name": KITCHEN})
+
+
+def _kitchen_role(rid, domain, purpose="condition"):
+    return {"id": rid, "label": rid, "purpose": purpose, "domains": [domain], "device_classes": [], "keywords": [],
+            "area_keywords": []}
+
+
+def _kitchen_answer(triggers, start_conditions=()):
+    light = {"entity_id": "role:light"}
+    options = [{"conditions": [{"condition": "trigger", "id": "start"}, *start_conditions],
+                "sequence": [{"action": "light.turn_on", "target": light}]}]
+    options += [{"conditions": [{"condition": "trigger", "id": tid}],
+                 "sequence": [{"action": "light.turn_off", "target": light}]}
+                for tid in [t["id"] for t in triggers if t["id"] != "start"]]
+    config = {"mode": "single", "triggers": triggers, "conditions": [], "actions": [{"choose": options}]}
+    return {"reply": "Built.", "level": "automation", "name": KITCHEN, "description": "x", "config": json.dumps(config),
+            "ui_card": "", "notes": [], "covers": []}
+
+
+async def test_a_switch_for_each_day_is_checked_on_its_own_day_and_set_on_the_card(hass, libi_ai, hass_ws_client):
+    _kitchen_states(hass)
+    plan = ai.clean_plan(hass, {**copy.deepcopy(KITCHEN_PLAN), "new_helpers": [], "roles": [
+        KITCHEN_PLAN["roles"][0], _kitchen_role("start_time", "input_datetime", "trigger"),
+        _kitchen_role("minutes", "input_number")] + [_kitchen_role(f"day_{d}", "input_boolean") for d in DAYS]})
+    selections = {"light": ["light.kitchen_table"], "start_time": ["input_datetime.kitchen_start"],
+                  "minutes": ["input_number.kitchen_minutes"],
+                  **{f"day_{d}": [f"input_boolean.kitchen_{d}"] for d in DAYS}}
+    assert ai.picked_alarm_clock(hass, plan, selections)["mode"] == "switches"
+    triggers = [{"trigger": "time", "at": "role:start_time", "id": "start"},
+                {"trigger": "state", "entity_id": "role:light", "to": "on",
+                 "for": {"minutes": "{{ states('role:minutes') | int(1) }}"}, "id": "time_limit"}]
+    roles = {d: f"role:day_{d}" for d in DAYS}
+    no_saturday = _kitchen_answer(triggers, [ai.days_switches_condition({d: roles[d] for d in DAYS[:-1]})])
+    full = _kitchen_answer(triggers, [ai.days_switches_condition(roles)])
+    client = await hass_ws_client(hass)
+    built, sent = await _build(client, plan, selections, no_saturday, full)
+    assert built["ok"], built.get("errors")
+    told = " ".join(sent[0][-1]["content"].split())
+    assert ('ALARM CLOCK (the user sets it on the card): it starts with {"trigger": "time", "at": "role:start_time", '
+            '"id": "start"}, never by a schedule; the start option checks the days right after it, exactly so: '
+            + json.dumps(ai.days_switches_condition(roles)) + ".") in told
+    # A draft that leaves a day out goes back, saying which check is missing.
+    assert built["tries"] == 2 and built["repaired"] == [
+        'The request asks "only on the days I pick there" (days), and the logic does not do it: it does not check, on '
+        "each day, that day's switch on the card."]
+    doc = yaml.safe_load(built["yaml"])
+    expected = ai.days_switches_condition({d: f"input_boolean.kitchen_{d}" for d in DAYS})
+    assert expected in doc["actions"][0]["choose"][0]["conditions"]
+    assert all(i["ok"] is not False for i in built["checklist"]) and built["round_trip"]["ok"]
+    # The card: the start time, the days as one row of Home Assistant's buttons, the minutes, the light - no row of
+    # LIBI's, so the card works without LIBI.
+    rows = yaml.safe_load(built["card_yaml"])["entities"]
+    assert rows[0] == {"entity": "input_datetime.kitchen_start", "name": "Start time"}
+    assert rows[1]["type"] == "buttons"
+    assert [(b["entity"], b["name"], b["tap_action"]) for b in rows[1]["entities"]] == [
+        (f"input_boolean.kitchen_{d}", d.title(), {"action": "toggle"}) for d in DAYS]
+    assert ("input_number.kitchen_minutes", "Minutes") in [(r.get("entity"), r.get("name")) for r in rows]
+    assert "custom:" not in built["card_yaml"]
+
+
+async def test_the_week_schedule_starts_and_ends_the_logic(hass, libi_ai, hass_ws_client):
+    _kitchen_states(hass)
+    plan = ai.clean_plan(hass, {**copy.deepcopy(KITCHEN_PLAN), "new_helpers": [], "roles": [
+        KITCHEN_PLAN["roles"][0], _kitchen_role(ai.SCHEDULE_ROLE, "schedule", "trigger")]})
+    selections = {"light": ["light.kitchen_table"], ai.SCHEDULE_ROLE: ["schedule.kitchen"]}
+    assert ai.picked_alarm_clock(hass, plan, selections) == {
+        "mode": "schedule", "schedule_role": ai.SCHEDULE_ROLE, "schedule": "schedule.kitchen", "time_role": "",
+        "time": "", "days": ""}
+    role = f"role:{ai.SCHEDULE_ROLE}"
+    start = {"trigger": "state", "entity_id": role, "to": "on", "id": "start"}
+    no_end = _kitchen_answer([start])
+    both = _kitchen_answer([start, {"trigger": "state", "entity_id": role, "to": "off", "id": "end"}])
+    client = await hass_ws_client(hass)
+    built, sent = await _build(client, plan, selections, no_end, both)
+    assert built["ok"], built.get("errors")
+    told = " ".join(sent[0][-1]["content"].split())
+    assert ("SCHEDULE (the user sets its blocks - the days, and the hours of each day): it starts when a block starts, "
+            f'{{"trigger": "state", "entity_id": "{role}", "to": "on", "id": "start"}}, and the option of '
+            f'{{"trigger": "state", "entity_id": "{role}", "to": "off", "id": "end"}} turns off what the start turned '
+            "on. No time trigger, no days check and no other time limit: the end of the block is the end. A logic that "
+            "turns nothing on - a message, a reminder - has no end trigger and no end option.") in told
+    assert "ALARM CLOCK" not in told
+    # Without the end of the block: the request's minutes and LIBI's own line go back to the model.
+    end = "it does not end when the block ends (a state trigger of the schedule to off)"
+    assert built["tries"] == 2 and built["repaired"] == [
+        f'The request asks "off after the number of minutes I set" (time_limit), and the logic does not do it: {end}.',
+        f'The request asks "It ends when the block ends" (time_limit), and the logic does not do it: {end}.']
+    doc = yaml.safe_load(built["yaml"])
+    assert doc["triggers"] == [{"trigger": "state", "entity_id": "schedule.kitchen", "to": "on", "id": "start"},
+                               {"trigger": "state", "entity_id": "schedule.kitchen", "to": "off", "id": "end"}]
+    assert [(i["id"], i["ok"]) for i in built["checklist"]] == [
+        ("r1", True), ("r2", True), ("r3", True), ("r4", True), ("week_end", True)]
+    assert built["round_trip"]["ok"]
+    # The card: the schedule - named as the card is, it reads "Schedule" - and the light; nothing of LIBI's.
+    rows = yaml.safe_load(built["card_yaml"])["entities"]
+    assert rows[0] == {"entity": "schedule.kitchen", "name": "Schedule"} and "custom:" not in built["card_yaml"]
+
+
+async def test_a_change_of_a_net_keeps_its_week_schedule(hass, libi_ai, hass_ws_client):
+    _kitchen_states(hass)
+    light = {"entity_id": "light.kitchen_table"}
+    config = {"id": "k1", "alias": KITCHEN, "mode": "single", "conditions": [], "triggers": [
+        {"trigger": "state", "entity_id": "schedule.kitchen", "to": "on", "id": "start"},
+        {"trigger": "state", "entity_id": "schedule.kitchen", "to": "off", "id": "end"}],
+        "actions": [{"choose": [
+            {"conditions": [{"condition": "trigger", "id": "start"}],
+             "sequence": [{"action": "light.turn_on", "target": light}]},
+            {"conditions": [{"condition": "trigger", "id": "end"}],
+             "sequence": [{"action": "light.turn_off", "target": light}]}]}]}
+    assert ai.net_week_schedule(hass, config) == "schedule.kitchen"
+    # Only a schedule that starts it and ends it: one that only starts a net is the model's own (fixed days).
+    assert ai.net_week_schedule(hass, {**config, "triggers": config["triggers"][:1]}) == ""
+    net = yaml_to_ast(hass, copy.deepcopy(config))
+    net["id"] = "n1"
+    # The model planned the alarm clock again, as for a new automation: the net's schedule stays, nothing is asked.
+    change = {**copy.deepcopy(KITCHEN_PLAN), "intent": "modify", "target_net": "n1"}
+    res = await _safe_plan(hass, hass_ws_client, change, nets=[net], content="update NET 1: also turn it on at sunset")
+    plan = res["plan"]
+    assert plan["intent"] == "modify" and res["preselect"][ai.SCHEDULE_ROLE] == ["schedule.kitchen"]
+    assert not {"start_time", "days"} & {r["id"] for r in plan["roles"]}
+    # The minutes stay a setting of the change - the helper of that name exists, so it is offered, not made again.
+    assert "minutes" in {r["id"] for r in plan["roles"]} and plan["new_helpers"] == []
+    assert ai.DAYS_QUESTION not in [q["id"] for q in plan["questions"]]
+
+
+# ---------------------------------------------------------------- the user's language (v3.95.0)
+# The user (2026-11-10): "my question was in English, and it named the variables in Hebrew and answered in Hebrew -
+# everything must be in English, especially when I ask in English". The model took the language from the house: its nets,
+# helpers and zones are named in Hebrew. The user's language is the one of the user's own last message.
+ENGLISH_REQUEST = "Every morning at a time I set on the dashboard, turn on the kitchen table light."
+
+
+def test_the_users_language_is_the_one_of_their_last_message():
+    assert ai.scripts_of(ENGLISH_REQUEST) == {"LATIN"} and "HEBREW" in ai.scripts_of(USER_REQUEST)
+    rule = ai.language_rule(ENGLISH_REQUEST)
+    assert rule.startswith("USER LANGUAGE: the language of the user's last message, written in Latin letters.")
+    assert "they never set the language" in rule and "not copied from them" in rule
+    assert ai.language_rule("16:30") == ""
+    hebrew = HE["smart_garden_watering_management"]
+    answer = {"reply": hebrew, "name": "Train reminder", "requirements": [{"text": "At the time I set", "kind": "time"}],
+              "roles": [{"label": hebrew, "keywords": ["train", hebrew], "area_keywords": [hebrew]}],
+              "new_helpers": [{"name": hebrew}], "config": json.dumps({"alias": hebrew})}
+    # The reply, the label and the new helper's name - not the keywords, which are in both languages on purpose, nor the
+    # configuration.
+    problems = ai.language_problems(answer, ENGLISH_REQUEST)
+    assert len(problems) == 3 and all(p == f'"{hebrew}" is shown to the user, and it is not in the language of the '
+                                           "user's last message (Latin letters): write it in that language"
+                                      for p in problems), problems
+    # A request in Hebrew: Hebrew is its language, and Home Assistant's own terms in Latin letters are fine.
+    assert ai.language_problems(answer, USER_REQUEST) == []
+    assert ai.language_problems({"reply": f"{hebrew} - SAVE & COMPILE"}, USER_REQUEST) == []
+    assert all("USER LANGUAGE at the end of the message" in " ".join(p.split()) for p in (ai.PLAN_SYSTEM, ai.BUILD_SYSTEM))
+
+
+async def test_a_plan_in_other_letters_than_the_request_goes_back_once(hass, libi_ai, hass_ws_client):
+    hass.states.async_set("light.kitchen_table", "off", {"friendly_name": "KITCHEN Table"})
+    hebrew = HE["smart_garden_watering_management"]
+    first = {**copy.deepcopy(KITCHEN_PLAN), "reply": hebrew, "name": hebrew}
+    client = await hass_ws_client(hass)
+
+    async def plan_for(words, *answers):
+        llm, sent = _model(*answers)
+        with patch.object(ai, "async_llm_json", new=llm):
+            await client.send_json_auto_id({"type": "libi/ai_plan", "nets": [], "share": True,
+                                            "messages": [{"role": "user", "content": words}]})
+            return (await client.receive_json())["result"], sent
+    res, sent = await plan_for(ENGLISH_REQUEST, first, copy.deepcopy(KITCHEN_PLAN))
+    assert len(sent) == 2
+    assert "USER LANGUAGE: the language of the user's last message, written in Latin letters." in sent[0][-1]["content"]
+    back = sent[1][-1]["content"]
+    assert back.startswith("LIBI checked your answer") and f'"{hebrew}" is shown to the user' in back
+    assert res["plan"]["name"] == KITCHEN and res["plan"]["reply"] == KITCHEN_PLAN["reply"]
+    # Still in other letters the second time: that plan is shown - the model is asked once, not again and again.
+    res, sent = await plan_for(ENGLISH_REQUEST, first)
+    assert len(sent) == 2 and res["plan"]["name"] == hebrew
+    # A request in Hebrew: Hebrew is its language, nothing goes back.
+    res, sent = await plan_for(USER_REQUEST, first)
+    assert len(sent) == 1 and "written in Hebrew" in sent[0][-1]["content"]
+
+
+async def test_a_draft_in_other_letters_than_the_request_goes_back(hass, libi_ai, hass_ws_client):
+    _kitchen_states(hass)
+    plan = ai.clean_plan(hass, {**copy.deepcopy(KITCHEN_PLAN), "new_helpers": [], "requirements": [], "roles": [
+        KITCHEN_PLAN["roles"][0], _kitchen_role(ai.SCHEDULE_ROLE, "schedule", "trigger")]})
+    selections = {"light": ["light.kitchen_table"], ai.SCHEDULE_ROLE: ["schedule.kitchen"]}
+    role = f"role:{ai.SCHEDULE_ROLE}"
+    english = _kitchen_answer([{"trigger": "state", "entity_id": role, "to": "on", "id": "start"},
+                               {"trigger": "state", "entity_id": role, "to": "off", "id": "end"}])
+    hebrew = {**english, "reply": HE["smart_garden_watering_management"]}
+    client = await hass_ws_client(hass)
+    built, sent = await _build(client, plan, selections, hebrew, english, words=ENGLISH_REQUEST)
+    assert built["ok"], built.get("errors")
+    assert "USER LANGUAGE: the language of the user's last message, written in Latin letters." in sent[0][-1]["content"]
+    assert built["tries"] == 2 and built["repaired"] == [
+        f'"{HE["smart_garden_watering_management"]}" is shown to the user, and it is not in the language of the user\'s '
+        "last message (Latin letters): write it in that language"]
+    assert built["reply"] == "Built."
+
+
+# ---------------------------------------------------------------- LIBI Global in the AI chat (v3.95.0)
+# The user (2026-11-10): "check why the chat did not let me pick my phone from the Global list - I got the list of the
+# devices". The phones list offered each phone's notify entity only; the recipients of LIBI Global - the phones the user
+# keeps in one place, each a script.libi_send_to_<name> - were not in it.
+RECIPIENT = "script.libi_send_to_guy_my_phone"
+
+
+def _global_recipient(hass):
+    """A recipient of LIBI Global as Home Assistant has it loaded; one whose script is not loaded (deleted, or not yet
+    reloaded); and another script of the user's, which is no recipient."""
+    hass.states.async_set(RECIPIENT, "off", {"friendly_name": "LIBI Global: Guy My PHONE"})
+    async_mock_service(hass, "script", "libi_send_to_guy_my_phone")
+    hass.states.async_set("script.libi_send_to_gone", "off", {"friendly_name": "LIBI Global: Gone"})
+    hass.states.async_set("script.water_garden", "off", {"friendly_name": "Water the garden"})
+    async_mock_service(hass, "script", "water_garden")
+
+
+async def test_the_recipients_of_libi_global_come_first_in_the_phones_list(hass, libi_ai, hass_ws_client):
+    _places(hass)
+    _global_recipient(hass)
+    assert ai.global_recipients(hass) == {RECIPIENT: "Guy My PHONE"}
+    assert ai.message_targets(hass) == {"notify.sm_s918b": ANDROID, "notify.iphone": IPHONE, RECIPIENT: RECIPIENT}
+    res = await _safe_plan(hass, hass_ws_client, {**REMINDER, "roles": [ZONE_ROLE, TIME_ROLE]})
+    items = res["candidates"][ai.PHONES_ROLE]["items"]
+    assert items[0] == {"entity_id": RECIPIENT, "name": "Guy My PHONE", "area": "", "state": "", "device": "",
+                        "global": True}
+    assert [i["entity_id"] for i in items[1:]] == ["notify.iphone", "notify.sm_s918b"]
+    assert not any(i.get("global") for i in items[1:])
+    # LIBI's own messages are offered the same list - and a recipient alone is a list to offer.
+    plan, candidates = {"roles": []}, {}
+    assert ai.offer_phones(hass, plan, candidates)
+    assert [i["entity_id"] for i in candidates[ai.PHONES_ROLE]["items"]] == [RECIPIENT, "notify.iphone", "notify.sm_s918b"]
+    # Ticked, it is a pick of the phones list - of no other list; and no other script is one.
+    sel, errors = ai.clean_selections(hass, res["plan"], {ai.PHONES_ROLE: [RECIPIENT, "script.water_garden"],
+                                                          "work_zone": [RECIPIENT, "zone.work"]})
+    assert sel[ai.PHONES_ROLE] == [RECIPIENT] and sel["work_zone"] == ["zone.work"]
+    assert "script.water_garden does not fit 'Phones to notify'." in errors
+    assert f"{RECIPIENT} does not fit 'Work zone'." in errors
+
+
+def _recipient_reminder(action):
+    config = {"mode": "single", "triggers": [{"trigger": "time", "at": "role:reminder_time", "id": "start"}],
+              "conditions": [{"condition": "zone", "entity_id": "role:who_is_there", "zone": "role:work_zone"}],
+              "actions": [{"action": action, "data": {"message": "TTS", "data": {
+                  "tts_text": "Get ready to leave for the train home"}}}]}
+    return {"reply": "Built.", "level": "automation", "name": "Train reminder", "description": "x",
+            "config": json.dumps(config), "ui_card": "", "notes": [], "covers": []}
+
+
+async def test_the_reminder_goes_to_the_recipient_of_libi_global_the_user_ticked(hass, libi_ai, hass_ws_client):
+    _places(hass)
+    _global_recipient(hass)
+    hass.states.async_set("input_datetime.train_reminder", "16:45:00", {"friendly_name": "Train reminder time",
+                                                                        "has_time": True, "has_date": False})
+    plan = (await _safe_plan(hass, hass_ws_client, {**REMINDER, "roles": [ZONE_ROLE, TIME_ROLE]}))["plan"]
+    selections = {"work_zone": ["zone.yvlyh_blvd"], "who_is_there": ["person.yulia"],
+                  "reminder_time": ["input_datetime.train_reminder"], ai.PHONES_ROLE: [RECIPIENT]}
+    client = await hass_ws_client(hass)
+    llm, sent = _model(_recipient_reminder(RECIPIENT))
+    with patch.object(ai, "async_llm_json", new=llm):
+        await client.send_json_auto_id({"type": "libi/ai_build", "nets": [], "plan": plan, "selections": selections,
+                                        "answers": {}, "messages": [{"role": "user", "content": "train reminder"}]})
+        built = (await client.receive_json())["result"]
+    assert built["ok"], built.get("errors")
+    told = " ".join(sent[0][-1]["content"].split())
+    assert "PHONES (send each message to every one of these, one action each): " + RECIPIENT in told
+    assert ("A script.libi_send_to_... in PHONES is a recipient of LIBI Global - the phones the user keeps in one place. "
+            "Send to it as to a phone's notify service, with the same data") in told
+    # The message line of the plan is met by it, and it is drawn as a phone's message is: MOVE TTS, the recipient its TGT.
+    assert {i["id"]: i["ok"] for i in built["checklist"]}["r3"] is True, built["checklist"]
+    assert built["round_trip"]["ok"], built["round_trip"]
+    elements = built["net"]["rungs"][0]["elements"]
+    assert any(e["type"] == "move" and e.get("mode") == "tts" and e.get("target") == RECIPIENT for e in elements), elements
+    # Not ticked, it is no service an AI draft may call, and the phone the user ticked would get nothing (RULE 7).
+    only_phone = {**selections, ai.PHONES_ROLE: ["notify.sm_s918b"]}
+    out = await ai.async_build_draft(hass, plan, only_phone, _recipient_reminder(RECIPIENT))
+    assert out["errors"] == [f"The service {RECIPIENT} is not allowed in an AI draft.",
+                             f"The message does not go to {ANDROID}, which the user ticked.",
+                             f"{RECIPIENT} is a phone the user did not tick."], out["errors"]
+    # Another script in its place is not one either, ticked or not.
+    out = await ai.async_build_draft(hass, plan, {**selections, ai.PHONES_ROLE: [RECIPIENT, "script.water_garden"]},
+                                     _recipient_reminder("script.water_garden"))
+    assert "The service script.water_garden is not allowed in an AI draft." in out["errors"]
+    assert f"The message does not go to {RECIPIENT}, which the user ticked." in out["errors"]
+
+
+async def test_a_recipient_of_libi_global_reads_a_spoken_message_aloud(hass, libi_ai):
+    """Its script has each Android phone in it read the message aloud and gives an iPhone the spoken text: LIBI's own
+    spoken messages go to it as spoken, with no note that nothing picked can speak."""
+    _valve_device(hass)
+    _two_phones(hass)
+    _global_recipient(hass)
+    plan = ai.clean_plan(hass, {**copy.deepcopy(SAFE_PLAN), "new_helpers": [], "questions": [
+        {"id": qid, "text": "x", "choices": []} for qid in ai.SAFETY_QUESTIONS]})
+    plan["roles"].insert(0, {"id": ai.PHONES_ROLE, "label": "p", "purpose": "target", "domains": ["notify"],
+                             "device_classes": [], "keywords": [], "area_keywords": [], "optional": True})
+    out = ai.safety_answers(hass, copy.deepcopy(plan), {"garden_valve": [VALVE], ai.PHONES_ROLE: [RECIPIENT]},
+                            {"libi_start_message": "Spoken", "libi_end_message": "A notification"})
+    assert (out["start"], out["end"], out["phones"], out["speakers"], out["notes"]) == (
+        "speak", "notify", [RECIPIENT], [RECIPIENT], [])
+    assert ai._wanted_messages("speak", out["phones"], out["speakers"]) == [(RECIPIENT, True)]
+    # With the iPhone ticked as well, the iPhone alone gets the notification.
+    both = ai.safety_answers(hass, copy.deepcopy(plan), {"garden_valve": [VALVE],
+                                                         ai.PHONES_ROLE: [RECIPIENT, "notify.iphone"]},
+                             {"libi_start_message": "Spoken"})
+    assert both["phones"] == [RECIPIENT, IPHONE] and both["speakers"] == [RECIPIENT]
+    assert ai._wanted_messages("speak", both["phones"], both["speakers"]) == [(RECIPIENT, True), (IPHONE, False)]
+    # A NET that already sends to it after the valve turns on, or when it turns off, already has the message.
+    told = {"action": RECIPIENT, "data": {"message": "The watering"}}
+    config = {"triggers": [{"trigger": "time", "at": "05:00", "id": "go"},
+                           {"trigger": "state", "entity_id": VALVE, "to": "off", "id": "ended"}],
+              "actions": [{"choose": [
+                  {"conditions": [{"condition": "trigger", "id": "go"}],
+                   "sequence": [{"action": "switch.turn_on", "target": {"entity_id": VALVE}}, told]},
+                  {"conditions": [{"condition": "trigger", "id": "ended"}], "sequence": [told]}]}]}
+    assert ai.config_start_message(config, [VALVE]) and ai.config_end_message(config, [VALVE])
+    config["actions"][0]["choose"][0]["sequence"].pop()
+    config["actions"][0]["choose"][1]["sequence"] = [{"action": "script.water_garden"}]
+    assert not ai.config_start_message(config, [VALVE]) and not ai.config_end_message(config, [VALVE])
+
+
+# ---------------------------------------------------------------- a reminder on the week schedule (v3.95.0)
+# The user's train reminder (2026-11-10): a message on the days and the hours of a schedule, if Guy is in the zone chosen
+# on the card. LIBI asked for "It ends when the block ends" although nothing is turned on, the model wrote the end trigger
+# with an option of no steps, and the panel drew that rung in red: "Terminal Cap Error", not saved.
+TRAIN = "schedule.train_departure_reminder"
+TRAIN_ZONE = "input_select.train_reminder_zone_selection"
+
+
+def _train(hass):
+    _places(hass)
+    _global_recipient(hass)
+    hass.states.async_set(TRAIN, "off", {"friendly_name": "Train departure reminder"})
+    hass.states.async_set(TRAIN_ZONE, "Yulia in Lod", {"friendly_name": "Train reminder zone selection",
+                                                       "options": ZONES})
+    plan = ai.clean_plan(hass, {**copy.deepcopy(REMINDER), "roles": [
+        _kitchen_role(ai.SCHEDULE_ROLE, "schedule", "trigger"), _kitchen_role("who", "person"),
+        _kitchen_role("zone_choice", "input_select")]})
+    plan["roles"].insert(0, {"id": ai.PHONES_ROLE, "label": "Phones to notify", "purpose": "target",
+                             "domains": ["notify"], "device_classes": [], "keywords": [], "area_keywords": []})
+    selections = {ai.SCHEDULE_ROLE: [TRAIN], "who": ["person.guy"], "zone_choice": [TRAIN_ZONE],
+                  ai.PHONES_ROLE: [RECIPIENT]}
+    return plan, selections
+
+
+def _train_answer(*, end):
+    """The user's draft: when a block starts, if Guy is in the zone chosen on the card, the message and the spoken message
+    to the recipient - and, with end, the end of the block with an option of no steps."""
+    role = f"role:{ai.SCHEDULE_ROLE}"
+    said = "It is {{ now().strftime('%H:%M') }}. Time to get ready to leave for the train home."
+    options = [{"conditions": [{"condition": "trigger", "id": "start"},
+                               {"condition": "state", "entity_id": "role:who", "state": "role:zone_choice"}],
+                "sequence": [{"action": RECIPIENT, "data": {"message": said, "title": "Train Reminder"}},
+                             {"action": RECIPIENT, "data": {"message": "TTS", "data": {"tts_text": said}}}]}]
+    triggers = [{"trigger": "state", "entity_id": role, "to": "on", "id": "start"}]
+    if end:
+        triggers.append({"trigger": "state", "entity_id": role, "to": "off", "id": "end"})
+        options.append({"conditions": [{"condition": "trigger", "id": "end"}], "sequence": []})
+    config = {"mode": "single", "triggers": triggers, "conditions": [], "actions": [{"choose": options}]}
+    return {"reply": "Built.", "level": "automation", "name": "Train Departure Reminder", "description": "x",
+            "config": json.dumps(config), "ui_card": "", "notes": [], "covers": []}
+
+
+async def test_a_reminder_on_the_week_schedule_has_no_end_of_the_block(hass, libi_ai, hass_ws_client):
+    plan, selections = _train(hass)
+    client = await hass_ws_client(hass)
+    built, sent = await _build(client, plan, selections, _train_answer(end=False), words="train reminder")
+    assert built["ok"], built.get("errors")
+    assert built["tries"] == 1, built.get("repaired")
+    # Nothing is turned on, so nothing is to end: LIBI's line of the block's end is not asked.
+    assert "week_end" not in [i["id"] for i in built["checklist"]]
+    assert all(i["ok"] is not False for i in built["checklist"]), built["checklist"]
+    told = " ".join(sent[0][-1]["content"].split())
+    assert "A logic that turns nothing on - a message, a reminder - has no end trigger and no end option." in told
+    assert ai.rungs_without_action(built["net"]) == []
+    doc = yaml.safe_load(built["yaml"])
+    assert doc["triggers"] == [{"trigger": "state", "entity_id": TRAIN, "to": "on", "id": "start"}]
+
+
+async def test_a_rung_that_ends_with_no_action_goes_back_to_the_model(hass, libi_ai, hass_ws_client):
+    plan, selections = _train(hass)
+    client = await hass_ws_client(hass)
+    # The user's draft first: its rung of the block's end is the trigger alone, which the panel draws in red.
+    built, _sent = await _build(client, plan, selections, _train_answer(end=True), _train_answer(end=False),
+                                words="train reminder")
+    assert built["ok"], built.get("errors")
+    assert built["tries"] == 2 and built["repaired"] == [
+        "LIBI's ladder ends every rung with an action - a coil, a MOVE, a message: rung 2 (trigger id \"end\") ends with "
+        "none, and is drawn as an error. Leave out an option with no steps, and a trigger only it was for."]
+    assert len(built["net"]["rungs"]) == 1 and ai.rungs_without_action(built["net"]) == []
+
+
+def test_every_rung_ends_with_an_action_as_the_panel_requires():
+    """The panel's rule (libi-core.js, checkPathEnd and the linked rungs): the last block of a rung is an action, a wait,
+    or open branches that each end so; of rungs drawn side by side, one is enough."""
+    contact = {"type": "contact_no", "raw": {"trigger": "state", "entity_id": "x.y", "id": "go"}}
+    move, coil, ton = {"type": "move"}, {"type": "coil"}, {"type": "timer_ton"}
+    net = {"rungs": [
+        {"id": "r1", "elements": [contact, move]},
+        {"id": "r2", "elements": [contact]},
+        {"id": "r3", "elements": [contact, {"type": "parallel", "closed": False, "branches": [[coil], [ton, move]]}]},
+        {"id": "r4", "elements": [contact, {"type": "parallel", "closed": False, "branches": [[coil], [ton]]}]},
+        {"id": "r5", "elements": [contact, {"type": "parallel", "closed": True, "branches": [[coil], [move]]}]},
+        {"id": "r6", "elements": [contact, {"type": "repeat", "sequence": [ton]}]},
+        {"id": "r7", "elements": [contact, {"type": "timer_ton", "waitFor": True}]},
+        {"id": "r8", "elements": [contact, {"type": "math_add"}]},
+        {"id": "r9", "elements": []},
+        {"id": "r10", "elements": [contact, ton]}, {"id": "r11", "elements": [contact, move]},
+        {"id": "r12", "elements": [contact]}, {"id": "r13", "elements": [ton]}],
+        "links": [{"aRung": "r10", "bRung": "r11"}, {"aRung": "r12", "bRung": "r13"}]}
+    assert ai.rungs_without_action(net) == [(2, "go"), (4, "go"), (5, "go"), (6, "go"), (12, "go"), (13, "")]
+    assert ai.rungs_without_action(None) == [] and ai.rungs_without_action({"rungs": "x"}) == []
+
+
+# ---------------------------------------------------------------- a check that never holds (v3.95.5)
+# The user's train reminder was saved with state: zone.work (2026-11-11): Home Assistant compares a state with that text,
+# and it never holds. A draft that compares a state with an entity's id goes back to the model.
+def test_a_draft_that_compares_a_state_with_an_entity_goes_back():
+    config = {"triggers": [{"trigger": "state", "entity_id": "climate.ac", "to": "input_select.mode", "id": "go"}],
+              "conditions": [{"condition": "state", "entity_id": "binary_sensor.door", "state": "sensor.other"},
+                             {"condition": "state", "entity_id": "person.guy", "state": "input_select.zone"},
+                             {"condition": "state", "entity_id": "person.guy", "state": "zone.work"},
+                             {"condition": "state", "entity_id": "light.x", "state": ["on", "light.y"]},
+                             {"condition": "state", "entity_id": "climate.ac", "state": "heat"}],
+              "actions": []}
+    said = 'is compared with the text "{}", which its state never is: compare it with a value - a condition reads an '            'input helper as its value, and a person in a zone is a zone condition.'
+    assert ai.literal_checks(config) == [
+        "climate.ac " + said.format("input_select.mode"), "binary_sensor.door " + said.format("sensor.other"),
+        "person.guy " + said.format("zone.work"), "light.x " + said.format("light.y")]
+    # A condition may read an input helper; a trigger may not - Home Assistant reads no helper there.
+    draft = {"ok": True, "errors": [], "auto": {"triggers": [], "actions": [], "conditions": [
+        {"condition": "state", "entity_id": "person.guy", "state": "zone.work"}]}}
+    assert ai.draft_problems(draft, {"net": {"rungs": []}}) == ["person.guy " + said.format("zone.work")]
+    assert ai.draft_problems({**draft, "auto": {"conditions": [config["conditions"][1]]}}, {"net": {"rungs": []}}) == []
+    # [CHANGED 2026-11-11, v3.95.5] A dropdown, a text or a sensor may hold an entity's id as its value - "which speaker"
+    # is media_player.kitchen: never counted (the second pass of the review of the release, RULE 41).
+    assert ai.literal_checks({"conditions": [
+        {"condition": "state", "entity_id": "input_select.speaker", "state": "media_player.kitchen"},
+        {"condition": "state", "entity_id": "sensor.template_pick", "state": "light.x"},
+        {"condition": "state", "entity_id": "select.mode", "state": "climate.ac"}]}) == []
+
+
+# ---------------------------------------------------------------- the review of the release (v3.95.5, RULE 41)
+def test_a_list_compared_with_an_entity_goes_back_too():
+    config = {"triggers": [{"trigger": "state", "entity_id": "person.guy", "to": ["zone.work"], "id": "go"}],
+              "conditions": [{"condition": "state", "entity_id": "light.a", "state": ["on", ["sensor.b"]]}]}
+    found = ai.literal_checks(config)
+    assert [f.split(" is compared")[0] for f in found] == ["person.guy", "light.a"], found
+    assert '"zone.work"' in found[0] and '"sensor.b"' in found[1]
+
+
+async def test_the_names_of_the_house_are_not_a_language(hass, libi_ai, hass_ws_client):
+    """A request in English about a valve named in Hebrew: the model quotes its name, and must - it is not a text in
+    another language, and it never goes back for it."""
+    name = HE["smart_garden_watering_management"]
+    hass.states.async_set("switch.valve", "off", {"friendly_name": name})
+    raw = {"reply": f"It turns on {name} at the time you set.", "name": "Morning watering"}
+    assert name in ai.house_names(hass)
+    assert ai.language_problems(raw, ENGLISH_REQUEST, ai.house_names(hass)) == []
+    assert len(ai.language_problems(raw, ENGLISH_REQUEST)) == 1
+    # A Hebrew text that is no name of the house still goes back.
+    other = {"reply": HE["smart_garden_watering_management"][::-1]}
+    assert len(ai.language_problems(other, ENGLISH_REQUEST, ai.house_names(hass))) == 1
+    # In the chat: the plan that quotes the valve is not sent back.
+    hass.states.async_set("light.kitchen_table", "off", {"friendly_name": "KITCHEN Table"})
+    client = await hass_ws_client(hass)
+    llm, sent = _model({**copy.deepcopy(KITCHEN_PLAN), "reply": raw["reply"]})
+    with patch.object(ai, "async_llm_json", new=llm):
+        await client.send_json_auto_id({"type": "libi/ai_plan", "nets": [], "share": True,
+                                        "messages": [{"role": "user", "content": ENGLISH_REQUEST}]})
+        res = (await client.receive_json())["result"]
+    assert len(sent) == 1 and res["plan"]["reply"] == raw["reply"]
+
+
+async def test_a_switch_for_each_day_is_offered_only_when_it_fits(hass, libi_ai, hass_ws_client):
+    """Seven roles more than MAX_ROLES allows: clean_plan would have dropped some of the days without a word."""
+    hass.states.async_set("light.kitchen_table", "off", {"friendly_name": "KITCHEN Table"})
+    extra = [{"id": f"extra_{i}", "label": f"Extra {i}", "purpose": "condition", "domains": ["sensor"],
+              "device_classes": [], "keywords": [], "area_keywords": []} for i in range(14)]
+    crowded = {**copy.deepcopy(KITCHEN_PLAN), "roles": KITCHEN_PLAN["roles"] + extra}
+    res = await _safe_plan(hass, hass_ws_client, crowded, content="Every morning at a time I set ...")
+    question = next(q for q in res["plan"]["questions"] if q["id"] == ai.DAYS_QUESTION)
+    assert question["choices"] == ["A schedule: the days, and the hours of each day"]
+    assert list(question["variants"]) == question["choices"]
+    assert "A switch for each day does not fit this plan" in question["note"]
+
+
+def test_the_roles_a_yes_adds_count_too(hass):
+    """The second pass of the review of the release: a yes to the on/off switch adds its role in the chat, after the
+    plan - with it, seven more may not fit."""
+    def plan(extra, questions):
+        roles = [{"id": "days", "label": "Days", "purpose": "condition", "domains": ["input_number"], "device_classes": [],
+                  "keywords": [], "area_keywords": []}]
+        roles += [{"id": f"r{i}", "label": f"R{i}", "purpose": "condition", "domains": ["sensor"], "device_classes": [],
+                   "keywords": [], "area_keywords": []} for i in range(extra)]
+        return {"intent": "create", "level": "automation", "name": KITCHEN, "roles": roles, "questions": questions,
+                "new_helpers": [{"role": "days", "domain": "input_number", "name": f"{KITCHEN} - days",
+                                 "settings": {"min": 0, "max": 255, "step": 1, "mode": "box"}}]}
+    enable = {"id": ai.ENABLE_QUESTION, "adds": {"role": {"id": ai.ENABLE_ROLE}, "helper": {}}}
+    full = plan(ai.MAX_ROLES - 7, [])
+    ai.days_question(hass, full, {}, {})
+    asked = next(q for q in full["questions"] if q["id"] == ai.DAYS_QUESTION)
+    assert len(asked["choices"]) == 2, asked["choices"]
+    crowded = plan(ai.MAX_ROLES - 7, [enable])
+    ai.days_question(hass, crowded, {}, {})
+    asked = next(q for q in crowded["questions"] if q["id"] == ai.DAYS_QUESTION)
+    assert asked["choices"] == ["A schedule: the days, and the hours of each day"], asked["choices"]
+
+
+def test_the_third_pass_of_the_review():
+    """An attribute may hold an entity's id (a person's source is a tracker); a sign such as \u00b5 is no language, and
+    Japanese - kanji, hiragana and katakana - is one."""
+    assert ai.literal_checks({"conditions": [{"condition": "state", "entity_id": "person.guy", "attribute": "source",
+                                              "state": "device_tracker.guy_phone"}]}) == []
+    assert ai.scripts_of("PM2.5 above 35 \u00b5g/m\u00b3, \u00aa") == {"LATIN"}
+    assert ai.language_problems({"reply": "PM2.5 above 35 \u00b5g/m\u00b3"}, ENGLISH_REQUEST) == []
+    assert ai.scripts_of("\u3053\u3093\u306b\u3061\u306f \u30ab\u30bf\u30ab\u30ca \u6f22\u5b57") == {"CJK"}
+
+
+def test_the_fourth_pass_of_the_review(hass):
+    """A schedule trigger written to [on] / to [off] is the week schedule; a drawn rung whose last element is no block
+    is skipped, not a crash."""
+    hass.states.async_set("schedule.week", "off", {"friendly_name": "Week"})
+    config = {"triggers": [{"trigger": "state", "entity_id": "schedule.week", "to": ["on"], "id": "start"},
+                           {"trigger": "state", "entity_id": "schedule.week", "to": ["off"], "id": "end"}]}
+    assert ai.net_week_schedule(hass, config) == "schedule.week"
+    net = {"rungs": [{"id": "r1", "elements": ["x"]}, {"id": "r2", "elements": [{"type": "move"}]}],
+           "links": [{"aRung": "r1", "bRung": "r2"}]}
+    assert ai.rungs_without_action(net) == []
+
+
+async def test_the_fifth_pass_of_the_review(hass, libi_ai, hass_ws_client):
+    """A NET named in Hebrew, quoted by a reply to a request in English, is a name, not a language; a week schedule
+    written to [on] / to [off] with platform: is seen as the start and the end."""
+    _kitchen_states(hass)
+    name = HE["smart_garden_watering_management"]
+    client = await hass_ws_client(hass)
+    llm, sent = _model({**copy.deepcopy(KITCHEN_PLAN), "reply": f"I change {name}."})
+    with patch.object(ai, "async_llm_json", new=llm):
+        await client.send_json_auto_id({"type": "libi/ai_plan", "share": True,
+                                        "nets": [{"id": "n3", "name": name, "level": "automation", "rungs": []}],
+                                        "messages": [{"role": "user", "content": ENGLISH_REQUEST}]})
+        res = (await client.receive_json())["result"]
+    assert len(sent) == 1 and res["plan"]["reply"] == f"I change {name}."
+    plan = ai.clean_plan(hass, {**copy.deepcopy(KITCHEN_PLAN), "new_helpers": [], "requirements": [], "roles": [
+        KITCHEN_PLAN["roles"][0], _kitchen_role(ai.SCHEDULE_ROLE, "schedule", "trigger")]})
+    alarm = ai.picked_alarm_clock(hass, plan, {"light": ["light.kitchen_table"], ai.SCHEDULE_ROLE: ["schedule.kitchen"]})
+    auto = {"triggers": [{"platform": "state", "entity_id": "schedule.kitchen", "to": ["on"], "id": "start"},
+                         {"platform": "state", "entity_id": "schedule.kitchen", "to": ["off"], "id": "end"}],
+            "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.kitchen_table"}}]}
+    report = ai.requirement_report(plan, {"ok": True, "auto": auto}, {"net": {"rungs": []}}, {}, alarm)
+    assert {i["id"]: i["ok"] for i in report} == {"week_start": True, "week_end": True}, report

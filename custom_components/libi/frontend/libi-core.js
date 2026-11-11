@@ -14,15 +14,21 @@
  */
 /**
  * LIBI Panel - Core Engine
- * v3.94.3
+ * v3.95.5
  */
-// [CHANGED v3.91.0 | 2026-11-06] Purpose: CLAUDE.md RULE 38 - a copy of a NET (duplicateNet) is a new automation, not
-//   the one its original was opened from: it no longer gets an ha_id ("<id>_copy"), which saved it over the user's own
-//   automation of that id.
 // [CHANGED v3.94.3 | 2026-11-09] Purpose: The user's screenshot: in Traces, IN2 under a time trigger was cut off by the
 //   end of the NET's drawing. liveRoom - the room under every block for Traces' lines: a rung's pad under its blocks
 //   when larger (layout), added between branches, which editing packs block to block (calcHeightPx), and the pad
 //   under a parallel too, for its own line; 0 while editing, so the editing layout is as it was.
+// [CHANGED v3.95.5 | 2026-11-11] Purpose: The virtual tests of 2026-11-11: a CMP = / not = whose IN2 is an entity Home
+//   Assistant reads as plain text - its state is never "sensor.other" - is red, and the save refused (checkLiteral); so is
+//   a CMP not = that starts an automation on a state, which has no form in Home Assistant - of several entities too - and a
+//   person in a zone whose check has an option a zone has none of (for, attribute ...), and an IN2 emptied. Only where IN1
+//   can never hold such a text (FIXED_STATE): a dropdown, a text or a sensor may hold an entity's id as its value, and so
+//   may an attribute (a person's source is a tracker) - in a trigger too; IN2 0 is no empty IN2; a person in a zone with a
+//   TON after it is refused, a zone has no for (the fourth pass of the review of the release). The fifth: only a TON that
+//   is a for (isFor, forOf) counts - a plain one is a delay; a not = held for a time is refused, Home Assistant cannot
+//   say it; a for in the node it was drawn from is the TON's, gone with it.
 export class LibiCore {
     constructor() {
         this.nets = [];
@@ -1339,6 +1345,78 @@ export class LibiCore {
             }
         };
 
+        // [ADDED v3.95.5] A CMP = / not = against an entity Home Assistant reads as plain text: a sensor's state is never
+        // "sensor.other", a person's never "zone.work" - the check would never hold, and nothing would say so (the user's
+        // train reminder was saved with state: zone.work). In a condition an input helper is read as its value, and a
+        // person in a zone is a zone condition; a trigger reads no helper, only a zone. And a CMP not = that starts an
+        // automation on a state has no Home Assistant form.
+        const SPECIAL_IN1 = new Set(['time', 'weekday', 'datetime', 'sun', 'time pattern']);
+        const ENTITY_ID = /^[a-z_]+\.[a-z0-9_]+$/;
+        // IN1 of several entities reads "binary_sensor.a +1": its first one says what it is.
+        const ENTITY_FIRST = /^[a-z_]+\.[a-z0-9_]+/;
+        const INPUT_HELPER = /^input_(select|text|number|boolean|datetime)\./;
+        // [ADDED v3.95.5] What can never hold an entity's id as its state: a person or a tracker (home, a zone's name), on
+        // and off, open and closed, a number, a date. A dropdown, a text, a select or a sensor may - "which speaker" is
+        // media_player.kitchen - and is never checked (the second pass of the review of the release, RULE 41).
+        const FIXED_STATE = new Set(['person', 'device_tracker', 'binary_sensor', 'switch', 'light', 'fan', 'cover', 'lock',
+            'climate', 'media_player', 'vacuum', 'alarm_control_panel', 'input_boolean', 'sun', 'weather', 'water_heater',
+            'humidifier', 'valve', 'siren', 'update', 'timer', 'schedule', 'automation', 'script', 'remote', 'lawn_mower',
+            'input_number', 'number', 'counter', 'input_datetime', 'date', 'time', 'datetime', 'zone']);
+        // [ADDED v3.95.5] The keys a zone check has: a person's state check with another (for, attribute ...) cannot be
+        // one without losing it - the review of the release (RULE 41).
+        // A for is the TON drawn after the block (forTon below), gone when the TON is.
+        const ZONE_CONDITION_KEYS = new Set(['condition', 'entity_id', 'state', 'alias', 'enabled', 'for']);
+        const ZONE_TRIGGER_KEYS = new Set(['trigger', 'platform', 'entity_id', 'to', 'id', 'alias', 'enabled', 'for']);
+        // [ADDED v3.95.5] The TON that is a block's for - as headLength and the compiler's _is_for_timer read it. A TON
+        // without the marker is a delay.
+        const forTon = (x) => !!x && x.type === 'timer_ton' && !!(x.isFor || x.forOf);
+        const ZONE_OPTIONS = 'A person in a zone: Home Assistant\'s zone check has no "for" and no other option of this one. Compare with the zone\'s name as the person\'s state says it (for example home), or take the option away.';
+        const stateCheckOf = (raw) => {
+            if (!raw || typeof raw !== 'object') return null;
+            const kids = raw.condition === 'not' ? raw.conditions : (raw.condition === undefined ? raw.not : null);
+            const node = Array.isArray(kids) && kids.length === 1 ? kids[0] : raw;
+            return node && typeof node === 'object' && (node.condition === 'state' || node.trigger === 'state' || node.platform === 'state') ? node : null;
+        };
+        const otherKeys = (node, allowed) => !!node && Object.keys(node).some(k => !allowed.has(k));
+        const checkLiteral = (elements) => {
+            (elements || []).forEach((el, i) => {
+                if (el.type === 'parallel') { (el.branches || []).forEach(checkLiteral); return; }
+                if (el.type === 'repeat') { checkLiteral(el.sequence); return; }
+                if (!['cmp_eq', 'cmp_ne'].includes(el.type) || el.tplId || el.deviceNode || el.structuralError) return;
+                // [CHANGED v3.95.5] 0 is a value: only no value at all is an empty IN2 (RULE 33a.4).
+                const a = String(el.sourceA || ''), b = el.sourceB === undefined || el.sourceB === null ? '' : String(el.sourceB).trim();
+                if (SPECIAL_IN1.has(a) || !ENTITY_FIRST.test(a)) return;
+                const zone = b.startsWith('zone.') && /^(person|device_tracker)\./.test(a);
+                const fixed = FIXED_STATE.has(a.split('.')[0]);
+                // [ADDED v3.95.5] IN2 emptied: the check it was drawn from had a state - an empty one never holds.
+                const drawnFrom = stateCheckOf(el.raw);
+                const had = drawnFrom ? (drawnFrom.condition === 'state' ? drawnFrom.state : drawnFrom.to) : undefined;
+                if (!b && had !== undefined && had !== null && String(had) !== '') {
+                    el.structuralError = 'IN2 is empty: say the state it compares with.';
+                    return;
+                }
+                const ofAttribute = !!drawnFrom && drawnFrom.attribute !== undefined;
+                const held = forTon(elements[i + 1]);
+                if (el.isTrigger) {
+                    if (zone) {
+                        if (held || otherKeys(stateCheckOf(el.raw), ZONE_TRIGGER_KEYS)) el.structuralError = ZONE_OPTIONS;
+                        return;
+                    }
+                    if (el.type === 'cmp_ne') el.structuralError = 'LIBI does not write a CMP ≠ that starts an automation on a state. Say the state it changes to (CMP =), or use a P contact for any change.';
+                    else if (fixed && ENTITY_ID.test(b) && !ofAttribute) el.structuralError = `IN2 is ${b}: a trigger compares the new state with that text, which it never is. Use a value.`;
+                } else if (zone && el.type === 'cmp_eq') {
+                    // Its TON is its for, and a zone check has none.
+                    if (otherKeys(stateCheckOf(el.raw), ZONE_CONDITION_KEYS) || held) el.structuralError = ZONE_OPTIONS;
+                } else if (el.type === 'cmp_ne' && held) {
+                    el.structuralError = 'A CMP ≠ held for a time has no form in Home Assistant: its check would say "not (that state for that time)". Use CMP = with the states it may be, or take the TON away.';
+                } else if (zone) {
+                    if (otherKeys(stateCheckOf(el.raw), ZONE_CONDITION_KEYS)) el.structuralError = ZONE_OPTIONS;
+                } else if (fixed && ENTITY_ID.test(b) && !INPUT_HELPER.test(b) && !ofAttribute) {
+                    el.structuralError = `IN2 is ${b}: Home Assistant compares the state with that text, which it never is. Use a value, or a helper (input_select, input_number, input_text, input_boolean, input_datetime).`;
+                }
+            });
+        };
+
         this.nets.forEach(net => {
             const level = this.netLevel(net);
             const linked = {};
@@ -1378,6 +1456,7 @@ export class LibiCore {
                     if (level === 'scene') checkSceneOnly(rung.elements);
                 }
                 checkWaits(rung.elements);
+                if (level !== 'scene') checkLiteral(rung.elements);
                 if (!linked[rung.id]) {
                     checkPathEnd(rung.elements);
                 } else if (!groupEndsWell[rung.id] && rung.elements.length) {

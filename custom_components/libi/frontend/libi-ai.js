@@ -14,13 +14,15 @@
  */
 /**
  * LIBI Panel - AI chat
- * v3.87.0
+ * v3.95.0
  */
 //
-// [ADDED v3.85.0 | 2026-11-04] Purpose: Adding a NET says why it was not saved when the compile failed - SAVE & COMPILE
-//   compiles first and saves nothing then - and that Home Assistant wrote what was saved.
 // [ADDED v3.87.0 | 2026-11-04] Purpose: The lists show the name given in LIBI, as everywhere else in LIBI - a phone's too,
 //   given to either of its ids (_itemName).
+// [ADDED v3.95.0 | 2026-11-10] Purpose: The user's choice (2026-11-10): LIBI asks how the days are set - a switch for each
+//   day and a start time, or one schedule. The answer brings its own variables (_applyVariants) and takes away what it
+//   replaces (the start time and the minutes, with a schedule), kept aside as the user left them (_stash). And the
+//   phones list tags the recipients of LIBI Global, listed first, as Global (_fillList), and says what one is.
 //
 // The AI chat under the Inspector: the user describes the logic, picks the devices from lists LIBI found
 // in Home Assistant (several per role), answers the questions, and gets a DRAFT net to add to the
@@ -199,6 +201,8 @@ export class LibiAiChat {
             // user left it in the plan before.
             const before = this.vars || {};
             this.vars = {};
+            // [ADDED v3.95.0] What an answer to how the days are set took away, of the plan before: not of this one.
+            this._stash = {};
             for (const role of plan.roles) if (role.variable) this._initVar(role, before[role.id]);
             // [ADDED v3.80.0] A yes kept from the plan before adds again what it adds to this one.
             for (const q of plan.questions || []) this._applyAnswer(q);
@@ -320,7 +324,8 @@ export class LibiAiChat {
             const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
                 .filter(d => Array.isArray(st[d]) && st[d].length)
                 .map(d => `${d.slice(0, 3)} ${st[d].map(r => `${String(r.from).slice(0, 5)}–${String(r.to).slice(0, 5)}`).join(', ')}`);
-            parts.push(days.length ? days.join(' · ') : 'mark the days and hours in Settings ▸ Helpers after creating it');
+            // [CHANGED v3.95.0] It can be set from the dashboard too: tapped on the card, then its settings.
+            parts.push(days.length ? days.join(' · ') : 'empty - add the days and their hours after creating it: tap it on the card, then its settings, or Settings ▸ Helpers');
         }
         return `${kinds[item.domain] || item.domain}${parts.length ? ' · ' + parts.join(' · ') : ''}`;
     }
@@ -375,6 +380,13 @@ export class LibiAiChat {
         // [CHANGED v3.79.0] Seven round buttons on the card (libi-days-row.js).
         if (this.newHelpers.some(x => x.days_bits && roles.some(r => r.id === x.role))) {
             box.appendChild(h('div', { class: 'ai-note ai-alarm-note', text: 'The days are ONE helper: its 8 bits are the days, bit 1 Sunday to bit 7 Saturday. On the dashboard card they are seven round buttons under the time you set there, as on an alarm clock: tap a day to turn it on or off. It starts at 0, so nothing runs until you turn a day on.' }));
+        }
+        // [ADDED v3.95.0] The answer to how the days are set: a switch for each day, or one schedule.
+        if (roles.some(r => /^day_(sun|mon|tue|wed|thu|fri|sat)$/.test(r.id))) {
+            box.appendChild(h('div', { class: 'ai-note ai-days-note', text: 'A switch for each day: on the dashboard card they are one row of day buttons, under the start time - tap a day to turn it on or off. They start off, so nothing runs until you turn a day on.' }));
+        }
+        if (roles.some(r => r.id === 'week_schedule')) {
+            box.appendChild(h('div', { class: 'ai-note ai-days-note', text: `One schedule: its blocks are the days and the hours - a block's start turns it on and its end turns it off, each day its own hours. A new schedule starts empty, so nothing runs until you add a block: tap it on the dashboard card, then its settings, or open Settings ▸ Helpers.` }));
         }
         for (const role of roles) box.appendChild(this._variableRow(role));
         const acts = h('div', { class: 'ai-var-acts' });
@@ -486,6 +498,11 @@ export class LibiAiChat {
      *  [CHANGED v3.82.0] The switch is a local variable like the others: it starts with a free switch that fits (the
      *  helper's "pick"), else with the new one, and the user chooses between them in the variables window. */
     _applyAnswer(q) {
+        // [ADDED v3.95.0] How the days are set: each answer brings its own variables (_applyVariants).
+        if (q && q.variants) {
+            if (this.plan) this._applyVariants(q);
+            return;
+        }
         const adds = q && q.adds;
         if (!adds || !adds.role || !this.plan) return;
         const rid = adds.role.id;
@@ -507,6 +524,74 @@ export class LibiAiChat {
             this.newHelpers = this.newHelpers.filter(x => x.role !== rid || x.created);
             delete this.vars[rid];
             delete this.selections[rid];
+        }
+    }
+
+    /** [ADDED v3.95.0] LIBI's question of how the days are set: each answer brings its own variables - a switch for each
+     *  day, or the week schedule - and may take some away (drop: with a schedule, the start time and the minutes, its
+     *  block being the start and the end). What an answer takes away is kept aside (_stash) as the user left it, and comes
+     *  back when the answer changes; the variables of the answers not chosen go, but a helper already created stays among
+     *  the new ones and is the pick again when its answer is chosen again. Unanswered, none of them is in the plan. */
+    _applyVariants(q) {
+        const chosen = q.variants[this.answers[q.id]] || null;
+        this._stash = this._stash || {};
+        for (const variant of Object.values(q.variants)) {
+            if (variant !== chosen) for (const role of variant.roles || []) this._takeRole(role.id, false);
+        }
+        const drop = new Set((chosen && chosen.drop) || []);
+        // Back in the reverse of the order they were kept aside, so each goes back to its own place.
+        for (const rid of Object.keys(this._stash).reverse()) if (!drop.has(rid)) this._unstash(rid);
+        if (!chosen) return;
+        for (const rid of drop) this._takeRole(rid, true);
+        for (const role of chosen.roles || []) {
+            if (this.plan.roles.some(r => r.id === role.id)) continue;
+            this.plan.roles.push({ ...role, variable: true });
+            if (!this.candidates[role.id]) {
+                this.candidates[role.id] = JSON.parse(JSON.stringify((chosen.candidates || {})[role.id] || { items: [], exact: false }));
+            }
+            const helper = (chosen.helpers || []).find(x => x.role === role.id);
+            if (!this._helperOf(role.id) && helper) {
+                this.newHelpers.push({ ...helper, keep: false, created: '', error: '', alternative: !!helper.pick, from: q.id });
+            }
+            this._initVar(role, null);
+        }
+    }
+
+    /** [ADDED v3.95.0] A variable out of the plan: kept aside (stash) with its helper, its list and the user's choice, to
+     *  come back as it was - or gone, a helper already created staying among the new ones. */
+    _takeRole(rid, keep) {
+        const at = this.plan.roles.findIndex(r => r.id === rid);
+        if (at < 0) return;
+        const [role] = this.plan.roles.splice(at, 1);
+        if (keep) {
+            const helper = this._helperOf(rid) || null;
+            this._stash[rid] = { role, at, helper, hat: this.newHelpers.indexOf(helper), cand: this.candidates[rid],
+                vars: this.vars[rid], sel: this.selections[rid] };
+            this.newHelpers = this.newHelpers.filter(x => x.role !== rid);
+            delete this.candidates[rid];
+        } else {
+            this.newHelpers = this.newHelpers.filter(x => x.role !== rid || x.created);
+        }
+        delete this.vars[rid];
+        delete this.selections[rid];
+    }
+
+    /** [ADDED v3.95.0] A variable kept aside, back where it was, as the user left it. */
+    _unstash(rid) {
+        const kept = this._stash[rid];
+        delete this._stash[rid];
+        if (!kept || this.plan.roles.some(r => r.id === rid)) return;
+        this.plan.roles.splice(Math.min(kept.at, this.plan.roles.length), 0, kept.role);
+        if (kept.helper && !this._helperOf(rid)) {
+            this.newHelpers.splice(kept.hat >= 0 ? Math.min(kept.hat, this.newHelpers.length) : this.newHelpers.length, 0, kept.helper);
+        }
+        if (kept.cand) this.candidates[rid] = kept.cand;
+        if (kept.sel) this.selections[rid] = kept.sel;
+        if (kept.vars) {
+            this.vars[rid] = kept.vars;
+            this._syncVar(rid);
+        } else {
+            this._initVar(kept.role, null);
         }
     }
 
@@ -816,7 +901,7 @@ export class LibiAiChat {
         if (own.length) {
             box.appendChild(h('div', { class: 'ai-libi-asks' },
                 h('div', { class: 'ai-role-head' }, h('strong', { text: 'LIBI asks' })),
-                h('div', { class: 'ai-note', text: 'For every automation that switches a device. LIBI writes what you answer into the logic and checks it in the draft.' }),
+                h('div', { class: 'ai-note', text: 'For every automation that switches a device, and for the days and the time you set on the card. LIBI writes what you answer into the logic and checks it in the draft.' }),
                 own.map(q => this._questionView(q))));
         }
         const unanswered = own.filter(q => !(q.choices || []).includes(this.answers[q.id]));
@@ -855,6 +940,10 @@ export class LibiAiChat {
             const gone = this.plan.missing_services || [];
             if (gone.length) {
                 wrap.appendChild(h('div', { class: 'ai-note warn ai-phones-missing', dir: 'auto', text: `${gone.join(', ')} ${gone.length === 1 ? 'does' : 'do'} not exist in this Home Assistant - ${gone.length === 1 ? 'a phone' : 'phones'} no longer in the Companion app? Tick the phone that should get the message instead.` }));
+            }
+            // [ADDED v3.95.0] The recipients of LIBI Global, listed first: the phones the user keeps in one place.
+            if (cand.items.some(i => i.global)) {
+                wrap.appendChild(h('div', { class: 'ai-note ai-phones-global', text: 'Global: a global variable of LIBI ▸ Global - one tick sends the message to every phone it holds.' }));
             }
         }
         // [CHANGED v3.82.0] A schedule that gave way, a helper the message names that is gone, and a helper to make are
@@ -921,6 +1010,8 @@ export class LibiAiChat {
                         item.named ? h('span', { class: 'ai-current ai-on-canvas', text: 'named', title: role.phones ? 'Your message names this phone' : 'Your message names this helper' }) : null,
                         // [ADDED v3.66.0] Whose phone it is.
                         item.owner ? h('span', { class: 'ai-current ai-on-canvas ai-owner', text: item.owner, title: `Belongs to ${item.owner}` }) : null,
+                        // [ADDED v3.95.0] A recipient of LIBI Global.
+                        item.global ? h('span', { class: 'ai-current ai-on-canvas ai-global', text: 'Global', title: 'A global variable of LIBI ▸ Global: the message goes to every phone it holds' }) : null,
                         item.created ? h('span', { class: 'ai-current', text: 'new' }) : null),
                     h('span', { class: 'ai-item-id', text: `${item.entity_id}${item.device ? ' · ' + item.device : ''}${item.area ? ' · ' + item.area : ''}` }),
                     // [ADDED v3.60.0] A named helper is listed although others use it; the user is told who.

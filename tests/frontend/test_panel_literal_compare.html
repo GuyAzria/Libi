@@ -1,0 +1,153 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-11] Purpose: the virtual tests of 2026-11-11 (the user's train reminder was saved with
+  state: zone.work, which never holds). A CMP = / not = whose IN2 is an entity Home Assistant reads as plain text is red,
+  and so the save is refused; a value, an input helper in a condition, and a zone for a person are not. A CMP not = that
+  starts an automation on a state is red too. IN2 of a CMP of a value says "Value or helper".
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi literal compare test</title></head>
+<body style="margin:0; width:1280px; height:800px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const GO = { id: 'g', type: 'contact_no', isTrigger: true, label: 'input_button.go' };
+const ON = { id: 'z', type: 'coil_s', label: 'light.z' };
+// [what, the block, red?]
+const CONDITIONS = [
+  ['a climate against another entity', { type: 'cmp_eq', sourceA: 'climate.ac', sourceB: 'sensor.other' }, true],
+  ['not = against another entity', { type: 'cmp_ne', sourceA: 'light.x', sourceB: 'binary_sensor.door' }, true],
+  ['a door against a zone', { type: 'cmp_eq', sourceA: 'binary_sensor.where', sourceB: 'zone.work' }, true],
+  ['a value', { type: 'cmp_eq', sourceA: 'climate.ac', sourceB: 'heat' }, false],
+  ['a number', { type: 'cmp_eq', sourceA: 'sensor.temp', sourceB: '21' }, false],
+  ['a list of values', { type: 'cmp_eq', sourceA: 'climate.ac', sourceB: 'heat, cool' }, false],
+  ['an input helper', { type: 'cmp_eq', sourceA: 'sensor.mode', sourceB: 'input_select.mode' }, false],
+  ['a person in a zone', { type: 'cmp_eq', sourceA: 'person.guy', sourceB: 'zone.work' }, false],
+  ['a person not in a zone', { type: 'cmp_ne', sourceA: 'device_tracker.phone', sourceB: 'zone.work' }, false],
+  ['a person in the zone chosen on the card', { type: 'cmp_eq', sourceA: 'person.guy', sourceB: 'input_select.zone' }, false],
+  ['the clock against a schedule', { type: 'cmp_eq', sourceA: 'datetime', sourceB: 'schedule.week' }, false],
+  ['the time against a helper', { type: 'cmp_eq', sourceA: 'time', sourceB: 'input_datetime.at' }, false],
+  ['a template', { type: 'cmp_eq', sourceA: "states('sensor.a')", sourceB: 'sensor.b', tplId: 't1' }, false],
+  ['greater than a helper', { type: 'cmp_gt', sourceA: 'sensor.temp', sourceB: 'input_number.limit' }, false],
+  // [v3.95.5] The review of the release (RULE 41).
+  ['several entities against another entity', { type: 'cmp_eq', sourceA: 'binary_sensor.a +1', sourceB: 'sensor.other' }, true],
+  // [v3.95.5] The second pass: what may hold an entity's id as its value is never checked; an emptied IN2 is.
+  ['a dropdown of speakers', { type: 'cmp_eq', sourceA: 'input_select.speaker', sourceB: 'media_player.kitchen' }, false],
+  ['a template sensor that names a light', { type: 'cmp_eq', sourceA: 'sensor.pick', sourceB: 'light.x' }, false],
+  ['a select', { type: 'cmp_eq', sourceA: 'select.mode', sourceB: 'climate.ac' }, false],
+  ['a counter at 0', { type: 'cmp_eq', sourceA: 'counter.x', sourceB: 0, raw: { condition: 'state', entity_id: 'counter.x', state: 0 } }, false],
+  ['an attribute that holds a tracker', { type: 'cmp_eq', sourceA: 'person.guy', sourceB: 'device_tracker.guy_phone',
+    raw: { condition: 'state', entity_id: 'person.guy', attribute: 'source', state: 'device_tracker.guy_phone' } }, false],
+  ['IN2 emptied', { type: 'cmp_eq', sourceA: 'climate.ac', sourceB: '',
+    raw: { condition: 'state', entity_id: 'climate.ac', state: 'heat' } }, true],
+  // A for is its TON: one in the node it was drawn from, its TON taken away, is gone - not red (the fifth pass).
+  ['a person in a zone, from a state check whose TON was taken away', { type: 'cmp_eq', sourceA: 'person.guy', sourceB: 'zone.work',
+    raw: { condition: 'state', entity_id: 'person.guy', state: 'Guy at work', for: '00:05:00' } }, false],
+  ['a person in a zone, from a not of a state check with an attribute', { type: 'cmp_ne', sourceA: 'person.guy', sourceB: 'zone.work',
+    raw: { condition: 'not', conditions: [{ condition: 'state', entity_id: 'person.guy', state: 'x', attribute: 'source' }] } }, true],
+  ['a person in a zone, from a plain state check', { type: 'cmp_eq', sourceA: 'person.guy', sourceB: 'zone.work',
+    raw: { condition: 'state', entity_id: 'person.guy', state: 'Guy at work', alias: 'at work' } }, false],
+];
+const TRIGGERS = [
+  ['a trigger to another entity', { type: 'cmp_eq', sourceA: 'climate.ac', sourceB: 'sensor.other' }, true],
+  ['a trigger to an input helper', { type: 'cmp_eq', sourceA: 'climate.ac', sourceB: 'input_select.mode' }, true],
+  ['a trigger of an attribute that holds a tracker', { type: 'cmp_eq', sourceA: 'person.guy', sourceB: 'device_tracker.phone',
+    raw: { trigger: 'state', entity_id: 'person.guy', attribute: 'source', to: 'device_tracker.phone' } }, false],
+  ['a trigger of a dropdown to an entity\'s id', { type: 'cmp_eq', sourceA: 'input_select.speaker', sourceB: 'media_player.kitchen' }, false],
+  ['a trigger whose IN2 was emptied', { type: 'cmp_eq', sourceA: 'climate.ac', sourceB: '',
+    raw: { trigger: 'state', entity_id: 'climate.ac', to: 'heat' } }, true],
+  ['a trigger of not = on a state', { type: 'cmp_ne', sourceA: 'climate.ac', sourceB: 'heat' }, true],
+  ['a trigger to a value', { type: 'cmp_eq', sourceA: 'climate.ac', sourceB: 'heat' }, false],
+  ['a person arriving in a zone', { type: 'cmp_eq', sourceA: 'person.guy', sourceB: 'zone.work' }, false],
+  ['a person leaving a zone', { type: 'cmp_ne', sourceA: 'person.guy', sourceB: 'zone.work' }, false],
+  ['a schedule starting', { type: 'cmp_eq', sourceA: 'datetime', sourceB: 'schedule.week' }, false],
+  // [v3.95.5] The review of the release (RULE 41).
+  ['a trigger of not = on several entities', { type: 'cmp_ne', sourceA: 'binary_sensor.a +1', sourceB: 'open' }, true],
+  ['a person arriving in a zone, from a state trigger with a from', { type: 'cmp_eq', sourceA: 'person.guy', sourceB: 'zone.work',
+    raw: { trigger: 'state', entity_id: 'person.guy', to: 'Guy at work', from: 'home' } }, true],
+  ['a person arriving in a zone, from a plain state trigger', { type: 'cmp_eq', sourceA: 'person.guy', sourceB: 'zone.work',
+    raw: { trigger: 'state', entity_id: 'person.guy', to: 'Guy at work', id: 'go' } }, false],
+];
+const hass = {
+  states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+  connection: {
+    sendMessagePromise: async (m) => {
+      if (m.type === 'libi/ai_status') return { configured: false };
+      if (m.type === 'libi/project_list') return { projects: [] };
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+
+try {
+  localStorage.clear();
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '800px';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await sleep(300);
+  panel._project = { slug: 'p', name: 'P' };
+  const rungs = [
+    ...CONDITIONS.map(([, el], i) => ({ id: `c${i}`, comment: '', elements: [{ ...GO, id: `g${i}` }, { ...el, id: `e${i}` }, { ...ON, id: `z${i}` }] })),
+    ...TRIGGERS.map(([, el], i) => ({ id: `t${i}`, comment: '', elements: [{ ...el, id: `x${i}`, isTrigger: true }, { ...ON, id: `y${i}` }] })),
+  ];
+  // [v3.95.5] A person in a zone with its for (a TON marked isFor) after it: a zone check has no for. A plain TON is a
+  // delay, never refused. A not = held for a time has no form in Home Assistant (the fourth and fifth passes).
+  rungs.push({ id: 'zt', comment: '', elements: [{ ...GO, id: 'gzt' }, { id: 'ezt', type: 'cmp_eq', sourceA: 'person.guy', sourceB: 'zone.work' },
+    { id: 'tzt', type: 'timer_ton', label: '00:05:00', isFor: true }, { ...ON, id: 'zzt' }] });
+  rungs.push({ id: 'zd', comment: '', elements: [{ ...GO, id: 'gzd' }, { id: 'ezd', type: 'cmp_eq', sourceA: 'person.guy', sourceB: 'zone.work' },
+    { id: 'tzd', type: 'timer_ton', label: '00:05:00' }, { ...ON, id: 'zzd' }] });
+  rungs.push({ id: 'nh', comment: '', elements: [{ ...GO, id: 'gnh' }, { id: 'enh', type: 'cmp_ne', sourceA: 'climate.ac', sourceB: 'heat' },
+    { id: 'tnh', type: 'timer_ton', label: '00:05:00', isFor: true }, { ...ON, id: 'znh' }] });
+  rungs.push({ id: 'zf', comment: '', elements: [{ id: 'ezf', type: 'cmp_eq', isTrigger: true, sourceA: 'person.guy', sourceB: 'zone.work', forTimer: true,
+    raw: { trigger: 'state', entity_id: 'person.guy', to: 'Guy at work', for: '00:02:00' } }, { ...ON, id: 'zzf' }] });
+  panel.core.nets = [{ id: 'n1', name: 'checks', level: 'automation', collapsed: false, links: [], rungs }];
+  panel.core.syncCounters(); panel.core.repairAST(); panel.core.validateAST();
+  panel._render(); await sleep(50);
+  const extra = (id, i) => panel.core.nets[0].rungs.find(r => r.id === id).elements[i];
+  check('a person in a zone with its for after it is red: a zone has no for', /^A person in a zone/.test(extra('zt', 1).structuralError || ''), extra('zt', 1).structuralError);
+  check('a person in a zone with a delay after it is not red', !extra('zd', 1).structuralError, extra('zd', 1).structuralError);
+  const forZone = extra('zt', 1).structuralError || '';
+  check('a person in a zone with a for says why and what to do', forZone.startsWith('A person in a zone: Home Assistant\'s zone check has no "for"')
+        && forZone.includes('Compare with the zone\'s name'), forZone);
+  check('a not = held for a time is red', /^A CMP ≠ held for a time has no form/.test(extra('nh', 1).structuralError || ''), extra('nh', 1).structuralError);
+  check('a zone trigger whose TON was taken away is not red: its for went with it', !extra('zf', 0).structuralError, extra('zf', 0).structuralError);
+  const els = panel.core.nets[0].rungs.filter(r => !['zt', 'zd', 'nh', 'zf'].includes(r.id)).map(r => r.elements[r.id.startsWith('c') ? 1 : 0]);
+  [...CONDITIONS, ...TRIGGERS].forEach(([what, , red], i) => {
+    const err = els[i].structuralError || '';
+    check(`${what}: ${red ? 'red' : 'not red'}`, red ? !!err : !err, err);
+  });
+  check('an emptied IN2 says so', (els[CONDITIONS.findIndex(c => c[0] === 'IN2 emptied')].structuralError || '') === 'IN2 is empty: say the state it compares with.');
+  check('the words say why and what to use', (els[0].structuralError || '') === 'IN2 is sensor.other: Home Assistant compares the state with that text, which it never is. Use a value, or a helper (input_select, input_number, input_text, input_boolean, input_datetime).',
+        els[0].structuralError);
+  const neTrigger = els[CONDITIONS.length + TRIGGERS.findIndex(t => t[0] === 'a trigger of not = on a state')].structuralError || '';
+  check('a not = trigger says what to use instead', /Say the state it changes to \(CMP =\), or use a P contact/.test(neTrigger), neTrigger);
+  const block = panel.shadowRoot.querySelector('.libi-el[data-eid="e0"]');
+  const red = (eid) => { const b = panel.shadowRoot.querySelector(`.libi-el[data-eid="${eid}"]`); return !!b && (b.classList.contains('has-error') || !!b.querySelector('.has-error')); };
+  const tip = block && block.querySelector('.err-tooltip');
+  check('the block is drawn red, its reason on it', red('e0') && !!tip && tip.textContent.includes('IN2 is sensor.other'), block && block.outerHTML.slice(0, 300));
+  check('a block that holds is not red', !red('e3') && !red('e7'));
+  // IN2 of a CMP of a value says "Value or helper".
+  panel._inspectedEl = { netId: 'n1', rungId: 'c3', elId: 'e3' };
+  panel._wakeSidebar(); panel._render(); await sleep(50);
+  const label = panel.shadowRoot.querySelector('#lbl_sourceB');
+  check('IN2 of a CMP of a value says "Value or helper"', !!label && label.textContent === 'Value or helper (IN2)', label && label.textContent);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

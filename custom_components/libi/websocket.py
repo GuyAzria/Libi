@@ -11,11 +11,16 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [CHANGED v3.93.0 | 2026-11-06] Purpose: libi/project_open and libi/save_done give the key each NET has in Home
-#   Assistant (keys): the panel's Online finds the automation of a NET drawn in LIBI, and its trace, by it.
-# [ADDED v3.94.0 | 2026-11-07] Purpose: libi/online_fire - Online's Real runs an automation in Home Assistant as if the
-#   trigger FORCE TRUE was pressed on fired (online.py), after the user confirmed; never one that can reach a lock, an
-#   alarm or a cover.
+# [CHANGED v3.95.0 | 2026-11-10] Purpose: The user's rule (2026-11-10): an automation belongs to one project.
+#   libi/list_automations says, for each, the projects that hold it (in_use); libi/get_automation refuses to load one
+#   that another project - or another NET of this one - holds, and loads nothing while a project cannot be read.
+#   And libi/ai_plan asks how the days and the time on the card are set (ai.days_question): a switch for each day and a
+#   start time, or one schedule; the AI chat writes in the language of the user's last message (ai.language_rule).
+# [CHANGED v3.95.5 | 2026-11-11] Purpose: The review of the release (RULE 41): libi/list_automations names the NETs of each
+#   project that holds an automation (nets), so the panel offers a NET its own automation again, as libi/get_automation
+#   allows; and the language check of the AI chat leaves the names of the house out (ai.house_names). libi/get_automation
+#   checks who holds an automation for any load into a project - a NET or not - not only one with a net_id - reading the
+#   automations and who holds them under one lock. The names of the NETs on the page are names of the house too.
 import asyncio
 import copy
 import hashlib
@@ -401,6 +406,48 @@ def _all_owned_except_sync(hass: HomeAssistant, keep_slug: str) -> dict:
             for item in (owned.get(key) or []):
                 out[key].add(str(item))
     return out
+
+def _automations_in_use_locked(hass: HomeAssistant) -> tuple[dict[str, list[dict]], list[str]]:
+    """[ADDED v3.95.0] The user's rule (2026-11-10): an automation belongs to one project. For each automation id, the
+    projects that hold it - a NET loaded from it (ha_id), the key a NET of theirs was saved to (keys), or one they own -
+    with the NETs that hold it; and the projects that could not be read, which may hold any. Called with _FILE_LOCK
+    held."""
+    out: dict[str, list[dict]] = {}
+    unreadable: list[str] = []
+    directory = _get_projects_dir(hass)
+    # Not _list_projects_sync: it leaves out a project it cannot read, and here such a project may hold the automation.
+    for fname in sorted(os.listdir(directory)) if os.path.isdir(directory) else []:
+        slug = fname[: -len(PROJECT_EXT)] if fname.endswith(PROJECT_EXT) else ""
+        if not valid_project_slug(slug):
+            continue
+        data = _read_project_sync(hass, slug)
+        if data is None:
+            unreadable.append(slug)
+            continue
+        held: dict[str, set[str]] = {}
+        for net in data.get("nets") or []:
+            if isinstance(net, dict) and net.get("ha_id") and net_level(net) == "automation":
+                held.setdefault(str(net["ha_id"]), set()).add(str(net.get("id") or ""))
+        keys = data.get("keys") if isinstance(data.get("keys"), dict) else {}
+        for nid, rec in keys.items():
+            if isinstance(rec, dict) and rec.get("domain") == "automation" and rec.get("key"):
+                held.setdefault(str(rec["key"]), set()).add(str(nid))
+        owned = data.get("owned") if isinstance(data.get("owned"), dict) else {}
+        for key in owned.get("automations") or []:
+            held.setdefault(str(key), set())
+        name = str(data.get("name") or slug)[:60]
+        for key, nets in held.items():
+            out.setdefault(key, []).append({"slug": slug, "name": name, "nets": sorted(n for n in nets if n)})
+    return out, unreadable
+
+
+def _automations_and_use_sync(hass: HomeAssistant) -> tuple[list, dict[str, list[dict]], list[str]]:
+    """[ADDED v3.95.0] automations.yaml's automations and the projects that hold each, read together under the lock."""
+    with _FILE_LOCK:
+        autos = _get_all_automations(hass)
+        in_use, unreadable = _automations_in_use_locked(hass)
+    return autos, in_use, unreadable
+
 
 def _migrate_single_ast_sync(hass: HomeAssistant) -> None:
     """An installation from before projects has one drawing in libi_ast.json. It becomes a project
@@ -1438,9 +1485,13 @@ async def ws_handle_load_automation(hass: HomeAssistant, connection: websocket_a
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_handle_list_automations(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    autos = await hass.async_add_executor_job(_get_all_automations, hass)
-    res = [{"id": a["id"], "name": a["name"]} for a in autos]
-    connection.send_result(msg["id"], {"automations": res})
+    # [CHANGED v3.95.0] With, for each automation, the projects that hold it (in_use: slug and name), and the projects
+    # that could not be read (unreadable): the panel lists under IN USE what it may not load.
+    autos, in_use, unreadable = await hass.async_add_executor_job(_automations_and_use_sync, hass)
+    res = [{"id": a["id"], "name": a["name"],
+            "in_use": [{"slug": u["slug"], "name": u["name"], "nets": u["nets"]} for u in in_use.get(str(a["id"]), [])]}
+           for a in autos]
+    connection.send_result(msg["id"], {"automations": res, "unreadable": unreadable})
 
 
 @websocket_api.websocket_command({
@@ -1458,7 +1509,30 @@ async def ws_handle_get_automation(hass: HomeAssistant, connection: websocket_ap
     if not valid_project_slug(slug):
         connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
         return
-    autos = await hass.async_add_executor_job(_get_all_automations, hass)
+    # [ADDED v3.95.0] The user's rule (2026-11-10): an automation belongs to one project. Loaded into a NET, it may not be
+    # one another project holds, nor one another NET of this project holds - the panel does not offer those, and this
+    # stops every other way. While a project cannot be read it may hold any, so nothing is loaded (RULE 31). A NET given
+    # its own automation again is fine.
+    # [CHANGED v3.95.5] For any load into a project, a NET or none (the second pass of the review of the release): only a
+    # look with neither is answered as before.
+    if "net_id" in msg or "slug" in msg:
+        # The automations and who holds them, read together under one lock: nothing changes between the check and the read.
+        autos, in_use, unreadable = await hass.async_add_executor_job(_automations_and_use_sync, hass)
+        if unreadable:
+            connection.send_error(msg["id"], "projects_unreadable",
+                                  f"LIBI could not read the project file of {', '.join(unreadable[:5])}, so it cannot "
+                                  "tell which project holds this automation. Nothing was loaded.")
+            return
+        holders = sorted({u["name"] for u in in_use.get(str(auto_id), [])
+                          if not (u["slug"] == slug and set(u["nets"]) <= {str(msg.get("net_id") or "")})})
+        if holders:
+            connection.send_error(msg["id"], "in_use",
+                                  f"This automation is already in the project {', '.join(holders)}. An automation "
+                                  "belongs to one project: open that project, or take it out of it first (Delete "
+                                  "NET... > Remove from LIBI only). Nothing was loaded.")
+            return
+    else:
+        autos = await hass.async_add_executor_job(_get_all_automations, hass)
     target = next((a for a in autos if str(a["id"]) == auto_id), None)
     if not target:
         connection.send_error(msg["id"], "not_found", "Automation not found")
@@ -2490,6 +2564,9 @@ async def ws_handle_ai_plan(hass: HomeAssistant, connection: websocket_api.Activ
     extra = [canvas] if canvas else []
     if msg["share"]:
         extra += [ai.helpers_context(hass), ai.missing_context(missing)]
+    # [ADDED v3.95.0] The user's language: the one of this message, in its letters - not the names of the house's nets,
+    # helpers and zones above it (the user's request in English got Hebrew names and a Hebrew reply).
+    extra += [ai.language_rule(request)]
     extra = [x for x in extra if x]
     if extra:
         messages[-1] = {"role": "user", "content": messages[-1]["content"] + "\n\n" + "\n\n".join(extra)}
@@ -2498,6 +2575,16 @@ async def ws_handle_ai_plan(hass: HomeAssistant, connection: websocket_api.Activ
     except ai.AiError as err:
         connection.send_error(msg["id"], "ai_error", str(err))
         return
+    # [ADDED v3.95.0] A plan that still shows the user texts in other letters goes back once, with those texts.
+    # [CHANGED v3.95.5] The names of the NETs on the page are quoted as they are, as the house's are.
+    wrong = ai.language_problems(raw, request, ai.house_names(hass) + [
+        str(n["name"]) for n in msg["nets"] if isinstance(n, dict) and n.get("name")])
+    if wrong:
+        try:
+            raw = await ai.async_llm_json(hass, settings, ai.PLAN_SYSTEM,
+                                          messages + ai.repair_request(raw, wrong, {}), ai.PLAN_SCHEMA)
+        except ai.AiError:
+            pass
     plan = ai.clean_plan(hass, raw, set(by_id))
     # [ADDED v3.59.0] The user's rule, from the user's own words: no net is changed that was not named.
     ai.only_named_changes(plan, request, msg["nets"])
@@ -2560,6 +2647,9 @@ async def ws_handle_ai_plan(hass: HomeAssistant, connection: websocket_api.Activ
     # do when a device it switches is offline, a message when a battery runs low.
     ai.safety_questions(hass, plan, candidates, preselect, by_id.get(plan["target_net"], "") if plan["target_net"] else "",
                         config_text, own | {e for ids in preselect.values() for e in ids})
+    # [ADDED v3.95.0] The user's choice (2026-11-10): the days and the time on the card are a switch for each day and a
+    # start time, or one schedule - LIBI asks which.
+    ai.days_question(hass, plan, candidates, preselect, config_text, own | {e for ids in preselect.values() for e in ids})
     connection.send_result(msg["id"], {"plan": plan, "candidates": candidates, "preselect": preselect})
 
 
@@ -2617,6 +2707,12 @@ async def ws_handle_ai_build(hass: HomeAssistant, connection: websocket_api.Acti
     # [CHANGED v3.81.0] With the phones the user named, for the messages of the answers.
     safety = ai.safety_answers(hass, plan, selections, answers, services[0])
     context = ai.build_context(plan, selections, answers, hass, by_id.get(plan["target_net"], ""), services, safety)
+    # [ADDED v3.95.5] Once, not on every try - the house's names and the NETs' on the page.
+    names = ai.house_names(hass) + [str(n["name"]) for n in msg["nets"] if isinstance(n, dict) and n.get("name")]
+    # [ADDED v3.95.0] The user's language: the one of the user's last request, in its letters.
+    rule = ai.language_rule(request)
+    if rule:
+        context += "\n\n" + rule
     if msg["share"]:
         # The candidates are found again here rather than taken back from the browser.
         on_canvas = ai.canvas_entities(hass, msg["nets"], by_id)
@@ -2648,7 +2744,9 @@ async def ws_handle_ai_build(hass: HomeAssistant, connection: websocket_api.Acti
         drawn = _draw_draft(hass, draft)
         # [ADDED v3.73.0] And every line of the user's request, checked in the logic: a draft that misses one goes back.
         report = ai.requirement_report(plan, draft, drawn, raw, alarm, safety)
-        problems = ai.draft_problems(draft, drawn) + ai.requirement_problems(report)
+        # [CHANGED v3.95.0] And a text shown to the user in other letters than the user's last request.
+        problems = (ai.draft_problems(draft, drawn) + ai.requirement_problems(report)
+                    + ai.language_problems(raw, request, names))
         history.append((attempt, problems))
         rank = ai.draft_rank(draft, drawn, problems)
         if best is None or rank <= best[4]:

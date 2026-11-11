@@ -1,0 +1,27 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-11] Purpose: the Inspector's editor of a schedule's days and hours
+  (test_panel_schedule_edit.html) on a phone: the same checks, and it fits the screen with no sideways scroll.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="400,800"><title>libi schedule edit phone test</title></head>
+<body style="margin:0;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+import { scheduleEditChecks } from './schedule_edit_fixture.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+try {
+  await scheduleEditChecks(check, { phone: true });
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

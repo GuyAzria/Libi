@@ -14,15 +14,12 @@
  */
 /**
  * LIBI Panel - Styles
- * v3.94.1
+ * v3.95.3
  */
-// [CHANGED v3.94.0 | 2026-11-07] Purpose: The user's screenshot: the run's mark is a line in words under the block
-//   (.live-run), no longer a circle half outside it (.run-mark is gone), and the lines start below the Trigger label
-//   (.below-tag), which covered IN1. A block's Online menu (.online-menu, .onl-*). The bar sticks to the very top of the
-//   canvas (the canvas's padding showed the NET above it). Traces is read only (.trace-lock): what edits is dimmed or
-//   hidden, a click on it says why (.trace-toast), and the Inspector waits (.trace-locked-note).
-// [CHANGED v3.94.1 | 2026-11-08] Purpose: The user's screenshot: a MOVE TTS whose script was off showed "off" in green.
-//   A line under a block that is not TRUE or on is grey (.live-now.off).
+// [CHANGED v3.95.0 | 2026-11-10] Purpose: LOAD's window: the IN USE heading, its note, and rows that are shown, not
+//   chosen (.auto-sec, .auto-sec-note, .auto-used, .auto-where, .auto-none, .auto-warn).
+// [CHANGED v3.95.3 | 2026-11-11] Purpose: The Inspector's editor of a schedule's days and hours (.sched-edit,
+//   .sched-days, .sched-day, .sched-times, .sched-time, .sched-warn): round day buttons, two time fields.
 export const getStyles = () => `
 :host { display: block; height: 100vh; overflow-y: hidden; background: var(--primary-background-color, #f5f5f5); color: var(--primary-text-color, #212121); font-family: var(--primary-font-family, sans-serif); box-sizing: border-box; direction: ltr !important; text-align: left; }
 /* [ADDED v3.35.0] Colour tokens. The light values are the colours the panel always used; the
@@ -176,6 +173,16 @@ export const getStyles = () => `
 /* [ADDED v3.71.0] What a block compares with, read only: the days and hours of a schedule. */
 .plc-note { padding: 0 6px 2px; font-size: 10px; line-height: 1.3; font-weight: 700; color: var(--libi-pin-lbl); text-align: left; overflow-wrap: anywhere; }
 .insp-note { font-size: 12px; line-height: 1.45; color: var(--secondary-text-color, #757575); overflow-wrap: anywhere; }
+/* [ADDED v3.95.3] The Inspector's editor of a schedule's days and hours (CMP DATETIME). */
+.sched-edit .sched-days { display: flex; flex-wrap: wrap; gap: 4px; }
+.sched-edit .sched-day { min-width: 36px; min-height: 36px; padding-inline: 6px; border-radius: 18px; border: 1.5px solid var(--divider-color, #ccc); background: var(--secondary-background-color, #fafafa); color: var(--primary-text-color, #212121); font-size: 12px; font-weight: 700; cursor: pointer; }
+.sched-edit .sched-day.on { background: var(--primary-color, #03a9f4); border-color: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
+.sched-edit .sched-times { display: flex; flex-wrap: wrap; gap: 8px; }
+.sched-edit .sched-time { display: flex; flex-direction: column; gap: 4px; flex: 1 1 110px; min-width: 0; text-transform: none; }
+.sched-edit .sched-time input { width: 100%; box-sizing: border-box; min-height: 36px; }
+.sched-edit .sched-save { align-self: flex-start; min-height: 36px; }
+.sched-edit .sched-warn { color: var(--error-color, #db4437); }
+@media (pointer: coarse) { .sched-edit .sched-day, .sched-edit .sched-time input, .sched-edit .sched-save { min-height: 40px; } .sched-edit .sched-day { min-width: 40px; } }
 
 .plc-col-l { display: flex; flex-direction: column; align-items: flex-start; max-width: 49%; gap: 3px; }
 .plc-col-r { display: flex; flex-direction: column; align-items: flex-end; max-width: 48%; gap: 3px; }
@@ -618,6 +625,13 @@ export const getStyles = () => `
 .auto-item:hover { background: rgba(3, 169, 244, 0.1); }
 .auto-item-name { font-weight: bold; font-size: 14px; color: var(--primary-text-color, #212121); }
 .auto-item-id { font-size: 11px; color: var(--secondary-text-color, #888); font-family: monospace; }
+/* [ADDED v3.95.0] LOAD's window: under IN USE the automations a project holds - shown with where they are, not chosen. */
+.auto-sec { position: sticky; top: 0; z-index: 1; padding: 10px 12px 6px; font-size: 12px; font-weight: 800; letter-spacing: .08em; color: var(--secondary-text-color, #757575); background: var(--card-background-color, #fff); border-bottom: 1px solid var(--divider-color, #eee); }
+.auto-sec-note { padding: 6px 12px; font-size: 12px; line-height: 1.4; color: var(--secondary-text-color, #757575); border-bottom: 1px solid var(--divider-color, #eee); }
+.auto-used { padding: 12px; border-bottom: 1px solid var(--divider-color, #eee); display: flex; flex-direction: column; gap: 4px; cursor: default; opacity: .65; }
+.auto-used .auto-where { font-family: var(--primary-font-family, sans-serif); font-weight: 700; }
+.auto-none { padding: 16px; text-align: center; font-size: 13px; color: var(--secondary-text-color, #757575); }
+.auto-warn { margin: 0; font-size: 12px; line-height: 1.4; color: var(--error-color, #c62828); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 /* [ADDED v3.85.0] A question with answers of its own: Yes and No when leaving with changes not saved, the ways a NET can
    be deleted. The text keeps its lines; the answers wrap on a phone and are large enough for a finger. */

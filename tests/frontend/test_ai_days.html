@@ -1,0 +1,166 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-10] Purpose: the user's choice (2026-11-10) - LIBI asks how the days are set: a switch for each
+  day and a start time, or one schedule whose blocks start and end the logic. Each answer brings its own local variables
+  and takes away what it replaces (with a schedule, the start time and the minutes), kept aside as the user left them;
+  only what the chosen answer needs is created, and the build gets its variables and the answer. The real chat module,
+  with canned answers.
+-->
+<html><head><meta charset="utf-8"><title>libi-ai days test</title></head>
+<body>
+<div id="mount" style="width:320px"></div>
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { LibiAiChat } from '../../custom_components/libi/frontend/libi-ai.js';
+import { getStyles } from '../../custom_components/libi/frontend/libi-css.js';
+document.head.appendChild(Object.assign(document.createElement('style'), { textContent: getStyles() }));
+
+const results = [];
+const check = (name, cond, detail = '') => results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+const tick = () => new Promise(r => setTimeout(r, 0));
+
+const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const NAMES = { sun: 'Sunday', mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday' };
+const SWITCHES = 'A switch for each day, and a start time';
+const SCHEDULE = 'A schedule: the days, and the hours of each day';
+const K = 'Kitchen morning light';
+const role = (id, label, purpose, domain) => ({ id, label, purpose, domains: [domain], device_classes: [], keywords: [],
+  area_keywords: [], optional: false, named: false, variable: true });
+const EMPTY = { monday: [], tuesday: [], wednesday: [], thursday: [], friday: [], saturday: [], sunday: [] };
+const PLAN = {
+  plan: {
+    reply: 'Pick the light.', intent: 'create', target_net: '', level: 'automation', name: K, requirements: [],
+    roles: [
+      { id: 'light', label: 'Kitchen table light', purpose: 'target', domains: ['light'], device_classes: [], keywords: [], area_keywords: [] },
+      role('start_time', K, 'trigger', 'input_datetime'), role('minutes', `${K} - minutes`, 'condition', 'input_number'),
+    ],
+    new_helpers: [
+      { role: 'start_time', domain: 'input_datetime', name: K, settings: { has_time: true, has_date: false } },
+      { role: 'minutes', domain: 'input_number', name: `${K} - minutes`, settings: { min: 1, max: 120, step: 1 } },
+    ],
+    questions: [{
+      id: 'libi_days', libi: true, text: 'How do you want to set the days and the time on the dashboard?',
+      choices: [SWITCHES, SCHEDULE], note: 'Both are Home Assistant\'s own helpers, so the card works without LIBI.',
+      variants: {
+        [SWITCHES]: { drop: [],
+          roles: DAYS.map(d => role(`day_${d}`, NAMES[d], 'condition', 'input_boolean')),
+          helpers: DAYS.map(d => ({ role: `day_${d}`, domain: 'input_boolean', name: `${K} - ${d[0].toUpperCase()}${d.slice(1)}`,
+                                    settings: { icon: 'mdi:calendar-today' } })),
+          candidates: Object.fromEntries(DAYS.map(d => [`day_${d}`, { items: [], exact: false }])) },
+        [SCHEDULE]: { drop: ['start_time', 'minutes'],
+          roles: [role('week_schedule', 'Schedule', 'trigger', 'schedule')],
+          helpers: [{ role: 'week_schedule', domain: 'schedule', name: K, settings: EMPTY }],
+          candidates: { week_schedule: { items: [], exact: false } } },
+      },
+    }],
+  },
+  candidates: {
+    light: { exact: true, items: [{ entity_id: 'light.kitchen_table', name: 'KITCHEN Table', area: 'Kitchen', state: 'off' }] },
+    start_time: { exact: false, items: [] }, minutes: { exact: false, items: [] },
+  },
+  preselect: {},
+};
+const states = {};
+const calls = [];
+const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+const panel = {
+  _hass: { states, connection: { sendMessagePromise: async (m) => {
+    calls.push(JSON.parse(JSON.stringify(m)));
+    if (m.type === 'libi/ai_status') return { configured: true, mode: 'cloud', provider: 'gemini', model: 'gemini-x' };
+    if (m.type === 'libi/ai_plan') return JSON.parse(JSON.stringify(PLAN));
+    if (m.type === 'libi/ai_build') return { ok: false, errors: ['stop here'], tries: 1 };
+    if (m.type.endsWith('/create')) {
+      const id = slug(m.name);
+      states[`${m.type.split('/')[0]}.${id}`] = { state: 'off', attributes: { friendly_name: m.name } };
+      return { id };
+    }
+    return {};
+  } } },
+  core: { nets: [], syncCounters() {}, pushHistory() {} },
+  _render() {}, shadowRoot: document,
+};
+
+try {
+  localStorage.removeItem('libi_ai_open');
+  const chat = new LibiAiChat(panel);
+  const mount = document.getElementById('mount');
+  chat.attach(mount); await tick(); await tick();
+  chat.draft = 'Every morning at a time I set on the dashboard ...';
+  await chat.send(); await tick();
+  const rows = () => [...mount.querySelectorAll('.ai-var')].map(r => r.getAttribute('data-role'));
+  const roleIds = () => chat.plan.roles.map(r => r.id);
+  const choose = async (text) => {
+    const btn = [...mount.querySelectorAll('.ai-choices button')].find(b => b.textContent === text);
+    if (btn) btn.click();
+    await tick();
+    return !!btn;
+  };
+  const build = () => mount.querySelector('.ai-build');
+
+  // ---- Unanswered: no days variables, and Build waits for the answer
+  check('the question is asked under LIBI asks', !!mount.querySelector('.ai-libi-asks')
+        && mount.querySelector('.ai-libi-asks').textContent.includes('How do you want to set the days'));
+  check('unanswered, no days variable is in the plan', !roleIds().some(r => r.startsWith('day_') || r === 'week_schedule'),
+        roleIds().join());
+  check('the start time and the minutes are variables already', rows().join() === 'start_time,minutes', rows().join());
+  check('Build waits for the answer', build() && build().disabled === true);
+
+  // ---- A switch for each day
+  check('the answer can be chosen', await choose(SWITCHES));
+  check('a variable for each day, after the start time and the minutes', rows().join() ===
+        ['start_time', 'minutes', ...DAYS.map(d => `day_${d}`)].join(), rows().join());
+  check('each day is a new switch of its own name', DAYS.every(d => chat._helperOf(`day_${d}`)
+        && chat._helperOf(`day_${d}`).domain === 'input_boolean' && chat.vars[`day_${d}`].mode === 'new'));
+  check('the note says what the card shows', (mount.querySelector('.ai-days-note') || {}).textContent?.startsWith('A switch for each day'));
+  // The user renames the minutes.
+  const minutes = mount.querySelector('.ai-var[data-role="minutes"] .ai-var-name');
+  minutes.value = 'My minutes';
+  minutes.dispatchEvent(new Event('input'));
+  check('the minutes are renamed', chat._helperOf('minutes').name === 'My minutes');
+
+  // ---- A schedule: its block is the start and the end
+  await choose(SCHEDULE);
+  check('with a schedule: one variable for it, the switches gone', rows().join() === 'week_schedule', rows().join());
+  check('the start time and the minutes are kept aside, not in the plan', !roleIds().includes('start_time')
+        && !roleIds().includes('minutes') && Object.keys(chat._stash).sort().join() === 'minutes,start_time');
+  check('no helper is left to create for what is not in the plan', chat.newHelpers.filter(x => x.keep && !x.created)
+        .map(x => x.role).join() === 'week_schedule', chat.newHelpers.filter(x => x.keep).map(x => x.role).join());
+  check('the note says how the schedule is set', (mount.querySelector('.ai-days-note') || {}).textContent?.includes("a block's start turns it on"));
+  check('the schedule helper says where its days and hours are set',
+        (mount.querySelector('.ai-var[data-role="week_schedule"] .ai-var-what') || {}).textContent?.includes('tap it on the card, then its settings'));
+  // Created: only the schedule.
+  await chat.createHelpers(); await tick();
+  const created = calls.filter(m => m.type.endsWith('/create')).map(m => m.type);
+  check('only the schedule is created', created.join() === 'schedule/create', created.join());
+  check('created with an empty week', JSON.stringify(calls.find(m => m.type === 'schedule/create').monday) === '[]');
+
+  // ---- Back to a switch for each day: what was kept aside comes back as the user left it
+  await choose(SWITCHES);
+  check('back: the start time, the minutes and the days', rows().join() ===
+        ['start_time', 'minutes', ...DAYS.map(d => `day_${d}`)].join(), rows().join());
+  check('the minutes keep the name the user gave them', chat._helperOf('minutes').name === 'My minutes');
+  check('the schedule is out of the plan, its helper kept as made', !roleIds().includes('week_schedule')
+        && chat._helperOf('week_schedule')?.created === 'schedule.kitchen_morning_light');
+  check('nothing is kept aside any more', Object.keys(chat._stash).length === 0);
+  check('Build still waits: the new variables are not made yet', build().disabled === true);
+  await chat.createHelpers(); await tick();
+  const made = calls.filter(m => m.type.endsWith('/create')).map(m => m.type.split('/')[0]);
+  check('the start time, the minutes and the seven switches are made', made.join() ===
+        ['schedule', 'input_datetime', 'input_number', ...DAYS.map(() => 'input_boolean')].join(), made.join());
+  check('now Build can run', build().disabled === false);
+  build().click(); await tick(); await tick();
+  const sent = calls.find(m => m.type === 'libi/ai_build');
+  check('the build gets the variables of the answer chosen', sent && sent.plan.roles.map(r => r.id).join() ===
+        ['light', 'start_time', 'minutes', ...DAYS.map(d => `day_${d}`)].join(), sent && sent.plan.roles.map(r => r.id).join());
+  check('and the answer', sent && sent.answers.libi_days === SWITCHES);
+  check('each day picked: its new switch', sent && DAYS.every(d => (sent.selections[`day_${d}`] || [])[0] === `input_boolean.${slug(`${K} - ${d}`)}`),
+        sent && JSON.stringify(sent.selections));
+  check('the schedule is not part of it', sent && !('week_schedule' in sent.selections));
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>
