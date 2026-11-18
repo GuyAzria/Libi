@@ -1,0 +1,99 @@
+<!doctype html>
+<!--
+  LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
+  [ADDED v1.0.0 | 2026-11-11] Purpose: LIBI 3.96.0 - a script and a scene read from Home Assistant, as the importers
+  draw them (DRAWN is their output for the script and the scene of tests/test_load_entries.py), are drawn with no red
+  block; and a condition the ladder has no drawing for - a kind Home Assistant added, an or that is turned off - says
+  "kept as it is" on its block, is shown in the Inspector and not edited there, takes no dropped variable, and can be
+  deleted.
+-->
+<html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi imported kinds test</title></head>
+<body style="margin:0; width:1280px; height:800px;">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import '../../custom_components/libi/frontend/libi-panel.js';
+
+const results = [];
+const check = (name, cond, detail = '') => {
+  results.push({ name, ok: !!cond, detail: cond ? '' : String(detail) });
+  document.getElementById('out').textContent = 'RUNNING after: ' + name;
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;
+customElements.define('ha-entity-picker', class extends HTMLElement {});
+
+const DRAWN = {"script": {"id": "n_night", "ha_id": "night", "name": "Night routine", "description": "", "collapsed": false, "level": "script", "mode": "queued", "max": 3, "variables": null, "extra": {"icon": "mdi:weather-night", "fields": {"who": {"description": "Who", "example": "Guy"}}}, "rungs": [{"id": "r1", "comment": "Turn off x and wait 00:00:05", "elements": [{"id": "e1", "type": "coil_r", "isTrigger": false, "label": "light.x", "service": "light.turn_off", "raw": {"action": "light.turn_off", "target": {"entity_id": "light.x"}}, "src": "actions[0]", "targetSpec": {"entity_id": ["light.x"]}, "fromAction": true, "sig": "type=coil_r|label=light.x|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}, {"id": "e2", "type": "timer_ton", "isTrigger": false, "label": "00:00:05", "raw": {"delay": "00:00:05"}, "src": "actions[1]", "fromAction": true, "sig": "type=timer_ton|label=00:00:05|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}]}, {"id": "r2", "comment": "If door is on, then call create on no target", "elements": [{"id": "e3", "type": "contact_no", "isTrigger": false, "label": "binary_sensor.door", "raw": {"condition": "state", "entity_id": "binary_sensor.door", "state": "on"}, "src": "actions[2].opt[0].cond[0]", "sig": "type=contact_no|label=binary_sensor.door|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}, {"id": "e4", "type": "move", "isTrigger": false, "mode": "value", "source": "persistent_notification.create", "target": "no target", "service": "persistent_notification.create", "moveKind": "action", "raw": {"action": "persistent_notification.create", "data": {"message": "Door is open, {{ who }}"}}, "src": "actions[2].opt[0].seq[0]", "fromAction": true, "sig": "type=move|label=|sourceA=|sourceB=|sourceC=|target=no target|source=persistent_notification.create|mode=value|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}], "group": "g1", "groupIdx": 0, "groupTotal": 1, "groupKind": "if", "isDefault": false, "src": "actions[2]"}], "links": []}, "scene": {"id": "n_1700000000001", "ha_id": "1700000000001", "name": "Movie", "description": "", "collapsed": false, "level": "scene", "mode": null, "max": null, "variables": null, "extra": {"icon": "mdi:sofa", "metadata": {"light.sofa": {"entity_only": true}}}, "rungs": [{"id": "r1", "comment": "Turn on sofa and set sofa and set sofa", "elements": [{"id": "e1", "type": "coil_s", "isTrigger": false, "label": "light.sofa", "raw": {"scene": {"entity": "light.sofa", "key": null, "value": "on", "dict": true}}, "sig": "type=coil_s|label=light.sofa|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}, {"id": "e2", "type": "move", "isTrigger": false, "mode": "value", "target": "light.sofa", "source": "80", "raw": {"scene": {"entity": "light.sofa", "key": "brightness", "value": 80, "dict": true}}, "valueKey": "brightness", "sig": "type=move|label=|sourceA=|sourceB=|sourceC=|target=light.sofa|source=80|mode=value|title=|tts=|stream=|value=|valueKey=brightness|loopType=|weekdays=|precision=|fallback=|kind="}, {"id": "e3", "type": "move", "isTrigger": false, "mode": "value", "target": "light.sofa", "source": "[255, 180, 120]", "raw": {"scene": {"entity": "light.sofa", "key": "rgb_color", "value": [255, 180, 120], "dict": true}}, "valueKey": "rgb_color", "sig": "type=move|label=|sourceA=|sourceB=|sourceC=|target=light.sofa|source=[255, 180, 120]|mode=value|title=|tts=|stream=|value=|valueKey=rgb_color|loopType=|weekdays=|precision=|fallback=|kind="}]}, {"id": "r2", "comment": "Turn off ceiling", "elements": [{"id": "e4", "type": "coil_r", "isTrigger": false, "label": "light.ceiling", "raw": {"scene": {"entity": "light.ceiling", "key": null, "value": "off", "dict": false}}, "sig": "type=coil_r|label=light.ceiling|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}]}, {"id": "r3", "comment": "Set tv and set tv", "elements": [{"id": "e5", "type": "move", "isTrigger": false, "mode": "value", "target": "media_player.tv", "source": "playing", "raw": {"scene": {"entity": "media_player.tv", "key": null, "value": "playing", "dict": true}}, "sig": "type=move|label=|sourceA=|sourceB=|sourceC=|target=media_player.tv|source=playing|mode=value|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}, {"id": "e6", "type": "move", "isTrigger": false, "mode": "value", "target": "media_player.tv", "source": "HDMI 1", "raw": {"scene": {"entity": "media_player.tv", "key": "source", "value": "HDMI 1", "dict": true}}, "valueKey": "source", "sig": "type=move|label=|sourceA=|sourceB=|sourceC=|target=media_player.tv|source=HDMI 1|mode=value|title=|tts=|stream=|value=|valueKey=source|loopType=|weekdays=|precision=|fallback=|kind="}]}], "links": []}, "kept": {"id": "n_a1", "ha_id": "a1", "name": "Kept", "description": "", "collapsed": false, "level": "automation", "mode": null, "max": null, "variables": null, "extra": {}, "rungs": [{"id": "r1", "comment": "When door turns on, if light.is on: target=… options=… is true and or: enabled=False conditions=… is true, then turn on x", "elements": [{"id": "e5", "type": "contact_no", "isTrigger": true, "label": "binary_sensor.door", "raw": {"trigger": "state", "entity_id": "binary_sensor.door", "to": "on"}, "src": "triggers[0]", "autoGate": true, "sig": "type=contact_no|label=binary_sensor.door|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}, {"id": "e6", "type": "cmp_eq", "isTrigger": false, "sourceA": "light.is_on: target=… options=…", "sourceB": "true", "raw": {"condition": "light.is_on", "target": {"entity_id": "light.<img src=x onerror=\"window.__xss=1\">"}, "options": {"behavior": "any"}}, "src": "conditions[0]", "opaque": true, "baseCond": true, "sig": "type=cmp_eq|label=|sourceA=light.is_on: target=… options=…|sourceB=true|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}, {"id": "e7", "type": "cmp_eq", "isTrigger": false, "sourceA": "or: enabled=False conditions=…", "sourceB": "true", "raw": {"condition": "or", "enabled": false, "conditions": [{"condition": "state", "entity_id": "light.a", "state": "on"}, {"condition": "state", "entity_id": "light.b", "state": "on"}]}, "src": "conditions[1]", "opaque": true, "baseCond": true, "sig": "type=cmp_eq|label=|sourceA=or: enabled=False conditions=…|sourceB=true|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}, {"id": "e4", "type": "coil_s", "isTrigger": false, "label": "light.x", "service": "light.turn_on", "raw": {"action": "light.turn_on", "target": {"entity_id": "light.x"}}, "src": "actions[0]", "targetSpec": {"entity_id": ["light.x"]}, "fromAction": true, "sig": "type=coil_s|label=light.x|sourceA=|sourceB=|sourceC=|target=|source=|mode=|title=|tts=|stream=|value=|valueKey=|loopType=|weekdays=|precision=|fallback=|kind="}]}], "links": []}};
+const hass = {
+  states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
+  user: { is_admin: true }, localize: (k) => k, callService: async () => {},
+  connection: {
+    sendMessagePromise: async (m) => {
+      if (m.type === 'libi/ai_status') return { configured: false };
+      if (m.type === 'libi/project_list') return { projects: [] };
+      return [];
+    },
+    subscribeEvents: async () => () => {}, subscribeMessage: async () => () => {},
+  },
+};
+
+try {
+  localStorage.clear();
+  const panel = document.createElement('libi-panel');
+  panel.style.height = '800px';
+  document.body.appendChild(panel);
+  panel.hass = hass;
+  await sleep(300);
+  const sr = panel.shadowRoot;
+  const core = panel.core;
+  panel._project = { slug: 'p', name: 'P' };
+  const show = async (net) => {
+    core.nets = [JSON.parse(JSON.stringify(net))];
+    core.syncCounters(); core.repairAST(); core.validateAST();
+    panel._inspectedEl = null;
+    panel._render(); await sleep(50);
+    return core.nets[0];
+  };
+  const reds = (net) => net.rungs.flatMap(r => r.elements).filter(e => e.structuralError).map(e => `${e.type}: ${e.structuralError}`);
+
+  // ---- a script and a scene, as read from Home Assistant
+  let net = await show(DRAWN.script);
+  check('a script read from Home Assistant is drawn with no red block', reds(net).length === 0 && sr.querySelectorAll('.libi-el').length === 4
+        && !sr.querySelector('.libi-el.has-error'), reds(net).join(' | '));
+  check('it is a script: its level is shown, and it has no trigger', core.netLevel(net) === 'script' && !net.rungs.some(r => r.elements.some(e => e.isTrigger))
+        && sr.querySelector('.net-level-select').value === 'script');
+  net = await show(DRAWN.scene);
+  check('a scene read from Home Assistant is drawn with no red block', reds(net).length === 0 && sr.querySelectorAll('.libi-el').length === 6
+        && !sr.querySelector('.libi-el.has-error'), reds(net).join(' | '));
+  const pins = [...sr.querySelectorAll(`.libi-el[data-eid="${net.rungs[0].elements[2].id}"] .pin-val`)].map(p => p.textContent.trim()).join('|');
+  check('a colour of a scene is shown as it is written', pins.includes('[255, 180, 120]') && pins.includes('light.sofa'), pins);
+
+  // ---- a condition kept as it is
+  net = await show(DRAWN.kept);
+  const rung = net.rungs[0];
+  const kept = rung.elements.filter(e => e.opaque);
+  check('two conditions the ladder has no drawing for are kept as they are', kept.length === 2 && reds(net).length === 0, reds(net).join(' | '));
+  const block = sr.querySelector(`.libi-el[data-eid="${kept[0].id}"]`);
+  check('the block says so', !!block && (block.querySelector('.opaque-tag') || {}).textContent === 'kept as it is' && !block.classList.contains('has-error'));
+  const before = JSON.stringify(kept[0]);
+  panel._inspectedEl = { netId: net.id, rungId: rung.id, elId: kept[0].id };
+  panel._wakeSidebar(); panel._render(); await sleep(50);
+  const info = sr.querySelector('.opaque-info');
+  check('the Inspector shows it, with why it is not edited', !!info && /Kept as it is/i.test(info.textContent)
+        && /LIBI has no drawing for this condition/.test(info.textContent) && info.querySelector('.opaque-config').textContent.includes('"condition": "light.is_on"'));
+  check('and offers nothing to edit: no type, no field', !sr.querySelector('#propType') && !sr.querySelector('#dynamicPickerSlot')
+        && !sr.querySelector('#inspectorBody input, #inspectorBody select, #inspectorBody textarea'));
+  check('its node is text, never HTML', !sr.querySelector('#inspectorBody img') && !sr.querySelector('.libi-el img') && window.__xss === undefined);
+  check('a variable dropped on it changes nothing', panel._applyDroppedVar('light.z', net.id, rung.id, kept[0].id, 'sourceA') === false
+        && JSON.stringify(kept[0]) === before);
+  check('opening the Inspector changed nothing', JSON.stringify(rung.elements.find(e => e.id === kept[0].id)) === before);
+  const del = sr.querySelector('#propDelete');
+  check('it can be deleted', !!del);
+  del.click(); await sleep(50);
+  check('deleted, it is gone from the rung, the other one stays', core.nets[0].rungs[0].elements.filter(e => e.opaque).length === 1);
+} catch (err) {
+  results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
+}
+const failed = results.filter(r => !r.ok);
+document.getElementById('out').textContent = JSON.stringify({ passed: results.length - failed.length, failed }, null, 1);
+</script>
+</body></html>

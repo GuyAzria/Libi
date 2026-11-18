@@ -4820,6 +4820,13 @@ def test_every_rung_ends_with_an_action_as_the_panel_requires():
         "links": [{"aRung": "r10", "bRung": "r11"}, {"aRung": "r12", "bRung": "r13"}]}
     assert ai.rungs_without_action(net) == [(2, "go"), (4, "go"), (5, "go"), (6, "go"), (12, "go"), (13, "")]
     assert ai.rungs_without_action(None) == [] and ai.rungs_without_action({"rungs": "x"}) == []
+    # [ADDED 2026-11-11, v3.96.0] A delay is a step: after an action, or as Home Assistant's YAML has it (fromAction) - a
+    # delay before an if, a cool-down at the end. The for of a check is not one, nor a TON alone drawn by hand.
+    delay = {"type": "timer_ton", "fromAction": True}
+    steps = {"rungs": [{"id": "r1", "elements": [contact, coil, ton]}, {"id": "r2", "elements": [contact, delay]},
+                       {"id": "r3", "elements": [contact, coil, {"type": "timer_ton", "isFor": True}]},
+                       {"id": "r4", "elements": [contact, ton]}]}
+    assert ai.rungs_without_action(steps) == [(3, "go"), (4, "go")]
 
 
 # ---------------------------------------------------------------- a check that never holds (v3.95.5)

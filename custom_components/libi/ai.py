@@ -13,25 +13,14 @@
 # more details. <https://www.gnu.org/licenses/>.
 """The AI chat: an LLM drafts, Home Assistant decides.
 
-[ADDED v3.95.0 | 2026-11-10] Purpose: The user's choice (2026-11-10): the days and the time set on the dashboard are a
-switch for each day and a start time, or ONE schedule whose blocks start and end the logic - each day its own hours. LIBI
-asks which (days_question); both are Home Assistant's own helpers and card rows, so the card works without LIBI. A
-schedule the user names is used as it is. The days helper of 3.76.0 is kept only where a net already has it. And the
-user's language is the one of the user's own last message, in its letters (language_rule); a text the model shows the
-user in other letters goes back to it (language_problems) - a request in English got Hebrew names and a Hebrew reply.
-The phones list offers the recipients of LIBI Global first (global_recipients); one the user ticks is sent to as a
-phone is, by its script (message_targets) - the user got only the phones themselves, not "Guy My PHONE". A rung that
-ends with no action goes back to the model (rungs_without_action), and the end of a schedule's block is LIBI's line only
-when the logic turns something on - the user's train reminder had an end option with no steps, drawn in red.
-[CHANGED v3.95.5 | 2026-11-11] Purpose: A check that compares a state with an entity's id goes back to the model
-(literal_checks), lists too: it never holds. And the review of the release (RULE 41): the language check leaves the
-names of the house out (house_names) - the model must quote them, and could never correct them; a switch for each day is
-offered only when its seven roles fit the plan (MAX_ROLES) - with the roles a yes to LIBI's questions adds - or some
-days would be dropped; and a check is counted only where its entity can never hold an entity's id (FIXED_STATE_DOMAINS),
-and never one of an attribute. The third pass: a letter is counted by its script only (scripts_of) - a sign such as
-µ is none, and Japanese is one script - and the names of the house are left out with one pattern, all of them. The
-fourth: a schedule trigger written to [on] is the week schedule too - in the check of the request's lines as well (the
-fifth) - and a drawn rung that holds no block is skipped.
+[CHANGED v3.96.0 | 2026-11-11] Purpose: A delay is a step: a rung of a draft may end with one, as the panel takes it now
+(_path_ends) - a message and a cool-down after it was sent back to the model. The user (2026-11-18): four colours
+chosen on a card, the next one every 10 seconds, or a random one never the colour lit now - with the Math group's
+RAND, MOD and MUX: the build is told their forms and the way of values in turn and at random, a number the logic
+keeps for itself is a counter, and a colour a light takes by name is one Home Assistant knows (colour_problems,
+colour_notes) - a name it does not know makes the light white.
+[CHANGED v3.96.2 | 2026-11-18] Purpose: The review of the release (RULE 41): a list helper read as the colour on its
+own - {{ states('input_select.colours') }} - is checked too, not only one in a MUX (_named_colours).
 
 [ADDED v3.36.0 | 2026-10-26] Purpose: Turn a request written in any language into a ladder net.
 
@@ -72,11 +61,13 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import color as color_util
 from homeassistant.util import slugify
 
 from .libi_to_yaml import FIXED_STATE_DOMAINS, ast_to_yaml, net_level
 from .recipients import ALIAS_PREFIX
 from .yaml_to_libi import DAY_BITS_DOMAINS, called_actions, day_bits_entity, day_bits_template, is_recipient_action
+from .yaml_to_libi import calc_block, template_entity
 from .const import (
     AI_MODE_CLOUD,
     AI_MODE_LOCAL,
@@ -454,6 +445,10 @@ Answer with JSON only, matching the schema:
   a days helper and an amount helper. A value the user sets from the screen is a helper, never a
   question. A zone the user chooses on the screen is an input_select in role "zone_choice", settings {}: LIBI puts
   the user's zones in it, as a person's state names them.
+  A list of colours the user picks for a light (input_select) holds Home Assistant's colour names in English as its
+  options - red, orange, yellow, lime, cyan, blue, purple, pink, white, turquoise - never translated: a name Home
+  Assistant does not know makes the light white. A number the logic keeps for itself between runs - the step of
+  values in turn, the index of the value shown - is a counter helper (settings {}), which the card does not show.
   [] when nothing new is needed.
 - questions: what you must know before building that is not a device: durations, times, days,
   thresholds, whether a dashboard card is wanted and on which dashboard. Each with an English
@@ -585,6 +580,27 @@ THE LADDER LIBI DRAWS - write the logic the way a ladder works, like the user's 
   (input_number.set_value, input_datetime.set_datetime, input_select.select_option) is a MOVE; a message is a
   MOVE NOTIFY; spoken text (tts.speak) is a MOVE TTS; a delay, and the "for" of a trigger, is a TON;
   counter.increment is a CTU.
+- A random whole number is a RAND, the remainder of a division a MOD, and one of several values chosen by a number a
+  MUX - each written exactly so, and LIBI draws the block:
+  - RAND into a number helper: {"action": "counter.set_value", "target": {"entity_id": "role:<it>"}, "data":
+    {"value": "{{ range(<low>, <high> + 1) | random }}"}} (input_number.set_value for an input_number); never the
+    number it holds now: "{{ range(<low>, <high> + 1) | reject('eq', states('role:<it>') | int(None)) | list | random }}".
+  - MOD into a number helper: "{{ (states('role:<a>') | int(0)) % <n> }}".
+  - MUX, input number K of a list, K from 0, written straight into the value the action sets - a light's colour by
+    name: "color_name": "{{ ['red', states('role:<colour helper>'), 'blue'][(states('role:<k>') | int(0))] }}".
+  <low>, <high>, <n> and K are whole numbers or (states('role:<helper>') | int(0)). A number the logic keeps for itself
+  between runs - a step, the index of what is shown now - is a counter role.
+- Values in turn or at random every N seconds or minutes - colours on a light, for example: a time_pattern trigger
+  ("seconds": "/N") for each way, ids "in_turn" and "at_random", and "mode": "queued" (both fire together). In
+  turn: the option sets the device from the MUX of the values by the step counter, then counter.increment the step
+  (a CTU), then sets the step to its MOD by the number of values. At random, never the one shown: the option sets
+  the index counter by a RAND from 0 to the number of values less 1, never the number it holds, then sets the device
+  from the MUX of the values by the index. A switch the user sets that chooses one of the two is checked in each
+  option: on in one, off in the other.
+- A colour a light takes by name (color_name) is one Home Assistant knows, in English - red, orange, yellow, lime,
+  cyan, blue, purple, pink, white, turquoise ... - never translated. Names that differ only in brightness are one
+  colour on most lights (green and lime, blue and navy, purple and magenta, red and maroon): a list never holds two
+  of them, or "never the one shown" shows it again.
 
 ui_card: "" when the logic reads helpers the user sets (days, a time, an amount, an on/off choice): LIBI
 builds that card itself, the same every time - every setting, the days as one row of buttons, the
@@ -2620,7 +2636,7 @@ def shared_options(actions: Any) -> list[tuple[str, list[int]]]:
 
 
 # [ADDED v3.95.0] The blocks a rung of the panel may end with (libi-core.js, isAction).
-_ACTION_TYPES = frozenset(("coil", "coil_s", "coil_r", "coil_t", "move", "ctu", "notify", "repeat"))
+_ACTION_TYPES = frozenset(("coil", "coil_s", "coil_r", "coil_t", "move", "ctu", "notify", "repeat", "mux"))
 
 
 def _is_action(element: Any) -> bool:
@@ -2637,6 +2653,10 @@ def _path_ends(elements: Any) -> bool:
     if not isinstance(last, dict):
         return False
     if last.get("waitFor"):
+        return True
+    # [ADDED v3.96.0] A delay is a step (libi-core.js, delayEnd): a plain TON read from the YAML, or after an action.
+    if last.get("type") == "timer_ton" and not (last.get("isFor") or last.get("forOf")) and (
+            last.get("fromAction") or any(_is_action(e) for e in elements[:-1])):
         return True
     if last.get("type") == "parallel":
         return not last.get("closed") and all(_path_ends(b) for b in last.get("branches") or [])
@@ -2707,6 +2727,67 @@ def literal_checks(config: Any) -> list[str]:
     return list(dict.fromkeys(found))[:5]
 
 
+def _colour_values(node: Any):
+    """[ADDED v3.96.0] Every colour a configuration gives a light by name (color_name), in all its steps."""
+    if isinstance(node, dict):
+        data = node.get("data")
+        if isinstance(data, dict) and isinstance(data.get("color_name"), str):
+            yield data["color_name"]
+        for value in node.values():
+            yield from _colour_values(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _colour_values(value)
+
+
+def _named_colours(value: str) -> tuple[list[str], list[str]]:
+    """[ADDED v3.96.0] The colour names a color_name value gives - fixed ones, and the entities it reads them from:
+    a word, or the inputs of a MUX."""
+    text = value.strip()
+    if "{" not in text:
+        return [text], []
+    block = calc_block(text)
+    if not (block and block["type"] == "mux"):
+        # [ADDED v3.96.2] A helper read on its own (read_template): its options are the names.
+        entity = template_entity(text)
+        return [], [entity] if entity else []
+    inputs = block["inputs"]
+    entities = [v for v in inputs if _ENTITY_RE.fullmatch(v)]
+    return [v.strip("'") for v in inputs if v not in entities], entities
+
+
+def _unknown_colour(name: Any) -> bool:
+    return str(name).replace(" ", "").lower() not in color_util.COLORS
+
+
+def colour_problems(config: Any) -> list[str]:
+    """[ADDED v3.96.0] A colour written by name that Home Assistant does not know - it makes the light white, with only a
+    warning in its log - goes back to the model."""
+    bad = []
+    for value in _colour_values(config):
+        fixed, _entities = _named_colours(value)
+        bad += [name for name in fixed if _unknown_colour(name)]
+    return [f'"{name}" is no colour name Home Assistant knows, and it makes the light white: use its English name - '
+            "red, orange, yellow, lime, cyan, blue, purple, pink, white, turquoise ..." for name in dict.fromkeys(bad)][:5]
+
+
+def colour_notes(hass: HomeAssistant, config: Any) -> list[str]:
+    """[ADDED v3.96.0] A list helper a light takes its colour from by name, whose options Home Assistant does not all
+    know: the user is told - the helper exists, and the model cannot change it."""
+    notes = []
+    for value in _colour_values(config):
+        _fixed, entities = _named_colours(value)
+        for eid in entities:
+            state = hass.states.get(eid)
+            options = state.attributes.get("options") if state is not None else None
+            unknown = [str(o) for o in options or [] if _unknown_colour(o)]
+            if unknown:
+                notes.append(f"{state.name} holds colours Home Assistant does not know by name ({', '.join(unknown[:5])}): "
+                             "a light given one of them turns white. Give it Home Assistant's English colour names - red, "
+                             "orange, yellow, lime, cyan, blue, purple, pink, white, turquoise.")
+    return list(dict.fromkeys(notes))[:5]
+
+
 def draft_problems(draft: dict, drawn: dict) -> list[str]:
     """[ADDED v3.62.0] Why a build answer is not ready: LIBI's or Home Assistant's checks, the drawing, or what the
     ladder could not keep as written. [] when it is ready.
@@ -2726,6 +2807,7 @@ def draft_problems(draft: dict, drawn: dict) -> list[str]:
                  "Leave out an option with no steps, and a trigger only it was for."
                  for number, tid in rungs_without_action(drawn.get("net"))[:5]]
     problems += literal_checks(draft["auto"])
+    problems += colour_problems(draft["auto"])
     problems += [f"LIBI's ladder draws an if or a choose only at the top of the actions: {where} sits inside "
                  "another step." for where in nested_branches(draft["auto"].get("actions"))[:5]]
     problems += [f"LIBI's ladder does not wait inside a run: {where}."

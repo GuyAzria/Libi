@@ -14,15 +14,13 @@
  */
 /**
  * LIBI - Online Engine
- * v3.94.3
+ * v3.96.1
  */
-// [CHANGED v3.94.2 | 2026-11-08] Purpose: The user's screenshot: CMP ≠ weather against "rainy, pouring, lightning-rainy,
-//   snowy-rainy, hail" was TRUE while it rained - the watering must not run then. IN2 a list of states (as a state
-//   condition holds them): = is TRUE when IN1 is one of them, ≠ when it is none of them. IN2 a zone: compared by its
-//   name, as a person's state names it (home for zone.home) - it was compared with the zone's count of people.
-// [CHANGED v3.94.3 | 2026-11-09] Purpose: The user's screenshot: under a time trigger RUN and IN1 showed, IN2 (the time
-//   it starts at) did not - the end of the NET's drawing cut it, and between rungs the lines lay over the rung below.
-//   LIVE_ROOM is the room the panel gives under every block while Traces is on (libi-core.js liveRoom).
+// [CHANGED v3.96.0 | 2026-11-18] Purpose: The blocks the user asked for (2026-11-18): a MUX reads K, its inputs and its
+//   OUT, and shows OUT's state as a MOVE does (entitiesOf); EVERY - a time pattern - is a pulse of the clock: IN1 every,
+//   IN2 how often, and the rung goes on from it - it was compared as if "time pattern" were an entity.
+// [CHANGED v3.96.1 | 2026-11-18] Purpose: A MATH block's IN3 ... (more) are read too: offline when one of them is
+//   (entitiesOf).
 const ON_STATES = new Set(['on', 'true', 'home', 'open', 'unlocked', 'active', 'detected', 'playing']);
 const PULSE_MS = 4000;
 const DAY_IDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];  // Date.getDay() order, written as a CMP DAY's days
@@ -202,7 +200,8 @@ export class LibiOnline {
         if (t.startsWith('contact') || t.startsWith('coil')) add(el.label);
         else if (t.startsWith('cmp')) { add(el.sourceA); add(el.sourceB); add(el.sourceC); }
         else if (t === 'move' || t === 'notify') add(el.target);
-        else if (t.startsWith('math')) { add(el.sourceA); add(el.sourceB); add(el.target); }
+        else if (t.startsWith('math')) { add(el.sourceA); add(el.sourceB); (el.more || []).forEach(add); add(el.target); }
+        else if (t === 'mux') { add(el.sourceA); (el.inputs || []).forEach(add); add(el.target); }
         else if (t === 'ctu') add(el.source);
         return out;
     }
@@ -276,6 +275,12 @@ export class LibiOnline {
                 in1 = 'now';
                 in2 = st;
                 if (st !== null) power = (st === 'on') === (t === 'cmp_eq');
+            } else if (left === 'time pattern') {
+                // [ADDED v3.96.0] EVERY: a pulse of the clock - the rung starts each time it comes.
+                in1 = 'every';
+                in2 = el.sourceB;
+                value = el.sourceB;
+                power = true;
             } else if (left === 'time') {
                 // [CHANGED v3.93.0] IN1 is the clock now, IN2 the time it waits for - a helper's value, or written in.
                 const nowS = this.nowSeconds();
@@ -329,7 +334,7 @@ export class LibiOnline {
                     else if (t === 'cmp_ne') power = String(av) !== String(bv);
                 }
             }
-        } else if (t === 'move' || t === 'notify' || t.startsWith('math') || t === 'ctu') {
+        } else if (t === 'move' || t === 'notify' || t.startsWith('math') || t === 'ctu' || t === 'mux') {
             const st = this.stateOf(hass, el.target || el.source);
             value = st === null ? undefined : st;
             // An action does not stop the rung's flow; it is green only while what it drives is on.

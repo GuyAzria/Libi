@@ -11,16 +11,18 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [CHANGED v3.95.0 | 2026-11-10] Purpose: The user's rule (2026-11-10): an automation belongs to one project.
-#   libi/list_automations says, for each, the projects that hold it (in_use); libi/get_automation refuses to load one
-#   that another project - or another NET of this one - holds, and loads nothing while a project cannot be read.
-#   And libi/ai_plan asks how the days and the time on the card are set (ai.days_question): a switch for each day and a
-#   start time, or one schedule; the AI chat writes in the language of the user's last message (ai.language_rule).
 # [CHANGED v3.95.5 | 2026-11-11] Purpose: The review of the release (RULE 41): libi/list_automations names the NETs of each
 #   project that holds an automation (nets), so the panel offers a NET its own automation again, as libi/get_automation
 #   allows; and the language check of the AI chat leaves the names of the house out (ai.house_names). libi/get_automation
 #   checks who holds an automation for any load into a project - a NET or not - not only one with a net_id - reading the
 #   automations and who holds them under one lock. The names of the NETs on the page are names of the house too.
+# [CHANGED v3.96.0 | 2026-11-11] Purpose: The user (2026-11-11): "automations, scripts and scenes all go from YAML to LIBI
+#   and back". LOAD read automations only. libi/list_automations lists the scripts and the scenes too (but the
+#   recipients of LIBI Global, and a scene with no id), libi/get_automation opens one by its kind (domain), and a script
+#   or a scene opened into a NET is that entry from then on, exactly as an automation is: its V1 and V2, one project
+#   per entry, updated under its own key, never deleted by a save, drawn again from Home Assistant when the project
+#   opens (_opened_of, _compile_nets, _hydrate_project_nets). The AI chat's draft says when a light takes its colour by
+#   name from a list whose names Home Assistant does not all know - it would turn white (ai.colour_notes).
 import asyncio
 import copy
 import hashlib
@@ -47,7 +49,7 @@ from homeassistant.util.file import write_utf8_file_atomic
 from . import ai, online, recipients
 from .const import RECIPIENT_PREFIX
 from .libi_to_yaml import ast_to_yaml, verify_round_trip, net_level, same_config, slugify
-from .yaml_to_libi import called_actions, yaml_to_ast
+from .yaml_to_libi import called_actions, entry_to_ast, yaml_to_ast
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -276,20 +278,25 @@ def _record_open_versions_sync(hass: HomeAssistant, slug: str, nets: list, live:
             if not isinstance(net, dict):
                 continue
             ha_id = str(net.get("ha_id") or "")
-            linked = net.get("source") == "ha" and ha_id in live
+            # [CHANGED v3.96.0] live is Home Assistant's entries by kind: a script or a scene opened from it too.
+            level = net_level(net)
+            entry = (live.get(level) or {}).get(ha_id) if net.get("source") == "ha" else None
+            linked = entry is not None
             if linked and not (history["nets"].get(str(net.get("id") or "")) or {}).get("versions"):
-                originals.append((net, "automation", ha_id, live[ha_id]))
+                originals.append((net, level, ha_id, entry))
             elif linked:
-                entries.append((net, live[ha_id], _net_yaml_text(hass, net)))
+                entries.append((net, entry, _net_yaml_text(hass, net)))
             else:
                 entries.append((net, _net_config(hass, net), None))
         return _update_versions_locked(hass, slug, entries, "external", originals=originals)
 
 
-def _record_original_sync(hass: HomeAssistant, slug: str, net: dict, key: str, config: dict) -> dict:
-    """[ADDED v3.85.0] An automation loaded into a NET from the list: its V1, the original, and V2, its copy."""
+def _record_original_sync(hass: HomeAssistant, slug: str, net: dict, key: str, config: dict,
+                          domain: str = "automation") -> dict:
+    """[ADDED v3.85.0] An automation loaded into a NET from the list: its V1, the original, and V2, its copy.
+    [CHANGED v3.96.0] Or a script or a scene (domain)."""
     with _FILE_LOCK:
-        return _update_versions_locked(hass, slug, [], "external", originals=[(net, "automation", key, config)])
+        return _update_versions_locked(hass, slug, [], "external", originals=[(net, domain, key, config)])
 
 
 # [ADDED v3.86.0] The names the user gave entities in LIBI only, the user's request (2026-11-04): shown wherever LIBI shows
@@ -407,12 +414,12 @@ def _all_owned_except_sync(hass: HomeAssistant, keep_slug: str) -> dict:
                 out[key].add(str(item))
     return out
 
-def _automations_in_use_locked(hass: HomeAssistant) -> tuple[dict[str, list[dict]], list[str]]:
+def _entries_in_use_locked(hass: HomeAssistant) -> tuple[dict[str, dict[str, list[dict]]], list[str]]:
     """[ADDED v3.95.0] The user's rule (2026-11-10): an automation belongs to one project. For each automation id, the
     projects that hold it - a NET loaded from it (ha_id), the key a NET of theirs was saved to (keys), or one they own -
     with the NETs that hold it; and the projects that could not be read, which may hold any. Called with _FILE_LOCK
-    held."""
-    out: dict[str, list[dict]] = {}
+    held. [CHANGED v3.96.0] For each kind - a script and a scene belong to one project too: {domain: {key: holders}}."""
+    out: dict[str, dict[str, list[dict]]] = {domain: {} for domain in _DOMAIN_FILES}
     unreadable: list[str] = []
     directory = _get_projects_dir(hass)
     # Not _list_projects_sync: it leaves out a project it cannot read, and here such a project may hold the automation.
@@ -424,29 +431,58 @@ def _automations_in_use_locked(hass: HomeAssistant) -> tuple[dict[str, list[dict
         if data is None:
             unreadable.append(slug)
             continue
-        held: dict[str, set[str]] = {}
+        held: dict[tuple[str, str], set[str]] = {}
         for net in data.get("nets") or []:
-            if isinstance(net, dict) and net.get("ha_id") and net_level(net) == "automation":
-                held.setdefault(str(net["ha_id"]), set()).add(str(net.get("id") or ""))
+            if isinstance(net, dict) and net.get("ha_id") and net_level(net) in out:
+                held.setdefault((net_level(net), str(net["ha_id"])), set()).add(str(net.get("id") or ""))
         keys = data.get("keys") if isinstance(data.get("keys"), dict) else {}
         for nid, rec in keys.items():
-            if isinstance(rec, dict) and rec.get("domain") == "automation" and rec.get("key"):
-                held.setdefault(str(rec["key"]), set()).add(str(nid))
+            if isinstance(rec, dict) and rec.get("domain") in out and rec.get("key"):
+                held.setdefault((rec["domain"], str(rec["key"])), set()).add(str(nid))
         owned = data.get("owned") if isinstance(data.get("owned"), dict) else {}
-        for key in owned.get("automations") or []:
-            held.setdefault(str(key), set())
+        for domain, owned_key in _OWNED_KEYS.items():
+            for key in owned.get(owned_key) or []:
+                held.setdefault((domain, str(key)), set())
         name = str(data.get("name") or slug)[:60]
-        for key, nets in held.items():
-            out.setdefault(key, []).append({"slug": slug, "name": name, "nets": sorted(n for n in nets if n)})
+        for (domain, key), nets in held.items():
+            out[domain].setdefault(key, []).append({"slug": slug, "name": name, "nets": sorted(n for n in nets if n)})
     return out, unreadable
 
 
-def _automations_and_use_sync(hass: HomeAssistant) -> tuple[list, dict[str, list[dict]], list[str]]:
-    """[ADDED v3.95.0] automations.yaml's automations and the projects that hold each, read together under the lock."""
+def _loadable_entries(hass: HomeAssistant) -> dict[str, list[dict]]:
+    """[ADDED v3.96.0] What LOAD may open from Home Assistant's files, by kind: every automation; every script but the
+    recipients of LIBI Global, which are set in the Global tab; every scene that has an id - one without cannot be
+    addressed, and Home Assistant's own editor does not edit it either. A file that cannot be read lists nothing."""
+    out: dict[str, list[dict]] = {"automation": _get_all_automations(hass), "script": [], "scene": []}
+    scripts = _read_target_sync(_get_scripts_path(hass), {})
+    for key, item in (scripts or {}).items():
+        if isinstance(item, dict) and not str(key).startswith(RECIPIENT_PREFIX):
+            out["script"].append({"id": str(key), "name": str(item.get("alias") or key), "raw": item})
+    scenes = _read_target_sync(_get_scenes_path(hass), [])
+    for item in scenes or []:
+        if isinstance(item, dict) and item.get("id") is not None:
+            out["scene"].append({"id": str(item["id"]), "name": str(item.get("name") or item["id"]), "raw": item})
+    return out
+
+
+def _entries_and_use_sync(hass: HomeAssistant) -> tuple[dict[str, list[dict]], dict[str, dict[str, list[dict]]], list[str]]:
+    """[ADDED v3.95.0] automations.yaml's automations and the projects that hold each, read together under the lock.
+    [CHANGED v3.96.0] The scripts and the scenes too (_loadable_entries)."""
     with _FILE_LOCK:
-        autos = _get_all_automations(hass)
-        in_use, unreadable = _automations_in_use_locked(hass)
-    return autos, in_use, unreadable
+        entries = _loadable_entries(hass)
+        in_use, unreadable = _entries_in_use_locked(hass)
+    return entries, in_use, unreadable
+
+
+def _opened_of(history: dict | None) -> dict[str, set[tuple[str, str]]]:
+    """[ADDED v3.96.0] Per NET, what was opened into it from Home Assistant - its originals: (domain, key). An
+    automation, a script or a scene."""
+    opened: dict[str, set[tuple[str, str]]] = {}
+    for nid, rec in ((history or {}).get("nets") or {}).items():
+        for version in (rec or {}).get("versions") or []:
+            if version.get("original") and version.get("domain") in _DOMAIN_FILES and version.get("key"):
+                opened.setdefault(str(nid), set()).add((version["domain"], str(version["key"])))
+    return opened
 
 
 def _migrate_single_ast_sync(hass: HomeAssistant) -> None:
@@ -644,11 +680,7 @@ def _save_context_sync(hass: HomeAssistant, slug: str, ours: tuple | list = ()) 
     for domain, owned_key in _OWNED_KEYS.items():
         mine = owned[domain] | {str(k) for d, k in ours if d == domain}
         taken[domain] = (_file_keys(files[domain]) | protected[owned_key]) - mine
-    opened: dict[str, set[str]] = {}
-    for nid, rec in ((history or {}).get("nets") or {}).items():
-        for version in (rec or {}).get("versions") or []:
-            if version.get("original") and version.get("domain") == "automation" and version.get("key"):
-                opened.setdefault(str(nid), set()).add(str(version["key"]))
+    opened = _opened_of(history)  # [CHANGED v3.96.0] (domain, key): a script or a scene opened from Home Assistant too
     keys = project.get("keys") if isinstance(project.get("keys"), dict) else {}
     return {"errors": [], "taken": taken, "owned": owned, "opened": opened, "keys": keys, "exists": exists,
             "revision": _revision_of(project) if exists else None,
@@ -710,15 +742,25 @@ def _compile_nets(hass: HomeAssistant, nets: list, ctx: dict | None = None) -> t
         if not compiled.get(_LEVEL_BODY_KEY.get(level, "actions")):
             continue
         nid = str(net.get("id") or "")
-        ha_id = "" if level == "script" else str(net.get("ha_id") or "")
+        ha_id = str(net.get("ha_id") or "")
         if level == "script":
-            base = slugify(net.get("name"), fallback="libi_" + slugify(net.get("id"), "script"))
+            # [CHANGED v3.96.0] A script opened into this NET from Home Assistant is that script: its key is its own,
+            # whatever the NET is called - known by its original (opened), or by the key the project recorded for this
+            # NET and still owns. Any other script NET is named by its name, as before: an ha_id alone means nothing
+            # (the AI chat's drafts carry one).
+            record = kept.get(nid) if isinstance(kept.get(nid), dict) else {}
+            its_own = bool(ha_id) and (("script", ha_id) in opened.get(nid, ()) or (
+                record.get("domain") == "script" and str(record.get("key") or "") == ha_id
+                and record.get("base") == ha_id and ha_id in owned.get("script", ())))
+            if not its_own:
+                ha_id = ""
+            base = ha_id or slugify(net.get("name"), fallback="libi_" + slugify(net.get("id"), "script"))
         else:
             base = str(compiled.get("id") or "")
             if not base:
                 errors.append(f"{label}: it has no id for Home Assistant")
                 continue
-        linked = bool(ha_id) and base == ha_id and (base in owned.get(level, ()) or base in opened.get(nid, ()))
+        linked = bool(ha_id) and base == ha_id and (base in owned.get(level, ()) or (level, base) in opened.get(nid, ()))
         entries.append({"net": net, "label": label, "domain": level, "base": base, "key": "", "config": compiled,
                         "linked": linked, "named": bool(ha_id)})
     claimed: dict[tuple[str, str], dict] = {}
@@ -796,11 +838,12 @@ async def _originals_as_they_were(hass: HomeAssistant, slug: str, entries: list[
 
 def _as_libi_compiles(hass: HomeAssistant, entry: dict, config: Any) -> dict | None:
     """[ADDED v3.90.0] An automation as its NET compiles once LIBI opens it: what the NET is when nobody changed it in
-    LIBI. None when it cannot be compared. Reads the registries, so on the event loop."""
-    if entry["domain"] != "automation" or not isinstance(config, dict):
+    LIBI. None when it cannot be compared. Reads the registries, so on the event loop.
+    [CHANGED v3.96.0] A script and a scene too, each read by its own importer."""
+    if not isinstance(config, dict):
         return None
     try:
-        opened = yaml_to_ast(hass, copy.deepcopy(config))
+        opened = entry_to_ast(hass, entry["domain"], entry["key"], copy.deepcopy(config))
         opened.update(id=entry["net"].get("id"), ha_id=entry["key"], level=entry["domain"])
         return ast_to_yaml(hass, opened)
     except Exception as err:  # noqa: BLE001
@@ -854,9 +897,10 @@ async def _as_last_seen(hass: HomeAssistant, slug: str, entries: list[dict]) -> 
         elif not same_config(current, entry["config"]):
             entry["conflict"] = seen is not None and not same_config(current, seen)
             # The original put back is sent exactly as it was: nothing of it is lost.
-            if entry["domain"] == "automation" and not entry.get("original"):
+            # [CHANGED v3.96.0] And of a script or a scene opened from Home Assistant; one drawn in LIBI is its drawing.
+            if (entry["domain"] == "automation" or entry.get("linked")) and not entry.get("original"):
                 try:
-                    report = verify_round_trip(hass, copy.deepcopy(current))
+                    report = verify_round_trip(hass, copy.deepcopy(current), entry["domain"], entry["key"])
                 except Exception as err:  # noqa: BLE001
                     report = {"ok": False, "issues": [f"it could not be checked: {ai._sanitize(err)}"]}
                 if not report.get("ok"):
@@ -1111,8 +1155,34 @@ def _automations_by_id_sync(hass: HomeAssistant) -> dict:
     return out
 
 
+def _live_entries_sync(hass: HomeAssistant, slug: str, nets: list) -> tuple[dict[str, dict], set[str]]:
+    """[ADDED v3.96.0] Home Assistant's entries as they are now, by kind and key, and the NETs of this project that are a
+    script or a scene opened from Home Assistant - by their original, or by the key the project recorded for them - which
+    are drawn again from it when the project opens, as an automation is. A script or a scene drawn in LIBI keeps its
+    drawing. A file that cannot be read gives no entries of that kind: its NETs keep their drawing."""
+    with _FILE_LOCK:
+        scripts = _read_target_sync(_get_scripts_path(hass), {})
+        scenes = _read_target_sync(_get_scenes_path(hass), [])
+        live = {"automation": _automations_by_id_sync(hass),
+                "script": {str(k): v for k, v in (scripts or {}).items() if isinstance(v, dict)},
+                "scene": {str(i["id"]): i for i in scenes or [] if isinstance(i, dict) and i.get("id") is not None}}
+        opened = _opened_of(_read_versions_sync(hass, slug))
+        project = _read_project_sync(hass, slug) or {}
+    keys = project.get("keys") if isinstance(project.get("keys"), dict) else {}
+    linked: set[str] = set()
+    for net in nets or []:
+        if not isinstance(net, dict):
+            continue
+        nid, level, ha_id = str(net.get("id") or ""), net_level(net), str(net.get("ha_id") or "")
+        record = keys.get(nid) if isinstance(keys.get(nid), dict) else {}
+        if level in ("script", "scene") and ha_id and ((level, ha_id) in opened.get(nid, ()) or (
+                record.get("domain") == level and str(record.get("key") or "") == ha_id and record.get("base") == ha_id)):
+            linked.add(nid)
+    return live, linked
+
+
 @callback
-def _hydrate_project_nets(hass: HomeAssistant, nets: list, live: dict) -> dict:
+def _hydrate_project_nets(hass: HomeAssistant, nets: list, live: dict, linked: set | frozenset = frozenset()) -> dict:
     """[ADDED v3.15.0] Turns what the project stored into what the canvas should show.
 
     A net that names an automation is rebuilt from that automation as it stands right now, so the
@@ -1132,13 +1202,16 @@ def _hydrate_project_nets(hass: HomeAssistant, nets: list, live: dict) -> dict:
         ha_id = str(stored.get("ha_id") or "")
         level = net_level(stored)
 
-        # Only an automation has an anchor to reload from. A script or a scene keeps its drawing.
-        if ha_id and level == "automation" and ha_id in live:
+        # An automation has an anchor to reload from. [CHANGED v3.96.0] So has a script or a scene opened from Home
+        # Assistant (linked); one drawn in LIBI keeps its drawing. live is {kind: {key: entry}}.
+        anchored = level == "automation" or str(stored.get("id") or "") in linked
+        entries = live.get(level) or {}
+        if ha_id and anchored and ha_id in entries:
             try:
-                fresh = yaml_to_ast(hass, live[ha_id])
+                fresh = entry_to_ast(hass, level, ha_id, entries[ha_id])
             except Exception as err:  # noqa: BLE001
-                _LOGGER.error("[libi] could not rebuild net %s from automation %s: %s",
-                              stored.get("name"), ha_id, err)
+                _LOGGER.error("[libi] could not rebuild net %s from %s %s: %s",
+                              stored.get("name"), level, ha_id, err)
                 keep = dict(stored)
                 keep["source"] = "draft"
                 keep["source_note"] = f"Could not be rebuilt from Home Assistant: {err}"
@@ -1156,10 +1229,10 @@ def _hydrate_project_nets(hass: HomeAssistant, nets: list, live: dict) -> dict:
             continue
 
         keep = dict(stored)
-        if ha_id and level == "automation":
+        if ha_id and anchored:
             # It was linked to an automation and that automation is no longer there.
             keep["source"] = "orphan"
-            keep["source_note"] = "The automation this net was loaded from is no longer in Home Assistant. The saved drawing is shown instead."
+            keep["source_note"] = f"The {level} this net was loaded from is no longer in Home Assistant. The saved drawing is shown instead."
             stats["orphan"] += 1
         else:
             keep["source"] = "draft"
@@ -1487,16 +1560,21 @@ async def ws_handle_load_automation(hass: HomeAssistant, connection: websocket_a
 async def ws_handle_list_automations(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     # [CHANGED v3.95.0] With, for each automation, the projects that hold it (in_use: slug and name), and the projects
     # that could not be read (unreadable): the panel lists under IN USE what it may not load.
-    autos, in_use, unreadable = await hass.async_add_executor_job(_automations_and_use_sync, hass)
-    res = [{"id": a["id"], "name": a["name"],
-            "in_use": [{"slug": u["slug"], "name": u["name"], "nets": u["nets"]} for u in in_use.get(str(a["id"]), [])]}
-           for a in autos]
-    connection.send_result(msg["id"], {"automations": res, "unreadable": unreadable})
+    # [CHANGED v3.96.0] And the scripts and the scenes, each list the same shape.
+    entries, in_use, unreadable = await hass.async_add_executor_job(_entries_and_use_sync, hass)
+    res = {domain: [{"id": e["id"], "name": e["name"],
+                     "in_use": [{"slug": u["slug"], "name": u["name"], "nets": u["nets"]}
+                                for u in in_use[domain].get(str(e["id"]), [])]}
+                    for e in entries[domain]] for domain in entries}
+    connection.send_result(msg["id"], {"automations": res["automation"], "scripts": res["script"],
+                                       "scenes": res["scene"], "unreadable": unreadable})
 
 
 @websocket_api.websocket_command({
     vol.Required("type"): "libi/get_automation",
     vol.Required("automation_id"): str,
+    # [ADDED v3.96.0] Its kind: an automation, or a script (automation_id is its key) or a scene (its id).
+    vol.Optional("domain", default="automation"): vol.In(["automation", "script", "scene"]),
     # [ADDED v3.85.0] The NET it is loaded into, whose V1 and V2 it becomes (the user's rule of 2026-11-04).
     vol.Optional("slug"): str,
     vol.Optional("net_id"): str,
@@ -1505,6 +1583,7 @@ async def ws_handle_list_automations(hass: HomeAssistant, connection: websocket_
 @websocket_api.async_response
 async def ws_handle_get_automation(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     auto_id = msg["automation_id"]
+    domain = msg["domain"]
     slug = msg.get("slug") or "default"
     if not valid_project_slug(slug):
         connection.send_error(msg["id"], "invalid_slug", "Not a valid project name")
@@ -1517,31 +1596,36 @@ async def ws_handle_get_automation(hass: HomeAssistant, connection: websocket_ap
     # look with neither is answered as before.
     if "net_id" in msg or "slug" in msg:
         # The automations and who holds them, read together under one lock: nothing changes between the check and the read.
-        autos, in_use, unreadable = await hass.async_add_executor_job(_automations_and_use_sync, hass)
+        entries, in_use, unreadable = await hass.async_add_executor_job(_entries_and_use_sync, hass)
         if unreadable:
             connection.send_error(msg["id"], "projects_unreadable",
                                   f"LIBI could not read the project file of {', '.join(unreadable[:5])}, so it cannot "
-                                  "tell which project holds this automation. Nothing was loaded.")
+                                  f"tell which project holds this {domain}. Nothing was loaded.")
             return
-        holders = sorted({u["name"] for u in in_use.get(str(auto_id), [])
+        holders = sorted({u["name"] for u in in_use[domain].get(str(auto_id), [])
                           if not (u["slug"] == slug and set(u["nets"]) <= {str(msg.get("net_id") or "")})})
         if holders:
             connection.send_error(msg["id"], "in_use",
-                                  f"This automation is already in the project {', '.join(holders)}. An automation "
+                                  f"This {domain} is already in the project {', '.join(holders)}. "
+                                  f"{'An automation' if domain == 'automation' else 'A ' + domain} "
                                   "belongs to one project: open that project, or take it out of it first (Delete "
                                   "NET... > Remove from LIBI only). Nothing was loaded.")
             return
-    else:
+        autos = entries[domain]
+    elif domain == "automation":
         autos = await hass.async_add_executor_job(_get_all_automations, hass)
+    else:
+        autos = (await hass.async_add_executor_job(_loadable_entries, hass))[domain]
     target = next((a for a in autos if str(a["id"]) == auto_id), None)
     if not target:
-        connection.send_error(msg["id"], "not_found", "Automation not found")
+        connection.send_error(msg["id"], "not_found", f"{domain.capitalize()} not found")
         return
     try:
-        ast_net = yaml_to_ast(hass, target["raw"])
-        report = verify_round_trip(hass, target["raw"])
+        # [CHANGED v3.96.0] By its kind: a script by its key, a scene.
+        ast_net = entry_to_ast(hass, domain, auto_id, target["raw"])
+        report = verify_round_trip(hass, target["raw"], domain, auto_id)
         if not report.get("ok"):
-            _LOGGER.warning("[libi] %s does not round trip cleanly: %s", auto_id, report.get("issues"))
+            _LOGGER.warning("[libi] %s %s does not round trip cleanly: %s", domain, auto_id, report.get("issues"))
     except Exception as err:  # noqa: BLE001
         connection.send_error(msg["id"], "parse_error", str(err))
         return
@@ -1549,7 +1633,7 @@ async def ws_handle_get_automation(hass: HomeAssistant, connection: websocket_ap
     if msg.get("net_id"):
         opened = {**ast_net, "id": msg["net_id"], "ha_id": auto_id}
         versions = await hass.async_add_executor_job(_record_original_sync, hass, slug, opened, auto_id,
-                                                     copy.deepcopy(target["raw"]))
+                                                     copy.deepcopy(target["raw"]), domain)
     connection.send_result(msg["id"], {"net": ast_net, "verify": report, "versions": versions})
 
 
@@ -1625,13 +1709,13 @@ async def ws_handle_net_delete_plan(hass: HomeAssistant, connection: websocket_a
     entry = next((e for e in entries if e["net"] is net), None)
     if entry:
         domain, key = entry["domain"], entry["key"]
-    elif net.get("ha_id") and net_level(net) == "automation":
-        domain, key = "automation", str(net["ha_id"])
+    elif net.get("ha_id"):
+        domain, key = net_level(net), str(net["ha_id"])  # [CHANGED v3.96.0] a script or a scene opened from HA too
     else:
         domain, key = "", ""
     # [ADDED v3.91.0] RULE 38: only the NET's own entry - one this project saved, or the automation opened into this NET
     # - is offered for deletion; one it only names is someone else's.
-    if domain and key not in ctx["owned"].get(domain, ()) and key not in ctx["opened"].get(msg["net_id"], ()):
+    if domain and key not in ctx["owned"].get(domain, ()) and (domain, key) not in ctx["opened"].get(msg["net_id"], ()):
         domain, key = "", ""
     stamp = datetime.now(timezone.utc).isoformat()
     info = await hass.async_add_executor_job(_net_entry_sync, hass, slug, msg["net_id"], domain, key)
@@ -1910,8 +1994,9 @@ async def ws_handle_project_open(hass: HomeAssistant, connection: websocket_api.
         return
     # [CHANGED v3.15.0] Anchored nets are rebuilt from Home Assistant as it stands now, drafts and
     # orphans come back from the drawing the project saved.
-    live = await hass.async_add_executor_job(_automations_by_id_sync, hass)
-    hydrated = _hydrate_project_nets(hass, data.get("nets") or [], live)
+    # [CHANGED v3.96.0] And a script or a scene opened from Home Assistant, from its file as it is now.
+    live, linked = await hass.async_add_executor_job(_live_entries_sync, hass, slug, data.get("nets") or [])
+    hydrated = _hydrate_project_nets(hass, data.get("nets") or [], live, linked)
     # [ADDED v3.47.0] What runs now becomes V1, or the next version when it was changed elsewhere.
     # [CHANGED v3.85.0] An automation opened for the first time is V1, the original as it is in Home Assistant, and V2.
     versions = await hass.async_add_executor_job(
@@ -2005,13 +2090,19 @@ def _owners_locked(hass: HomeAssistant) -> tuple[dict[tuple[str, str], dict], li
         if data is None:
             unreadable.append(slug)
             continue
-        linked = {str(n["ha_id"]) for n in data.get("nets") or []
-                  if isinstance(n, dict) and n.get("ha_id") and net_level(n) == "automation"}
+        # [CHANGED v3.96.0] A script NET opened from Home Assistant is drawn again from its script too: its ha_id is
+        # the key the project recorded for it.
+        keys = data.get("keys") if isinstance(data.get("keys"), dict) else {}
+        linked = {(net_level(n), str(n["ha_id"])) for n in data.get("nets") or []
+                  if isinstance(n, dict) and n.get("ha_id") and (net_level(n) == "automation" or (
+                      net_level(n) == "script" and isinstance(keys.get(str(n.get("id") or "")), dict)
+                      and str(keys[str(n.get("id") or "")].get("key") or "") == str(n["ha_id"])
+                      and keys[str(n.get("id") or "")].get("base") == str(n["ha_id"])))}
         owned = data.get("owned") if isinstance(data.get("owned"), dict) else {}
         for domain, owned_key in _OWNED_KEYS.items():
             for key in owned.get(owned_key) or []:
                 out[(domain, str(key))] = {"slug": slug, "name": str(data.get("name") or slug)[:60],
-                                           "drawn": not (domain == "automation" and str(key) in linked)}
+                                           "drawn": (domain, str(key)) not in linked}
     return out, unreadable
 
 
@@ -2761,6 +2852,9 @@ async def ws_handle_ai_build(hass: HomeAssistant, connection: websocket_api.Acti
     # [ADDED v3.80.0] A yes to one of LIBI's questions that could not be kept, said: no battery on the devices picked.
     if safety["notes"]:
         result["notes"] = list(result["notes"]) + safety["notes"]
+    # [ADDED v3.96.0] A list a light takes its colour from by name, with names Home Assistant does not know: said.
+    if draft["ok"]:
+        result["notes"] = list(result["notes"]) + ai.colour_notes(hass, draft["auto"])
     # [ADDED v3.65.0] A branch the model kept inside another step, after every correction: the user is told.
     if draft["ok"] and ai.nested_branches(draft["auto"].get("actions")):
         result["notes"] = list(result["notes"]) + [

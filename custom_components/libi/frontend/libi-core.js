@@ -14,21 +14,16 @@
  */
 /**
  * LIBI Panel - Core Engine
- * v3.95.5
+ * v3.96.2
  */
-// [CHANGED v3.94.3 | 2026-11-09] Purpose: The user's screenshot: in Traces, IN2 under a time trigger was cut off by the
-//   end of the NET's drawing. liveRoom - the room under every block for Traces' lines: a rung's pad under its blocks
-//   when larger (layout), added between branches, which editing packs block to block (calcHeightPx), and the pad
-//   under a parallel too, for its own line; 0 while editing, so the editing layout is as it was.
-// [CHANGED v3.95.5 | 2026-11-11] Purpose: The virtual tests of 2026-11-11: a CMP = / not = whose IN2 is an entity Home
-//   Assistant reads as plain text - its state is never "sensor.other" - is red, and the save refused (checkLiteral); so is
-//   a CMP not = that starts an automation on a state, which has no form in Home Assistant - of several entities too - and a
-//   person in a zone whose check has an option a zone has none of (for, attribute ...), and an IN2 emptied. Only where IN1
-//   can never hold such a text (FIXED_STATE): a dropdown, a text or a sensor may hold an entity's id as its value, and so
-//   may an attribute (a person's source is a tracker) - in a trigger too; IN2 0 is no empty IN2; a person in a zone with a
-//   TON after it is refused, a zone has no for (the fourth pass of the review of the release). The fifth: only a TON that
-//   is a for (isFor, forOf) counts - a plain one is a delay; a not = held for a time is refused, Home Assistant cannot
-//   say it; a for in the node it was drawn from is the TON's, gone with it.
+// [CHANGED v3.96.1 | 2026-11-18] Purpose: A MATH block is as tall as its inputs: IN3 ... of ADD, SUB, MUL and DIV
+//   (more), which the user adds in the Inspector (getElH).
+// [CHANGED v3.96.2 | 2026-11-18] Purpose: One list of the devices a MOVE or a MUX sets a value on (DEVICE_VALUE_KINDS),
+//   not two copies in getElH (the review of the release, RULE 41).
+// [ADDED v3.96.2] The devices a MOVE or a MUX sets a value on (libi-panel.js MOVE_SETS, yaml_to_libi.DEVICE_VALUE_DOMAINS):
+// their block says what it sets, on a line of its own.
+const DEVICE_VALUE_KINDS = new Set(['light', 'fan', 'cover', 'valve', 'climate', 'water_heater', 'humidifier', 'media_player']);
+
 export class LibiCore {
     constructor() {
         this.nets = [];
@@ -309,12 +304,19 @@ export class LibiCore {
         if (type === 'parallel') return { id: `e${this.eid++}`, type, branches: [[], []], closed: false };
         if (type === 'repeat') return { id: `e${this.eid++}`, type: 'repeat', loopType: 'count', value: '3', sequence: [] };
         if (type.startsWith('timer')) return { id: `e${this.eid++}`, type, label: label || '00:00:01' };
+        // [ADDED v3.96.0] The + point's ready blocks: a MOVE that sends a message or speaks, and EVERY - a time pattern
+        // that starts the rung, every 10 seconds until it is changed.
+        if (type.startsWith('move_')) return { id: `e${this.eid++}`, type: 'move', mode: type.slice(5), source: '', target: '', title: '', tts: '' };
+        if (type === 'every') return { id: `e${this.eid++}`, type: 'cmp_eq', sourceA: 'time pattern', sourceB: 'seconds=/10', isTrigger: true };
         if (type === 'move') return { id: `e${this.eid++}`, type: 'move', source: '', target: '' };
         if (type.startsWith('cmp')) return { id: `e${this.eid++}`, type, sourceA: label || '', sourceB: '' };
         if (type === 'notify') return { id: `e${this.eid++}`, type: 'notify', source: 'Message...', target: '' };
         if (type === 'ctu') return { id: `e${this.eid++}`, type: 'ctu', source: '', value: '5' };
         if (type === 'schedule') return { id: `e${this.eid++}`, type: 'schedule', sourceA: '08:00', sourceB: '17:00' };
         if (type === 'math_div') return { id: `e${this.eid++}`, type, sourceA: '', sourceB: '', target: '', precision: 2, fallback: 0 };
+        // [ADDED v3.96.0] RAND: a random whole number from IN1 to IN2 into OUT; MUX: input number K of its list.
+        if (type === 'math_rand') return { id: `e${this.eid++}`, type, sourceA: '0', sourceB: '9', target: '', notSame: false };
+        if (type === 'mux') return { id: `e${this.eid++}`, type, sourceA: '', inputs: ['', ''], target: '' };
         if (type.startsWith('math')) return { id: `e${this.eid++}`, type, sourceA: '', sourceB: '', target: '' };
         if (type === 'move') return { id: `e${this.eid++}`, type, mode: 'value', source: '', target: '', title: '', tts: '' };
         if (type === 'cmp_rng') return { id: `e${this.eid++}`, type, sourceA: '', sourceB: '', sourceC: '' };
@@ -324,16 +326,23 @@ export class LibiCore {
 
     getElW(el) { 
         if (el.type.startsWith('contact') || el.type.startsWith('coil') || el.type === 'wait') return 56; 
-        if (el.type.startsWith('cmp') || el.type === 'move' || el.type.startsWith('math')) return 208;
+        if (el.type.startsWith('cmp') || el.type === 'move' || el.type.startsWith('math') || el.type === 'mux') return 208;
         return 160; 
     }
 
     getElH(el) {
         if (el.type.startsWith('contact') || el.type.startsWith('coil') || el.type === 'wait') return 100; 
         if (el.type === 'move' && el.mode === 'both') return 180;
+        // [ADDED v3.96.0] A MOVE that sets a value on a device says which under its pins (the panel's move-key line).
+        const device = DEVICE_VALUE_KINDS.has(String(el.target || '').split('.')[0]);
+        const moveKey = device && ((el.type === 'move' && (el.mode || 'value') === 'value' && el.moveKind !== 'action') || el.type === 'mux') ? 16 : 0;
         
         let baseH = 140; 
         if (el.type.startsWith('cmp') || el.type.startsWith('math') || el.type === 'schedule') baseH = 160; 
+        // [ADDED v3.96.0] A MUX has a row for K and OUT, then a row for each input; a RAND ticked says so under its pins.
+        if (el.type === 'mux') baseH = 136 + 22 * Math.max(2, (el.inputs || []).length);
+        if (el.type === 'math_rand' && el.notSame) baseH += 16;
+        if (el.type.startsWith('math') && Array.isArray(el.more)) baseH += 22 * el.more.length;  // IN3 ... of MATH
         
         const checkLen = (str) => {
             if (!str) return 0;
@@ -354,7 +363,7 @@ export class LibiCore {
         
         // [ADDED v3.71.0] CMP DATETIME against a schedule has one line more: the days and hours of that schedule.
         const week = String(el.sourceA) === 'datetime' && String(el.sourceB || '').startsWith('schedule.') ? 20 : 0;
-        return baseH + Math.min(extraH, 60) + week;
+        return baseH + Math.min(extraH, 60) + week + moveKey;
     }
 
     calcHeightPx(elements) {
@@ -377,7 +386,7 @@ export class LibiCore {
     opSymbol(type) {
         const map = {
             cmp_eq: '=', cmp_ne: '≠', cmp_gt: '>', cmp_lt: '<', cmp_ge: '≥', cmp_le: '≤',
-            math_add: '+', math_sub: '−', math_mul: '×', math_div: '÷'
+            math_add: '+', math_sub: '−', math_mul: '×', math_div: '÷', math_mod: 'MOD', math_rand: 'RAND'
         };
         return map[type] || String(type || '').split('_').slice(1).join(' ').toUpperCase();
     }
@@ -1265,7 +1274,7 @@ export class LibiCore {
 
     validateAST() {
         this.repairAST();
-        const isAction = (el) => ['coil', 'coil_s', 'coil_r', 'coil_t', 'move', 'ctu', 'notify', 'repeat'].includes(el.type) || el.type.startsWith('math_');
+        const isAction = (el) => ['coil', 'coil_s', 'coil_r', 'coil_t', 'move', 'ctu', 'notify', 'repeat', 'mux'].includes(el.type) || el.type.startsWith('math_');
         const isTriggerBlock = (el) => el.isTrigger;
         // [ADDED v3.5.0] The only thing a scene may hold: a coil that sets a switch, or a MOVE in
         // value mode that puts a number or a string on an entity. A MOVE that calls a service is a
@@ -1311,11 +1320,19 @@ export class LibiCore {
             }
         };
 
+        // [ADDED v3.96.0] A delay is a step too: a plain TON (not the for of a check) may end a path when Home Assistant's
+        // own YAML put it there (a delay before an if, a cool-down at the end), or when an action runs before it.
+        const delayEnd = (elements) => {
+            const last = elements[elements.length - 1];
+            return !!last && last.type === 'timer_ton' && !(last.isFor || last.forOf)
+                && (!!last.fromAction || elements.slice(0, -1).some(isAction));
+        };
+
         const checkPathEnd = (elements) => {
             if (elements.length === 0) return;
             let lastEl = elements[elements.length - 1];
             // [ADDED v3.71.0] A wait is a step: the automation goes on with the next rung once it is over.
-            if (lastEl.waitFor) return;
+            if (lastEl.waitFor || delayEnd(elements)) return;
 
             if (lastEl.type === 'parallel') {
                 if (!lastEl.closed) {
@@ -1382,7 +1399,8 @@ export class LibiCore {
             (elements || []).forEach((el, i) => {
                 if (el.type === 'parallel') { (el.branches || []).forEach(checkLiteral); return; }
                 if (el.type === 'repeat') { checkLiteral(el.sequence); return; }
-                if (!['cmp_eq', 'cmp_ne'].includes(el.type) || el.tplId || el.deviceNode || el.structuralError) return;
+                // [CHANGED v3.96.0] Nor a condition kept as it is (opaque): its node is not the block's text.
+                if (!['cmp_eq', 'cmp_ne'].includes(el.type) || el.tplId || el.deviceNode || el.opaque || el.structuralError) return;
                 // [CHANGED v3.95.5] 0 is a value: only no value at all is an empty IN2 (RULE 33a.4).
                 const a = String(el.sourceA || ''), b = el.sourceB === undefined || el.sourceB === null ? '' : String(el.sourceB).trim();
                 if (SPECIAL_IN1.has(a) || !ENTITY_FIRST.test(a)) return;
@@ -1428,7 +1446,7 @@ export class LibiCore {
                     const r = net.rungs.find(x => x.id === rid);
                     if (!r || !r.elements.length) return false;
                     const last = r.elements[r.elements.length - 1];
-                    return isAction(last) || !!last.waitFor || (last.type === 'parallel' && !last.closed);
+                    return isAction(last) || !!last.waitFor || delayEnd(r.elements) || (last.type === 'parallel' && !last.closed);
                 });
                 g.forEach(rid => { groupEndsWell[rid] = ok; });
             });

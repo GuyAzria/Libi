@@ -11,11 +11,14 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.88.0 | 2026-11-05] Purpose: A call to a recipient of LIBI Global (script.libi_send_to_<name>) is drawn as the
-#   MOVE NOTIFY / TTS block it is, sending to that recipient (is_recipient_action). called_actions, every action a list
-#   of steps calls, moved here from ai.py so the recipients and the save check share it.
-# [ADDED v3.89.0 | 2026-11-05] Purpose: iter_steps, the one walk over nested steps: called_actions reads with it, and
-#   LIBI Global replaces a phone with its recipient with it.
+# [CHANGED v3.96.1 | 2026-11-18] Purpose: ADD, SUB, MUL and DIV take IN3, IN4 ... (more): A + B + C, A / B / C - each
+#   divisor not 0 - written and read back the same way (calc_template, calc_block, _pins_of, _math_of), fingerprinted
+#   only where a block has them (SIG_EXTRA), and said in the rung's sentence (_calc_words).
+# [CHANGED v3.96.2 | 2026-11-18] Purpose: The review of the release (RULE 41): a value that is the words of an
+#   entity id - an option media_player.living_room of a list of speakers - is that value (literal), not the
+#   variable: edited, it was written as {{ states('media_player.living_room') }}; a MUX input of such words keeps
+#   its quotes (_mux_item, calc_block), and a rung's sentence names the words, not a variable (_move_words). A check
+#   of both bounds - Home Assistant's "between" - is a RANGE: it was CMP > of the lower one, the upper out of sight.
 # [ADDED v1.69.0] Backend parser updated to correctly map native device/state triggers into isTrigger=True Contacts and CMPs without using proprietary blocks.
 # [ADDED v3.6.0 | 2026-08-24] Purpose: Three rules that the import now keeps without exception.
 #   1. No pin is ever left empty and no registry id is ever shown. Every target is resolved through
@@ -33,6 +36,7 @@
 #   5. Nothing is ever dumped as JSON into an element. Anything the ladder cannot express becomes a
 #      NATIVE block that shows a service name and a target only, and keeps its original node in raw.
 import copy
+import json
 import logging
 import re
 
@@ -114,6 +118,50 @@ BOOLEAN_DOMAINS = {
 COMPARED_DOMAINS = {"schedule"}
 BOOL_STATES = {"on", "off", "true", "false", "home", "not_home", "open", "closed", "locked", "unlocked"}
 ON_STATES = {"on", "true", "home", "open", "unlocked"}
+# [ADDED v3.96.0] Domains whose state is a value - a number, a choice, a text, a date or a time, the moment a button
+# was pressed or an event came - and not on or off. A P contact on one is the moment its value changes (libi_to_yaml
+# _change_trigger): drawn by hand it was to: "on", which they never reach - "when I pick a colour on the dashboard"
+# never ran. The panel has the same lists (libi-panel.js VALUE_DOMAINS, NEVER_ON_DOMAINS).
+VALUE_DOMAINS = frozenset((
+    "input_number", "number", "counter", "input_select", "select", "input_text", "text", "input_datetime", "date",
+    "time", "datetime", "input_button", "button", "event", "timer", "sensor"))
+# Those of them no entity of which is ever on or off, whatever it holds - a choice, a text or a sensor can hold the word
+# on. A contact that waits for on or off on one never holds: the compiler refuses it.
+NEVER_ON_DOMAINS = frozenset((
+    "input_number", "number", "counter", "input_datetime", "date", "time", "datetime", "input_button", "button",
+    "event", "timer"))
+# Not a value: the device dropped off, or has not said yet. The moment a value changes is from one value to another.
+NOT_A_VALUE = ("unavailable", "unknown")
+# [ADDED v3.96.0] EVERY, a time pattern as its block holds it: "seconds=/10", "hours=* minutes=0" - as the importer
+# draws one. Each part a key of Home Assistant's time_pattern trigger, its value *, /N or N.
+PATTERN_KEYS = ("hours", "minutes", "seconds")
+_PATTERN_PART_RE = re.compile(r"(hours|minutes|seconds)=(\*|/\d+|\d+)")
+
+
+def pattern_parts(text):
+    """[ADDED v3.96.0] The parts of a time pattern its block holds, as the trigger takes them - {"seconds": "/10"},
+    a whole number as a number - or None when it is not one."""
+    words = str(text if text is not None else "").split()
+    parts = {}
+    for word in words:
+        m = _PATTERN_PART_RE.fullmatch(word)
+        if not m or m.group(1) in parts:
+            return None
+        parts[m.group(1)] = int(m.group(2)) if m.group(2).isdigit() else m.group(2)
+    return parts or None
+
+
+def pattern_words(text):
+    """[ADDED v3.96.0] How often a time pattern fires, in words: every 10 seconds, every minute, at minute 0 of every
+    hour - or the pattern itself."""
+    parts = pattern_parts(text) or {}
+    every = [(k, v) for k, v in parts.items() if isinstance(v, str) and v.startswith("/")]
+    if len(parts) == 1 and every:
+        key, value = every[0]
+        n = int(value[1:] or 0)
+        unit = key[:-1]
+        return f"every {unit}" if n == 1 else f"every {n} {key}"
+    return f"on the time pattern {text}"
 
 TURN_ON_SERVICES = ("turn_on", "toggle")
 TURN_OFF_SERVICES = ("turn_off",)
@@ -189,7 +237,285 @@ SET_VALUE_SERVICES = {
     "counter.set_value": ("value",),
 }
 
-MATH_OPS = {"+": "math_add", "-": "math_sub", "*": "math_mul", "/": "math_div"}
+# [ADDED v3.96.0] The value a MOVE gives each kind of device: the action that sets it and the keys of its data that
+# are that value. A light takes several - its brightness, colour, colour temperature or effect, the block says which
+# (valueKey); every other kind one. The helpers have their own (SET_VALUE_SERVICES).
+LIGHT_VALUE_KEYS = ("brightness_pct", "brightness", "brightness_step_pct", "brightness_step", "rgb_color",
+                    "color_name", "hs_color", "xy_color", "rgbw_color", "rgbww_color", "color_temp_kelvin", "effect")
+LIST_VALUE_KEYS = ("rgb_color", "hs_color", "xy_color", "rgbw_color", "rgbww_color")
+DEVICE_VALUE_SERVICES = {
+    "light.turn_on": LIGHT_VALUE_KEYS,
+    "fan.set_percentage": ("percentage",),
+    "cover.set_cover_position": ("position",),
+    "valve.set_valve_position": ("position",),
+    "climate.set_temperature": ("temperature",),
+    "water_heater.set_temperature": ("temperature",),
+    "humidifier.set_humidity": ("humidity",),
+    "media_player.volume_set": ("volume_level",),
+}
+DEVICE_VALUE_DOMAINS = frozenset(svc.split(".")[0] for svc in DEVICE_VALUE_SERVICES)
+# A call with one of these besides its value does more than set it: a thermostat's mode, or its two set points.
+_MORE_THAN_A_VALUE = ("target_temp_high", "target_temp_low", "hvac_mode", "entity_id")
+# [ADDED v3.96.0] The kinds of entity whose state a MOVE can read: an entity id of one of these on its IN pin is a
+# variable - the value it holds when the action runs - and never the words of its id.
+STATE_DOMAINS = frozenset((
+    "air_quality", "alarm_control_panel", "automation", "binary_sensor", "button", "calendar", "camera", "climate",
+    "counter", "cover", "date", "datetime", "device_tracker", "event", "fan", "group", "humidifier", "image",
+    "input_boolean", "input_button", "input_datetime", "input_number", "input_select", "input_text", "lawn_mower",
+    "light", "lock", "media_player", "number", "person", "plant", "remote", "scene", "schedule", "script", "select",
+    "sensor", "siren", "sun", "switch", "text", "time", "timer", "todo", "update", "vacuum", "valve", "water_heater",
+    "weather", "zone"))
+_ENTITY_ID_RE = re.compile(r"[a-z_][a-z0-9_]*\.[a-z0-9_]+")
+_LIGHT_ATTRS = ("brightness", "rgb_color", "hs_color", "xy_color", "rgbw_color", "rgbww_color", "color_temp_kelvin",
+                "effect")
+_HEX_READ = ("{% set c = states('ENTITY') | replace('#', '') %}"
+             "{{ [c[0:2] | int(0, 16), c[2:4] | int(0, 16), c[4:6] | int(0, 16)] }}")
+_STATES_READ_RE = re.compile(r"\{\{\s*states\(\s*(['\"])([a-z_][a-z0-9_]*\.[a-z0-9_]+)\1\s*\)\s*"
+                             r"(?:\|\s*(?:int|float)\s*(?:\(\s*(?:0|0\.0)?\s*\))?\s*)?\}\}")
+_READ_ENTITY_RE = re.compile(r"(?:states|state_attr)\(\s*['\"]([a-z_][a-z0-9_]*\.[a-z0-9_]+)['\"]")
+
+
+def is_entity_ref(text):
+    """[ADDED v3.96.0] An entity id of a kind that has a state, as a variable on a pin: input_number.dim, light.desk."""
+    s = str(text if text is not None else "").strip()
+    return bool(_ENTITY_ID_RE.fullmatch(s)) and s.split(".", 1)[0] in STATE_DOMAINS
+
+
+def read_template(entity, key=""):
+    """[ADDED v3.96.0] The template a MOVE writes for a variable on its IN pin: the value it holds when the action runs.
+    A light gives its attribute - a MOVE from one light to another copies its brightness or its colour; a text helper
+    a colour written #rrggbb, turned into the list a light takes; anything else its state."""
+    ent = str(entity).strip()
+    domain = domain_of(ent)
+    if domain == "light":
+        if key == "brightness_pct":
+            return "{{ ((state_attr('" + ent + "', 'brightness') | int(0)) / 2.55) | round(0) }}"
+        attr = "rgb_color" if key == "color_name" else key
+        if attr in _LIGHT_ATTRS:
+            return "{{ state_attr('" + ent + "', '" + attr + "') }}"
+    if domain in ("input_text", "text") and key == "rgb_color":
+        return _HEX_READ.replace("ENTITY", ent)
+    return "{{ states('" + ent + "') }}"
+
+
+def template_entity(text, key=""):
+    """[ADDED v3.96.0] The variable a template reads, when it is one LIBI writes (read_template) or the common way of
+    writing one by hand - {{ states('input_number.x') | int }} - or "". So a MOVE of a helper to a light comes back
+    with that helper on its IN pin, not as a template."""
+    s = str(text if text is not None else "").strip()
+    m = _STATES_READ_RE.fullmatch(s)
+    if m:
+        return m.group(2)
+    m = _READ_ENTITY_RE.search(s)
+    if m and s == read_template(m.group(1), key):
+        return m.group(1)
+    return ""
+
+
+def move_text(value, key=""):
+    """[ADDED v3.96.0] A value as the IN pin of a MOVE shows it: a variable read by a template is that variable; a list,
+    a colour, is its JSON - [255, 136, 0]; anything else as it is."""
+    if isinstance(value, (list, tuple)):
+        return json.dumps(list(value))
+    if isinstance(value, str):
+        return template_entity(value, key) or value
+    return value
+
+
+MATH_OPS = {"+": "math_add", "-": "math_sub", "*": "math_mul", "/": "math_div", "%": "math_mod"}
+
+# [ADDED v3.96.0] The blocks of the Math group as Home Assistant templates - one text both ways: the compiler writes it
+# (libi_to_yaml), the importer reads it back as the block (calc_block), so a NET saved and opened again shows the same
+# blocks. The user (2026-11-18): "RAND - a random whole number between IN1 and IN2; MOD - the remainder; MUX - input
+# number K", each IN a number or a variable, the result into a variable. A variable on a pin is the value it holds when
+# the action runs. MATH ADD with a constant on a pin was read back as a MOVE of a long template; now it is MATH again.
+CALC_SIGN = {"math_add": "+", "math_sub": "-", "math_mul": "*", "math_div": "/", "math_mod": "%"}
+CALC_WORDS = {"math_add": "plus", "math_sub": "minus", "math_mul": "times", "math_div": "divided by", "math_mod": "mod"}
+# What a RAND or a MOD sets: a number kept in a helper. A counter is the one the card does not show (ai.CARD_DOMAINS).
+NUMBER_OUT_DOMAINS = ("input_number", "number", "counter", "input_text", "text")
+_INT_RE = re.compile(r"-?\d+")
+_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_NUM_LIST_RE = re.compile(r"\[\s*-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?)*\s*\]")
+_ENT = r"([a-z_][a-z0-9_]*\.[a-z0-9_]+)"
+# A pin as the compiler writes it, or as one is commonly written by hand: states('x') | int, a whole number, (anything).
+_FLOAT_PIN = r"(?:\(states\('" + _ENT + r"'\) \| float\(0\)\)|\(([^()]*)\))"
+_INT_PIN = (r"(?:\(states\(\s*'" + _ENT + r"'\s*\)\s*\|\s*int(?:\(\s*0?\s*\))?\s*\)|states\(\s*'" + _ENT
+            + r"'\s*\)\s*\|\s*int(?:\(\s*0?\s*\))?|(-?\d+)|\(([^()]*)\))")
+_FLOAT_PINS = r"(?:\(states\('[a-z_][a-z0-9_]*\.[a-z0-9_]+'\) \| float\(0\)\)|\([^()]*\))"
+_MATH_TPL = re.compile(r"\{\{\s*(" + _FLOAT_PINS + r"(?:\s*[+\-*]\s*" + _FLOAT_PINS + r")+)\s*\}\}")
+_DIV_TPL = re.compile(r"\{\{\s*\(\((" + _FLOAT_PINS + r"(?: / " + _FLOAT_PINS + r")+)\) \| round\((\d+)\)\) if ("
+                      + _FLOAT_PINS + r" != 0(?: and " + _FLOAT_PINS + r" != 0)*) else ([^ {}]+)\s*\}\}")
+_MOD_TPL = re.compile(r"\{\{\s*" + _INT_PIN + r"\s*%\s*" + _INT_PIN + r"\s*\}\}")
+_RAND_TPL = re.compile(r"\{\{\s*range\(\s*" + _INT_PIN + r"\s*,\s*" + _INT_PIN + r"\s*\+\s*1\s*\)"
+                       r"(\s*\|\s*reject\(\s*'eq'\s*,\s*states\(\s*'" + _ENT + r"'\s*\)\s*\|\s*int\(\s*None\s*\)\s*\)"
+                       r"\s*\|\s*list)?\s*\|\s*random\s*\}\}")
+_MUX_TPL = re.compile(r"\{\{\s*\[(.*)\]\s*\[\s*" + _INT_PIN + r"\s*\]\s*\}\}", re.S)
+_MUX_ITEM = re.compile(r"states\(\s*'" + _ENT + r"'\s*\)|(-?\d+(?:\.\d+)?)|'((?:[^'\\]|\\.)*)'|\"((?:[^\"\\]|\\.)*)\"|"
+                       r"(\[\s*-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?)*\s*\])")
+
+
+def calc_pin(value, cast="float"):
+    """[ADDED v3.96.0] A pin of a block of the Math group in its template: a variable is read (an entity id, as MATH
+    always read one), a whole number of RAND, MOD or MUX is written as it is, anything else - a number of MATH, an
+    expression - in brackets, as MATH always wrote it."""
+    s = str(value if value is not None else "").strip()
+    if _ENTITY_ID_RE.fullmatch(s):
+        return f"(states('{s}') | {cast}(0))"
+    if cast == "int" and _INT_RE.fullmatch(s):
+        return s
+    return f"({s})"
+
+
+def _mux_item(value):
+    """[ADDED v3.96.0] An input of a MUX in its list: a variable read, a number, a colour [r, g, b], or a word quoted."""
+    s = str(value if value is not None else "").strip()
+    if _ENTITY_ID_RE.fullmatch(s):
+        return f"states('{s}')"
+    if _NUM_RE.fullmatch(s) or _NUM_LIST_RE.fullmatch(s):
+        return s
+    if re.fullmatch(r"'[^'\\]*'", s):
+        return s  # [ADDED v3.96.2] quoted: words as they are, an entity id's too
+    return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def calc_template(el):
+    """[ADDED v3.96.0] The template a block of the Math group writes into the value it sets, or None for any other block.
+    MATH as before: (states('a') | float(0)) + (5). MOD: (states('counter.step') | int(0)) % 4. RAND: range(0, 9 + 1) |
+    random - with "never the value OUT holds now", the value OUT holds left out of the range. MUX: ['red', 'blue',
+    states('input_select.c')][(states('counter.k') | int(0))] - input number K, from 0."""
+    t = str(el.get("type") or "")
+    a, b = el.get("sourceA", ""), el.get("sourceB", "")
+    # [CHANGED v3.96.0] ADD, SUB, MUL and DIV take IN3, IN4 ... (more): A + B + C, A / B / C, each divisor not 0.
+    pins = [calc_pin(p) for p in [a, b, *(el.get("more") or [])]]
+    if t in ("math_add", "math_sub", "math_mul"):
+        return "{{ " + f" {CALC_SIGN[t]} ".join(pins) + " }}"
+    if t == "math_div":
+        precision, fallback = el.get("precision", 2), el.get("fallback", 0)
+        return ("{{ ((" + " / ".join(pins) + ") | round(" + str(precision) + "))"
+                " if " + " and ".join(f"{p} != 0" for p in pins[1:]) + " else " + str(fallback) + " }}")
+    if t == "math_mod":
+        return "{{ " + calc_pin(a, "int") + " % " + calc_pin(b, "int") + " }}"
+    if t == "math_rand":
+        out = str(el.get("target") or "").strip()
+        values = "range(" + calc_pin(a, "int") + ", " + calc_pin(b, "int") + " + 1)"
+        if el.get("notSame") and _ENTITY_ID_RE.fullmatch(out):
+            values += " | reject('eq', states('" + out + "') | int(None)) | list"
+        return "{{ " + values + " | random }}"
+    if t == "mux":
+        items = ", ".join(_mux_item(v) for v in (el.get("inputs") or []))
+        return "{{ [" + items + "][" + calc_pin(el.get("sourceA", ""), "int") + "] }}"
+    return None
+
+
+def _pin_read(groups):
+    """[ADDED v3.96.0] What a pin read by the patterns above holds: the entity, the number, or the expression - its last
+    group. None for an expression shaped like an entity id, (trigger.idx): written again it would read that "entity"."""
+    *named, expr = groups
+    value = next((g for g in named if g is not None), None)
+    if value is not None:
+        return value
+    if expr is None or _ENTITY_ID_RE.fullmatch(expr.strip()):
+        return None
+    return expr.strip()
+
+
+_FLOAT_PIN_RE = re.compile(_FLOAT_PIN)
+
+
+def _pins_of(body):
+    """[ADDED v3.96.0] The pins of a MATH template in order, and the signs between them - (None, []) when a pin is not
+    one LIBI reads (an expression shaped like an entity id)."""
+    found = list(_FLOAT_PIN_RE.finditer(body))
+    pins = [_pin_read(x.groups()) for x in found]
+    ops = [body[x.end():y.start()].strip() for x, y in zip(found, found[1:], strict=False)]
+    if not pins or not all(pins) or not all(op in ("+", "-", "*", "/") for op in ops):
+        return None, []
+    return pins, ops
+
+
+def _math_of(kind, pins):
+    """[ADDED v3.96.0] A MATH block of these pins: IN1, IN2, and IN3 ... in more when there are more."""
+    block = {"type": kind, "sourceA": pins[0], "sourceB": pins[1]}
+    if len(pins) > 2:
+        block["more"] = pins[2:]
+    return block
+
+
+def _split_items(text):
+    """[ADDED v3.96.0] The inputs of a MUX's list, split at its own commas - not those inside a quote or a [r, g, b]."""
+    items, depth, quote, start, i = [], 0, "", 0, 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 1
+            elif ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "[(":
+            depth += 1
+        elif ch in "])":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            items.append(text[start:i].strip())
+            start = i + 1
+        i += 1
+    items.append(text[start:].strip())
+    return items
+
+
+def calc_block(value, target=""):
+    """[ADDED v3.96.0] The block of the Math group a template written into a value is - {"type": ..., "sourceA": ...}
+    with the fields the block shows - or None. Only the forms calc_template writes and a few common ones by hand are
+    read: anything else stays the MOVE it was, its template as it is."""
+    s = str(value if value is not None else "").strip()
+    if not s.startswith("{{"):
+        return None
+    m = _MATH_TPL.fullmatch(s)
+    if m:
+        pins, ops = _pins_of(m.group(1))
+        if pins is None or len(set(ops)) != 1:
+            return None
+        return _math_of(MATH_OPS[ops[0]], pins)
+    m = _DIV_TPL.fullmatch(s)
+    if m:
+        pins, _ops = _pins_of(m.group(1))
+        guards = [_pin_read(x.groups()) for x in _FLOAT_PIN_RE.finditer(m.group(3))]
+        if pins is None or guards != pins[1:]:
+            return None
+        fallback = m.group(4)
+        return {**_math_of("math_div", pins), "precision": int(m.group(2)),
+                "fallback": int(fallback) if _INT_RE.fullmatch(fallback) else fallback}
+    m = _MOD_TPL.fullmatch(s)
+    if m:
+        g = m.groups()
+        a, b = _pin_read(g[0:4]), _pin_read(g[4:8])
+        return {"type": "math_mod", "sourceA": a, "sourceB": b} if a and b else None
+    m = _RAND_TPL.fullmatch(s)
+    if m:
+        g = m.groups()
+        a, b, not_same, own = _pin_read(g[0:4]), _pin_read(g[4:8]), g[8], g[9]
+        if not a or not b or (not_same and own != str(target or "").strip()):
+            return None
+        return {"type": "math_rand", "sourceA": a, "sourceB": b, "notSame": bool(not_same)}
+    m = _MUX_TPL.fullmatch(s)
+    if m:
+        k = _pin_read(m.groups()[1:5])
+        inputs = []
+        for item in _split_items(m.group(1)):
+            im = _MUX_ITEM.fullmatch(item)
+            if not im:
+                return None
+            ent, num, single, double, listed = im.groups()
+            if single is not None or double is not None:
+                word = re.sub(r"\\(.)", r"\1", single if single is not None else double)
+                # [ADDED v3.96.2] The words of an entity id keep their quotes: they are those words, not the variable.
+                inputs.append(f"'{word}'" if _ENTITY_ID_RE.fullmatch(word) else word)
+            else:
+                inputs.append(ent or num or listed)
+        return {"type": "mux", "sourceA": k, "inputs": inputs} if k and len(inputs) >= 2 else None
+    return None
 
 # [ADDED v2.1.0] Device triggers, conditions and actions are ordinary ladder elements. The only thing
 # that made them look foreign was the registry id, so it is resolved to a real entity id first.
@@ -520,12 +846,19 @@ def _clock_element(ids, ent, state):
 
 SIG_FIELDS = ("type", "label", "sourceA", "sourceB", "sourceC", "target", "source", "mode", "title",
               "tts", "stream", "value", "valueKey", "loopType", "weekdays", "precision", "fallback", "kind")
+# [ADDED v3.96.0] The fields of RAND (notSame), MUX (inputs) and the IN3, IN4 ... of MATH (more), fingerprinted only
+# where a block has them.
+SIG_EXTRA = ("inputs", "notSame", "more")
 
 
 def element_sig(el):
     """Fingerprint of everything the user can edit. Equal fingerprint means the original node is
-    still an exact description of this element, so it can be emitted untouched."""
-    return "|".join(f"{k}={el.get(k, '')}" for k in SIG_FIELDS)
+    still an exact description of this element, so it can be emitted untouched.
+    [CHANGED v3.96.0] And the inputs of a MUX and the tick of a RAND (SIG_EXTRA), only on a block that has them: the
+    fingerprint of every other block is what it was, so a NET saved before reads as untouched."""
+    sig = "|".join(f"{k}={el.get(k, '')}" for k in SIG_FIELDS)
+    extra = [f"{k}={json.dumps(el[k]) if isinstance(el[k], (list, dict)) else el[k]}" for k in SIG_EXTRA if k in el]
+    return sig + "".join("|" + x for x in extra)
 
 
 def stamp_sigs(elements):
@@ -1063,12 +1396,33 @@ def _condition_to_elements(c, ids, trig_map, src, parallel_ids=None):
     return els
 
 
+def _opaque_condition(ids, c, src):
+    """[ADDED v3.96.0] A condition the ladder has no drawing for, as one block that says what it is and is kept exactly
+    as it is (RULE 5): the compiler writes its node back whatever the block shows, and the panel does not edit it. A not
+    of several checks was drawn without its not, and a condition of a new kind as an action."""
+    kind = str(c.get("condition") or next((k for k in ("and", "or", "not") if k in c), "condition"))
+    rest = _params_line({k: v for k, v in c.items() if k != "condition"})
+    return _el(ids, "cmp_eq", sourceA=short(f"{kind}: {rest}" if rest else kind, 44), sourceB="true", raw=c, src=src,
+               opaque=True)
+
+
 def _condition_to_elements_inner(c, ids, trig_map, src, parallel_ids=None):
     """Returns a LIST of elements in series. or becomes one closed parallel block."""
+    # [ADDED v3.96.0] A template written as a bare string - "{{ ... }}" - is a template condition: it was dropped.
+    if isinstance(c, str) and c.strip():
+        c = {"condition": "template", "value_template": c}
     if not isinstance(c, dict):
         return []
 
     ctype = str(c.get("condition") or "").lower()
+
+    # [ADDED v3.96.0] An and or an or with a key of its own that changes what it does - turned off (enabled), or
+    # anything the ladder does not know - is one block kept as it is: drawn as its checks, the save turned it on.
+    # Its alias alone is only a name: it is still drawn (and the round trip check says the name would go). A not
+    # keeps its own keys on the block it is drawn as (below).
+    if (ctype in ("and", "or") or (not ctype and any(k in c for k in ("and", "or")))) \
+            and set(c) - {"condition", "conditions", "and", "or", "alias"}:
+        return [_opaque_condition(ids, c, src)]
 
     # and / or / not, including the shorthand forms {"and": [...]} and {"or": [...]}
     inner = None
@@ -1094,17 +1448,31 @@ def _condition_to_elements_inner(c, ids, trig_map, src, parallel_ids=None):
 
     if ctype == "not" or "not" in c:
         inner = c.get("conditions") if ctype == "not" else c.get("not")
-        subs = []
-        for i, sub in enumerate(inner or []):
-            subs.extend(_condition_to_elements(sub, ids, trig_map, f"{src}.not[{i}]"))
-        if len(subs) == 1:
-            flipped = _invert(subs[0])
-            if flipped:
-                flipped["id"] = subs[0]["id"]
-                flipped["raw"] = c
-                flipped["src"] = src
-                return [flipped]
-        return subs or []
+        inner = inner if isinstance(inner, list) else ([inner] if inner else [])
+        # [CHANGED v3.96.0] Each check of a not is drawn as its opposite - not [a, b] is "not a" and "not b". One the
+        # ladder cannot turn round (a check held for a time, a time window, an or ...) makes the whole not one block
+        # kept as it is: it was drawn WITHOUT its not, the logic the other way round.
+        flipped = []
+        for i, sub in enumerate(inner):
+            els = _condition_to_elements(sub, ids, trig_map, f"{src}.not[{i}]")
+            turned = _invert(els[0]) if len(els) == 1 else None
+            if not turned:
+                flipped = None
+                break
+            turned["id"] = els[0]["id"]
+            flipped.append((turned, sub))
+        if not inner:
+            return []
+        if flipped and len(flipped) == 1:
+            flipped[0][0]["raw"] = c
+            flipped[0][0]["src"] = src
+            return [flipped[0][0]]
+        if flipped and set(c) <= {"condition", "conditions", "not"}:
+            for i, (turned, sub) in enumerate(flipped):
+                turned["raw"] = {"condition": "not", "conditions": [sub]}
+                turned["src"] = f"{src}.not[{i}]"
+            return [turned for turned, _sub in flipped]
+        return [_opaque_condition(ids, c, src)]
 
     ent = resolve_entity(ids, norm_entity(c))
 
@@ -1114,8 +1482,8 @@ def _condition_to_elements_inner(c, ids, trig_map, src, parallel_ids=None):
         ref_list = ids_ref if isinstance(ids_ref, list) else [ids_ref]
         out = []
         for rid in ref_list:
-            src_el = trig_map.get(str(rid))
-            if src_el:
+            # [CHANGED v3.96.0] Every trigger of that id: Home Assistant lets several share one.
+            for src_el in trig_map.get(str(rid)) or []:
                 copy = dict(src_el)
                 copy["id"] = ids.next()
                 copy["isTrigger"] = True
@@ -1144,7 +1512,12 @@ def _condition_to_elements_inner(c, ids, trig_map, src, parallel_ids=None):
         return [el]
 
     if ctype == "numeric_state":
-        if c.get("above") is not None:
+        # [CHANGED v3.96.2] Both bounds - what Home Assistant's editor writes for "between" - are one RANGE, as a
+        # trigger's and a device check's are (_numeric_element). Drawn as CMP > of the lower one, the upper one was out
+        # of sight, and gone from the file once the block was edited. A not of one is one block kept as it is (_invert).
+        if c.get("above") is not None and c.get("below") is not None:
+            el = _el(ids, "cmp_rng", sourceA=ent, sourceB=c.get("above"), sourceC=c.get("below"))
+        elif c.get("above") is not None:
             el = _el(ids, "cmp_gt", sourceA=ent, sourceB=c.get("above"))
         elif c.get("below") is not None:
             el = _el(ids, "cmp_lt", sourceA=ent, sourceB=c.get("below"))
@@ -1204,13 +1577,40 @@ def _condition_to_elements_inner(c, ids, trig_map, src, parallel_ids=None):
         el = _device_element(c, ids, src)
         return [el]
 
-    return [_fallback_move(ids, c, src=src, service=(ctype or "condition"), entity=ent,
-                           value=_params_line({k: v for k, v in c.items() if k != "condition"}))]
+    # [CHANGED v3.96.0] A kind the ladder has no drawing for is one block kept as it is. It was drawn as a MOVE, which
+    # the compiler wrote as an action: the condition gone, and a call of a service that does not exist in its place.
+    return [_opaque_condition(ids, c, src)]
 
 
 # ==========================================================================================
 # ACTIONS
 # ==========================================================================================
+
+def _device_value(ids, a, svc, ent, target_kind, data, src):
+    """[ADDED v3.96.0] A device given one value - a light's brightness or colour, a fan's speed, a cover's position, a
+    thermostat's temperature, a player's volume - as a MOVE of that value to it, as a helper is set: the user sees and
+    edits 50 %, and a colour is a colour. None for anything else - several values, several targets, an entity in the
+    data - which keeps the drawing it had: a coil, or the MOVE ACTION."""
+    keys = DEVICE_VALUE_SERVICES.get(svc)
+    if not keys or target_kind != "entity" or domain_of(ent) != svc.split(".")[0]:
+        return None
+    if spec_total(target_spec(a)) != 1 or any(k in data for k in _MORE_THAN_A_VALUE):
+        return None
+    present = [k for k in keys if k in data]
+    if len(present) != 1:
+        return None
+    key = present[0]
+    # [ADDED v3.96.0] A device given input number K of a list - the colours, one after another - is a MUX.
+    block = calc_block(data[key], ent)
+    if block and block["type"] == "mux":
+        el = _el(ids, "mux", sourceA=block["sourceA"], inputs=block["inputs"], target=ent, valueKey=key, raw=a, src=src)
+    else:
+        el = _el(ids, "move", mode="value", source=move_text(data[key], key), target=ent, valueKey=key, raw=a,
+                 src=src)
+    if a.get("continue_on_error") is True:
+        el["continueOnError"] = True
+    return el
+
 
 def _detect_math(template):
     """Pulls a + b, a - b, a * b or a / b out of a value template."""
@@ -1371,11 +1771,34 @@ def _action_to_elements(a, ids, trig_map, src):
                     val = data.get(k)
                     key_used = k
                     break
+            # [ADDED v3.96.0] A block of the Math group - MATH, MOD, RAND, MUX - as LIBI writes it (calc_block).
+            block = calc_block(val, ent)
+            if block:
+                if block["type"] == "mux":
+                    block["valueKey"] = key_used  # as a MOVE: an input_datetime is set by its time or its date
+                el = _el(ids, block.pop("type"), **block, target=ent, raw=a, src=src)
+                if a.get("continue_on_error") is True:
+                    el["continueOnError"] = True
+                return [el]
             math = _detect_math(val)
             if math and math[0]:
                 op_type, a_ent, b_ent = math
                 return [_el(ids, op_type, sourceA=a_ent, sourceB=b_ent, target=ent, raw=a, src=src)]
-            return [_el(ids, "move", mode="value", source=val, target=ent, valueKey=key_used, raw=a, src=src)]
+            # [CHANGED v3.96.0] A helper read by a template is that helper on the IN pin (move_text); continue_on_error
+            # is the block's own tick - without it the node was not the block's any more, and was compiled again.
+            el = _el(ids, "move", mode="value", source=move_text(val, key_used), target=ent, valueKey=key_used, raw=a,
+                     src=src)
+            # [ADDED v3.96.2] The words of an entity id given as the value - an option of a list of speakers - are
+            # those words, never the variable: written again they stay words (libi_to_yaml._move_input).
+            if isinstance(val, str) and is_entity_ref(val):
+                el["literal"] = True
+            if a.get("continue_on_error") is True:
+                el["continueOnError"] = True
+            return [el]
+
+        moved = _device_value(ids, a, svc, ent, target_kind, data, src)
+        if moved:
+            return [moved]
 
         # [CHANGED v3.6.0] Any service that switches something between two states is a coil. Closing
         # a cover, locking a lock and stopping a player are resets, opening and unlocking and playing
@@ -1572,6 +1995,11 @@ def _describe_el(el, as_trigger=False, calc=None):
         return f"{lbl} turns on" if as_trigger else f"{lbl} is on"
     if t == "contact_nc":
         return f"{lbl} turns off" if as_trigger else f"{lbl} is off"
+    if t == "cmp_eq" and str(el.get("sourceA")) == "time pattern":
+        return pattern_words(el.get("sourceB"))  # [ADDED v3.96.0] EVERY
+    if t == "contact_p" and as_trigger and domain_of(el.get("label")) in VALUE_DOMAINS:
+        # [ADDED v3.96.0] the moment a value changes, as the compiler writes a P contact on one
+        return f"{lbl} is pressed" if domain_of(el.get("label")) in ("input_button", "button") else f"{lbl} changes"
     if t == "contact_p":
         return f"{lbl} is triggered" if as_trigger else f"{lbl} switches on"
     if t == "contact_n":
@@ -1609,8 +2037,8 @@ def _describe_el(el, as_trigger=False, calc=None):
         if str(b).startswith("zone."):
             return f"{a} leaves {friendly(b)}"
         return f"{a} is not {b}"
-    if t.startswith("math_"):
-        return ""
+    if t.startswith("math_") or t == "mux":
+        return _calc_words(el)
     if t == "coil_r":
         return f"turn off {lbl}"
     if t == "coil_t":
@@ -1628,7 +2056,9 @@ def _describe_el(el, as_trigger=False, calc=None):
             return f"speak on {target}"
         if mode == "both":
             return f"notify and speak on {target}"
-        return f"set {target}"
+        # [CHANGED v3.96.0] And what it sets, to what (_move_words).
+        words = _move_words(el)
+        return f"set {target} {words}" if words else f"set {target}"
     if t == "notify":
         return f"send a notification to {friendly(el.get('target'))}"
     if t == "ctu":
@@ -1639,6 +2069,62 @@ def _describe_el(el, as_trigger=False, calc=None):
         inner = ", ".join(x for x in (_describe_el(e, False, calc) for e in el.get("sequence", [])) if x)
         return f"repeat {el.get('value', '')} times ({inner})" if inner else f"repeat {el.get('value', '')} times"
     return ""
+
+
+# [ADDED v3.96.0] What a MOVE sets, in words, and the unit of its value.
+_KEY_WORDS = {"brightness_pct": "brightness", "brightness_step_pct": "brightness by", "brightness_step": "brightness by",
+              "rgb_color": "color", "color_name": "color", "color_temp_kelvin": "color temperature", "percentage": "speed",
+              "volume_level": "volume", "value": "", "option": "", "time": "", "date": "", "datetime": "", "timestamp": ""}
+_KEY_UNITS = {"brightness_pct": " %", "brightness_step_pct": " %", "percentage": " %", "position": " %", "humidity": " %",
+              "color_temp_kelvin": " K"}
+
+
+def _sets_value(el):
+    """[ADDED v3.96.0] The target of a MOVE that sets a value (not a call of something else, not a message), or ""."""
+    if el.get("type") != "move" or el.get("mode", "value") != "value" or el.get("service") or el.get("moveKind") == "action":
+        return ""
+    return str(el.get("target") or "")
+
+
+def _calc_words(el):
+    """[ADDED v3.96.0] What a block of the Math group sets, in words: "set colour step to colour step mod 4", "set index
+    to a random number from 0 to 9, never the one it holds", "set strip color to input index of red, blue, lime". A
+    MATH block of a template a comparison reads (a calc. target) is said where the comparison is: here nothing."""
+    target = str(el.get("target") or "")
+    if target.startswith("calc."):
+        return ""
+    t = str(el.get("type") or "")
+
+    def pin(value):
+        text = str(value if value is not None else "").strip()
+        return friendly(text) if is_entity_ref(text) else short(text or "?", 20)
+
+    a, b, out = pin(el.get("sourceA")), pin(el.get("sourceB")), friendly(target) if target else "?"
+    if t == "math_rand":
+        return f"set {out} to a random number from {a} to {b}" + (", never the one it holds" if el.get("notSame") else "")
+    if t == "mux":
+        inputs = list(el.get("inputs") or [])
+        listed = ", ".join(pin(v) for v in inputs[:4]) + (" ..." if len(inputs) > 4 else "")
+        key = _KEY_WORDS.get(str(el.get("valueKey") or ""), str(el.get("valueKey") or "").replace("_", " "))
+        return f"set {out}{' ' + key if key else ''} to input {a} of {listed}"
+    rest = "".join(f" {CALC_WORDS.get(t, 'plus')} {pin(x)}" for x in el.get("more") or [])
+    return f"set {out} to {a} {CALC_WORDS.get(t, 'plus')} {b}{rest}"
+
+
+def _move_words(el):
+    """[ADDED v3.96.0] What a MOVE sets, in words - brightness to 50 %, color to [255, 136, 0], from dim - so a rung that
+    sets several values on one thing says each."""
+    key = str(el.get("valueKey") or "")
+    words = _KEY_WORDS.get(key, key.replace("_", " "))
+    value = el.get("source")
+    text = str(value if value is not None else "").strip()
+    if is_entity_ref(text) and not el.get("literal"):
+        shown = f"from {friendly(text)}"
+    elif text:
+        shown = f"to {short(text, 28)}{_KEY_UNITS.get(key, '')}"
+    else:
+        shown = ""
+    return " ".join(x for x in (words, shown) if x)
 
 
 def describe_rung(elements):
@@ -1653,9 +2139,8 @@ def describe_rung(elements):
     def collect_calc(els):
         for el in els:
             if el.get("type", "").startswith("math_") and str(el.get("target", "")).startswith("calc."):
-                sym = {"math_add": "plus", "math_sub": "minus", "math_mul": "times", "math_div": "divided by"}
                 calc[el["target"]] = (f"{calc.get(str(el.get('sourceA')), friendly(el.get('sourceA')))} "
-                                      f"{sym.get(el['type'], 'plus')} "
+                                      f"{CALC_WORDS.get(el['type'], 'plus')} "
                                       f"{calc.get(str(el.get('sourceB')), friendly(el.get('sourceB')))}")
             if el.get("type") == "parallel":
                 for b in el.get("branches", []):
@@ -1663,6 +2148,7 @@ def describe_rung(elements):
     collect_calc(elements)
 
     said = None
+    last_set = ""
     for el in elements:
         t = el.get("type", "")
         # [CHANGED v3.68.0] A wait is drawn with contacts and CMP blocks too, but it is a step, not a condition.
@@ -1680,13 +2166,21 @@ def describe_rung(elements):
             said[-1] += f" for {el.get('label', '')}"
         else:
             in_actions = True
+            # [ADDED v3.96.0] Several values set on one thing are one "set": brightness to 80, color to [255, 0, 0].
+            target = _sets_value(el)
+            if target and target == last_set and actions and _move_words(el):
+                actions[-1] += ", " + _move_words(el)
+                continue
+            last_set = target
             text = _describe_el(el, False, calc)
             if text:
                 actions.append(text)
 
     parts = []
     if triggers:
-        parts.append("When " + " or ".join(triggers))
+        # [ADDED v3.96.0] "Every 10 seconds, if ..." - not "When every 10 seconds".
+        alone = len(triggers) == 1 and triggers[0].startswith(("every ", "on the time pattern "))
+        parts.append(triggers[0] if alone else "When " + " or ".join(triggers))
     if conditions:
         parts.append(("if " if triggers else "If ") + " and ".join(conditions))
     if actions:
@@ -1816,6 +2310,96 @@ def split_leading_or(rungs, r_ids):
     return links
 
 
+# [ADDED v3.96.0] What a script holds that a net has a field of its own for; anything else travels in extra.
+_SCRIPT_NET_KEYS = ("alias", "description", "mode", "max", "variables", "sequence")
+_SCENE_NET_KEYS = ("id", "name", "entities")
+
+
+def script_to_ast(hass, key, script_dict):
+    """[ADDED v3.96.0] A script of scripts.yaml as a net at the script level: its sequence drawn as an automation's
+    actions are - a rung for each plain run of steps, a rung for each option of a choose or an if - with no trigger. Its
+    key in the file is the net's ha_id; what the ladder does not draw (icon, fields, trace ...) travels in extra."""
+    script = script_dict if isinstance(script_dict, dict) else {}
+    net = yaml_to_ast(hass, {"id": key, "alias": script.get("alias"), "description": script.get("description", ""),
+                             "mode": script.get("mode"), "max": script.get("max"),
+                             "variables": script.get("variables"), "actions": script.get("sequence")})
+    net.update(id=f"n_{key}", ha_id=str(key), name=str(script.get("alias") or key), level="script",
+               extra={k: v for k, v in script.items() if k not in _SCRIPT_NET_KEYS})
+    if not script.get("alias"):
+        # A script with no alias is shown by its key; the compiler writes no alias while the name is still the key.
+        net["aliasFromKey"] = True
+    return net
+
+
+def _scene_text(value):
+    """[ADDED v3.96.0] A scene's value as the block shows it: a list or a mapping as JSON, anything else as its text."""
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return "" if value is None else str(value)
+
+
+def scene_to_ast(hass, scene_dict):
+    """[ADDED v3.96.0] A scene of scenes.yaml as a net at the scene level: a rung for each entity - a set coil for on, a
+    reset coil for off, a MOVE for any other state and for each attribute (brightness, temperature ...). Each block
+    carries the value as the file has it (raw), which the compiler writes back while the block is not changed - on
+    written without quotes, a colour as a list. What a scene holds besides its entities (icon, metadata) travels in
+    extra."""
+    scene = scene_dict if isinstance(scene_dict, dict) else {}
+    ids = _Ids("e", hass=hass)
+    r_ids = _Ids("r")
+    rungs = []
+    entities = scene.get("entities")
+    for ent, value in (entities.items() if isinstance(entities, dict) else []):
+        ent = str(ent)
+        if isinstance(value, dict) and value:
+            parts = ([(None, value["state"])] if "state" in value else []) + [(k, v) for k, v in value.items() if k != "state"]
+        else:
+            parts = [(None, value)]
+        elements = []
+        for key, part in parts:
+            raw = {"scene": {"entity": ent, "key": key, "value": part, "dict": isinstance(value, dict) and bool(value)}}
+            word = part.strip().lower() if isinstance(part, str) else part
+            if key is None and (word is True or word == "on"):
+                el = _el(ids, "coil_s", label=ent, raw=raw)
+            elif key is None and (word is False or word == "off"):
+                el = _el(ids, "coil_r", label=ent, raw=raw)
+            else:
+                el = _el(ids, "move", mode="value", target=ent, source=_scene_text(part), raw=raw)
+                if key is not None:
+                    el["valueKey"] = str(key)
+            elements.append(el)
+        stamp_sigs(elements)
+        rungs.append({"id": r_ids.next(), "comment": describe_rung(elements), "elements": elements})
+    if not rungs:
+        rungs.append({"id": r_ids.next(), "comment": "", "elements": []})
+    return {
+        "id": f"n_{scene.get('id', 'imported')}",
+        "ha_id": scene.get("id"),
+        "name": scene.get("name", "Imported Scene"),
+        "description": "",
+        "collapsed": False,
+        "level": "scene",
+        "mode": None,
+        "max": None,
+        "variables": None,
+        "extra": {k: v for k, v in scene.items() if k not in _SCENE_NET_KEYS},
+        "rungs": rungs,
+        "links": [],
+    }
+
+
+def entry_to_ast(hass, domain, key, config):
+    """[ADDED v3.96.0] An entry of Home Assistant's files as a net, by its kind: an automation, a script (its key is not
+    in its config) or a scene."""
+    if domain == "script":
+        return script_to_ast(hass, key, config)
+    if domain == "scene":
+        return scene_to_ast(hass, config)
+    return yaml_to_ast(hass, config)
+
+
 def yaml_to_ast(hass, automation_dict):
     """Builds a net. One rung per logical path, exactly the way a ladder program is written."""
     ids = _Ids("e", hass=hass)
@@ -1830,9 +2414,17 @@ def yaml_to_ast(hass, automation_dict):
     trig_map = {}
     for i, t in enumerate(raw_triggers):
         el = _trigger_to_element(t, ids, f"triggers[{i}]")
+        # [ADDED v3.96.0] Its place among the triggers: a choose may draw them in another order, and the compiler
+        # writes them back in this one (_collect_triggers).
+        el["trigIdx"] = i
         trigger_elements.append(el)
         if el.get("trigId"):
-            trig_map[el["trigId"]] = el
+            # [CHANGED v3.96.0] Several triggers may share one id (Home Assistant allows it): each is kept - the second
+            # replaced the first, and a save wrote one trigger less. trigDup tells them apart for the compiler.
+            same = trig_map.setdefault(el["trigId"], [])
+            if same:
+                el["trigDup"] = len(same)
+            same.append(el)
 
     # 2. automation level conditions, shared by every rung
     base_conditions = []

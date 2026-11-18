@@ -14,12 +14,20 @@
  */
 /**
  * LIBI Panel - Styles
- * v3.95.3
+ * v3.96.1
  */
-// [CHANGED v3.95.0 | 2026-11-10] Purpose: LOAD's window: the IN USE heading, its note, and rows that are shown, not
-//   chosen (.auto-sec, .auto-sec-note, .auto-used, .auto-where, .auto-none, .auto-warn).
-// [CHANGED v3.95.3 | 2026-11-11] Purpose: The Inspector's editor of a schedule's days and hours (.sched-edit,
-//   .sched-days, .sched-day, .sched-times, .sched-time, .sched-warn): round day buttons, two time fields.
+// [CHANGED v3.96.0 | 2026-11-11] Purpose: LOAD's filter (.auto-filter) and rows it hides; a condition kept as it is
+//   (.opaque-tag on its block, .opaque-config in the Inspector). What a MOVE sets on a device (.move-key) and the colour
+//   it holds (.pin-swatch) on its block; in the Inspector the palette and its swatches (.move-color, .swatch), the
+//   slider (.move-range), and why a MOVE is red (.move-why) - and why a contact is (.why). The + point's menu in
+//   groups with their names (.palette-group, .palette-label), scrolling inside when the screen is short (.palette-body).
+//   RAND's tick on its block (.calc-tag); in the Inspector MUX's inputs, a row each (.mux-inputs, .mux-row, .mux-n,
+//   .mux-del). The + point's menu in two steps: the categories (.palette-cats, .pal-cat), then the blocks of one with
+//   their names (.palette-head, .pal-back, .palette-items, .pal-item).
+// [CHANGED v3.96.1 | 2026-11-18] Purpose: An IN pin: a value, or a variable by its name, id and value now, and the
+//   button that chooses one (.in-field, .in-row, .in-var, .in-pick, .in-clear, .in-del, .in-add). MUX's rows (.mux-row,
+//   .mux-n, .mux-del) and the + point's groups of 3.96.0 (.palette-group, .palette-label, .palette-row.wrap), used no
+//   more, are gone.
 export const getStyles = () => `
 :host { display: block; height: 100vh; overflow-y: hidden; background: var(--primary-background-color, #f5f5f5); color: var(--primary-text-color, #212121); font-family: var(--primary-font-family, sans-serif); box-sizing: border-box; direction: ltr !important; text-align: left; }
 /* [ADDED v3.35.0] Colour tokens. The light values are the colours the panel always used; the
@@ -173,6 +181,29 @@ export const getStyles = () => `
 /* [ADDED v3.71.0] What a block compares with, read only: the days and hours of a schedule. */
 .plc-note { padding: 0 6px 2px; font-size: 10px; line-height: 1.3; font-weight: 700; color: var(--libi-pin-lbl); text-align: left; overflow-wrap: anywhere; }
 .insp-note { font-size: 12px; line-height: 1.45; color: var(--secondary-text-color, #757575); overflow-wrap: anywhere; }
+/* [ADDED v3.96.0] A condition the ladder has no drawing for, kept as it is: its tag on the block, its node in the Inspector. */
+.plc-note.opaque-tag { font-style: italic; font-weight: 600; }
+/* [ADDED v3.96.0] A MOVE's value: what it sets on a device and the colour it holds on the block; the palette, its
+   swatches and the slider in the Inspector. */
+.plc-note.move-key { font-weight: 600; text-align: center; }
+.pin-swatch { display: inline-block; width: 10px; height: 10px; margin-inline-end: 4px; vertical-align: -1px; border-radius: 3px; border: 1px solid rgba(0,0,0,.3); }
+.move-color .color-row, .move-range .range-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.move-color input[type="color"] { flex: 0 0 auto; width: 52px; height: 40px; padding: 2px; border: 1px solid var(--divider-color, #ddd); border-radius: 8px; background: var(--card-background-color, #fff); cursor: pointer; }
+.move-color .color-text { font-family: monospace; font-size: 12px; color: var(--secondary-text-color, #757575); }
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.swatch { width: 30px; height: 30px; padding: 0; border-radius: 50%; border: 1px solid rgba(0,0,0,.25); cursor: pointer; }
+.swatch.on { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: 2px; }
+.move-range input[type="range"] { flex: 1 1 auto; min-width: 0; accent-color: var(--primary-color, #03a9f4); }
+.move-range input[type="number"] { flex: 0 0 auto; width: 88px; }
+.insp-note.move-why, .insp-note.why { color: var(--error-color, #f44336); font-weight: 600; }
+/* [ADDED v3.96.0] RAND and MUX. */
+.plc-note.calc-tag { font-size: 10px; text-align: center; color: var(--secondary-text-color, #757575); }
+@media (pointer: coarse) { .swatch { width: 40px; height: 40px; } }
+.opaque-config { margin: 0; padding: 8px; max-height: 40vh; overflow: auto; font-size: 11px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--divider-color, #ddd); border-radius: 6px; background: var(--secondary-background-color, #fafafa); color: var(--primary-text-color, #212121); }
+/* [ADDED v3.96.0] LOAD's filter by name; a row or a heading it hides. */
+.auto-filter { width: 100%; box-sizing: border-box; min-height: 36px; padding: 8px 10px; border: 1.5px solid var(--divider-color, #ddd); border-radius: 7px; font-size: 14px; background: var(--secondary-background-color, #fafafa); color: var(--primary-text-color, #212121); }
+.auto-list [hidden] { display: none !important; }
+@media (pointer: coarse) { .auto-filter { min-height: 40px; } }
 /* [ADDED v3.95.3] The Inspector's editor of a schedule's days and hours (CMP DATETIME). */
 .sched-edit .sched-days { display: flex; flex-wrap: wrap; gap: 4px; }
 .sched-edit .sched-day { min-width: 36px; min-height: 36px; padding-inline: 6px; border-radius: 18px; border: 1.5px solid var(--divider-color, #ccc); background: var(--secondary-background-color, #fafafa); color: var(--primary-text-color, #212121); font-size: 12px; font-weight: 700; cursor: pointer; }
@@ -272,6 +303,35 @@ export const getStyles = () => `
 .pal-btn.danger { color: var(--error-color, #f44336); }
 .pal-btn.trigger-on { border-color: #f9a825; background: var(--libi-trig-bg); color: var(--libi-trig-fg); }
 .pal-btn small { font-size: 10px; font-weight: 800; letter-spacing: .3px; }
+.pal-btn small.glyph-big { font-size: 17px; font-weight: 700; letter-spacing: 0; }
+/* [ADDED v3.96.0] The + point's menu: the blocks in groups, each with its name; it scrolls inside on a short screen. */
+.palette-body { overflow-y: auto; overscroll-behavior: contain; }
+/* [ADDED v3.96.0] Categories, then the blocks of one, each a row with its symbol and its name; Back on top. */
+.palette-cats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.pal-btn.pal-cat, .pal-btn.pal-item { justify-content: flex-start; width: 100%; min-height: 44px; height: auto; padding: 6px 8px; gap: 8px; text-align: start; }
+.pal-cat-icon { flex: 0 0 34px; display: flex; align-items: center; justify-content: center; color: var(--primary-color, #03a9f4); }
+.pal-cat-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-cat-count { font-size: 11px; font-weight: 700; color: var(--secondary-text-color, #757575); }
+.pal-cat-more { font-size: 18px; line-height: 1; color: var(--secondary-text-color, #757575); }
+.palette-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.pal-btn.pal-back { min-width: 84px; min-height: 40px; font-size: 13px; }
+.palette-title { font-size: 13px; font-weight: 800; letter-spacing: .3px; text-transform: uppercase; color: var(--secondary-text-color, #757575); }
+.palette-items { display: flex; flex-direction: column; gap: 4px; }
+.pal-item-text { display: flex; flex-direction: column; min-width: 0; font-weight: 400; line-height: 1.25; }
+.pal-item-text b { font-weight: 800; }
+.pal-item-more { font-size: 11px; color: var(--secondary-text-color, #757575); white-space: normal; }
+.palette { width: min(360px, 92vw); }
+/* [ADDED v3.96.0] An IN pin: a value typed, or a variable; the button that chooses one; − takes an input away. */
+.in-row { display: flex; align-items: center; gap: 6px; }
+.in-row input { flex: 1 1 auto; min-width: 0; }
+.in-var { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; padding: 4px 8px; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 8px; background: var(--secondary-background-color, #f5f5f5); }
+.in-var b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.in-var .in-eid, .in-var .in-now { font-size: 11px; color: var(--secondary-text-color, #757575); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.in-var.in-empty { font-size: 12px; color: var(--secondary-text-color, #757575); font-style: italic; }
+.in-pick, .in-clear, .in-del { flex: 0 0 auto; min-height: 36px; padding: 0 10px; }
+.in-clear, .in-del { min-width: 36px; padding: 0; }
+@media (pointer: coarse) { .in-pick, .in-clear, .in-del { min-height: 40px; } .in-clear, .in-del { min-width: 40px; } }
+.in-add { width: 100%; }
 .fan-menu-container { position: fixed; z-index: 1000; width: 0; height: 0; pointer-events: none; }
 .fan-btn { position: absolute; width: 44px; height: 44px; background: var(--card-background-color, #fff); border: 1px solid var(--divider-color, #eee); border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: flex; align-items: center; justify-content: center; cursor: pointer; transform: translate(-50%, -50%); pointer-events: auto; transition: transform 0.15s, background 0.15s; color: var(--primary-text-color, #212121); padding: 0; }
 .fan-btn:hover { transform: translate(-50%, -50%) scale(1.15); background: var(--secondary-background-color, #f5f5f5); }

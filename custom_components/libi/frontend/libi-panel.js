@@ -14,25 +14,29 @@
  */
 /**
  * LIBI Panel - Main View
- * v3.95.5
+ * v3.96.2
  */
-// [CHANGED v3.95.4 | 2026-11-11] Purpose: The user's train reminder got a fixed zone (zone.work) in place of the zone
-//   chosen on the card: a person against a zone offered only zones for IN2. It offers the zone chosen on the dashboard
-//   too - a dropdown of the zones (input_select) - and says what it is. LIBI_BUILD 3.95.4.
-// [CHANGED v3.95.5 | 2026-11-11] Purpose: IN2 of a CMP of a value is "Value or helper": an entity there is read as text
-//   (libi-core checkLiteral). LOAD offers a NET its own automation again (_loadListHtml, in_use nets), as the backend
-//   allows - the review of the release (RULE 41). LIBI_BUILD 3.95.5. Its third pass: a trigger's zone is a zone only (a
-//   trigger reads no helper); "default" is the project when none is open, as the backend has it; the schedule editor
-//   says "Nothing was saved" also when the schedule is gone or carries data by then.
-import { LibiCore } from './libi-core.js?v=3.95.5';
-import { getStyles } from './libi-css.js?v=3.95.5';
-import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.95.5';
-import { LibiOnline, LIVE_ROOM } from './libi-online.js?v=3.95.5';
-import { LibiAiChat } from './libi-ai.js?v=3.95.5';
+// [CHANGED v3.96.1 | 2026-11-18] Purpose: The user (2026-11-18): every IN takes a value typed, or a variable chosen by
+//   category - the helpers first, then by target or by type, only what holds a value of the pin's kind, never on or off
+//   (_inField, _pinFilter, _epFits, _epByHelperHtml) - and ADD, SUB, MUL and DIV take IN3 ... IN8 (_mathFields). A pin
+//   of a list (inputs.N, more.N) is read and written as one (pinGet, pinSet): a variable dropped on a MUX input, or
+//   picked for it, was written into a field of its own. LIBI_BUILD 3.96.1 - 3.96.0 is on H: since 2026-11-18 07:36.
+// [CHANGED v3.96.2 | 2026-11-18] Purpose: The user: OUT as IN is - one field, the browser by category. It offers what
+//   can TAKE the result: for MATH, MOD and RAND a number helper, a counter, a text, a device's number or text (never a
+//   sensor, which cannot be set); for MUX and MOVE a helper or a device that takes a value (OUT_DOMAINS) - shown by
+//   its name, id and value now. LIBI_BUILD 3.96.2 - 3.96.1 is on H: since 2026-11-18 08:37. The review of the release
+//   (RULE 41): a MOVE's value that is the words of an entity id (literal) is those words, not a variable; RAND of a
+//   fraction or of one number never the one OUT holds, and a MUX's K a fraction, are red (_calcProblem); a P contact
+//   on a value that may be on says it fires on any change, off too (_contactNote).
+import { LibiCore } from './libi-core.js?v=3.96.2';
+import { getStyles } from './libi-css.js?v=3.96.2';
+import { LIBI_ICONS, MDI } from './libi-svg.js?v=3.96.2';
+import { LibiOnline, LIVE_ROOM } from './libi-online.js?v=3.96.2';
+import { LibiAiChat } from './libi-ai.js?v=3.96.2';
 
 // [ADDED v3.15.2] Printed once when the file loads. If the number in the console is not the number
 // of the release you installed, the browser is running an older file and nothing else matters.
-export const LIBI_BUILD = '3.95.5';
+export const LIBI_BUILD = '3.96.2';
 // [ADDED v3.35.0] Resolved against this module, so it follows the static path it is served from.
 const LOGO_URL = new URL(`./libi-logo.png?v=${LIBI_BUILD}`, import.meta.url).href;
 
@@ -73,6 +77,162 @@ const clockIn1 = (side) => (side === 'time' || side === 'weekday') ? CLOCK_IN1[s
 
 // Which of the five a given entity is. A counter and an input_number both hold a number, and the
 // step is what says whether it counts in whole numbers or in fractions.
+// [ADDED v3.96.0] What a MOVE sets on each kind of thing (libi_to_yaml._MOVE_SERVICES): the values it can give it, the
+// first the default. A light takes several - the block says which (valueKey). Anything else has no value a MOVE can
+// set: a switch is turned on and off by a coil.
+export const MOVE_SETS = {
+    light: ['brightness_pct', 'brightness', 'brightness_step_pct', 'color_temp_kelvin', 'rgb_color', 'color_name', 'effect'],
+    fan: ['percentage'], cover: ['position'], valve: ['position'], climate: ['temperature'],
+    water_heater: ['temperature'], humidifier: ['humidity'], media_player: ['volume_level'],
+    input_number: ['value'], number: ['value'], counter: ['value'], input_text: ['value'], text: ['value'],
+    input_select: ['option'], select: ['option'], input_datetime: ['time'],
+};
+// Every value of a light a MOVE read from Home Assistant may set (yaml_to_libi.LIGHT_VALUE_KEYS).
+const LIGHT_VALUE_KEYS = ['brightness_pct', 'brightness', 'brightness_step_pct', 'brightness_step', 'rgb_color',
+    'color_name', 'hs_color', 'xy_color', 'rgbw_color', 'rgbww_color', 'color_temp_kelvin', 'effect'];
+const HELPER_SET_DOMAINS = new Set(['input_number', 'number', 'counter', 'input_text', 'text', 'input_select', 'select',
+    'input_datetime']);
+// [ADDED v3.96.0] Domains whose state is a value - a number, a choice, a text, a date or a time, a button's last press -
+// and not on or off (yaml_to_libi.VALUE_DOMAINS): a P contact starting a rung on one is the moment its value changes.
+// Those of them never on or off whatever they hold (NEVER_ON_DOMAINS): a contact waiting for on or off on one never
+// holds, and the compiler refuses it.
+export const VALUE_DOMAINS = new Set(['input_number', 'number', 'counter', 'input_select', 'select', 'input_text', 'text',
+    'input_datetime', 'date', 'time', 'datetime', 'input_button', 'button', 'event', 'timer', 'sensor']);
+export const NEVER_ON_DOMAINS = new Set(['input_number', 'number', 'counter', 'input_datetime', 'date', 'time',
+    'datetime', 'input_button', 'button', 'event', 'timer']);
+const COLOR_MODES = ['hs', 'xy', 'rgb', 'rgbw', 'rgbww'];
+// [ADDED v3.96.0] What a RAND or a MOD sets: a number kept in a helper (yaml_to_libi.NUMBER_OUT_DOMAINS) - a counter
+// is the one LIBI's card does not show. The variables a pin of RAND, MOD or MUX's K reads: a whole number.
+export const NUMBER_OUT_DOMAINS = ['input_number', 'number', 'counter', 'input_text', 'text'];
+// [ADDED v3.96.0] An IN pin takes a value typed - 20 - or a variable of a kind that holds one, never on or off: what the
+// entity browser offers for a pin, by the kind of value it takes (_inField, _epFits).
+const PIN_DOMAINS = {
+    number: ['input_number', 'counter', 'number', 'sensor'],
+    word: ['input_select', 'input_text', 'select', 'text', 'sensor'],
+    any: ['input_number', 'counter', 'number', 'input_select', 'input_text', 'select', 'text', 'input_datetime', 'sensor',
+        'date', 'time', 'datetime', 'climate', 'water_heater', 'humidifier', 'media_player', 'cover', 'lock', 'vacuum',
+        'alarm_control_panel', 'weather', 'person', 'device_tracker', 'zone', 'sun', 'timer', 'event'],
+};
+// The helpers by kind, the browser's first tab for a pin.
+// [ADDED v3.96.2] What an OUT can take: the result of MATH, MOD or RAND is a number set into a helper or a device's
+// number (NUMBER_OUT_DOMAINS); MUX and MOVE set a value as MOVE_SETS has it - a helper, or a light, a fan ... A sensor
+// cannot be set, and a switch takes no value.
+const OUT_DOMAINS = { number: NUMBER_OUT_DOMAINS, value: Object.keys(MOVE_SETS) };
+const HELPER_KINDS = [['input_number', 'Number helpers', '#'], ['counter', 'Counters', '123'], ['input_select', 'Lists', '☰'],
+    ['input_text', 'Texts', 'T'], ['input_datetime', 'Dates and times', '◷']];
+// ADD, SUB, MUL and DIV take IN3, IN4 ... up to IN8 (more); MOD and RAND two; MUX its own list, up to eight.
+const MORE_INPUTS = new Set(['math_add', 'math_sub', 'math_mul', 'math_div']);
+const MAX_INPUTS = 8;
+// A pin that is one input of a list - inputs.2 of a MUX, more.0 (IN3) of a MATH - is read and written as that input.
+const LIST_PIN_RE = /^(inputs|more)\.(\d+)$/;
+export const pinGet = (el, prop) => {
+    const m = LIST_PIN_RE.exec(String(prop));
+    return m ? (Array.isArray(el[m[1]]) ? el[m[1]][Number(m[2])] : undefined) : el[prop];
+};
+export const pinSet = (el, prop, value) => {
+    const m = LIST_PIN_RE.exec(String(prop));
+    if (!m) { el[prop] = value; return; }
+    const list = Array.isArray(el[m[1]]) ? [...el[m[1]]] : [];
+    list[Number(m[2])] = value;
+    el[m[1]] = list;
+};
+const pinId = (prop) => String(prop).replace('.', '');
+const INT_TEXT_RE = /^-?\d+$/;
+// [ADDED v3.96.0] EVERY, a time pattern as its block holds it (yaml_to_libi.pattern_parts): "seconds=/10".
+const PATTERN_PART_RE = /^(hours|minutes|seconds)=(\*|\/\d+|\d+)$/;
+const PATTERN_MAX = { hours: 23, minutes: 59, seconds: 59 };
+const PATTERN_SHORT = { seconds: 's', minutes: 'min', hours: 'h' };
+export function patternParts(text) {
+    const words = String(text === undefined || text === null ? '' : text).trim().split(/\s+/).filter(Boolean);
+    const parts = {};
+    for (const word of words) {
+        const m = PATTERN_PART_RE.exec(word);
+        if (!m || m[1] in parts) return null;
+        parts[m[1]] = m[2];
+    }
+    return Object.keys(parts).length ? parts : null;
+}
+/** [ADDED v3.96.0] { n, unit } of a pattern that is one "every N" - seconds=/10 - or null. */
+export function patternEvery(text) {
+    const parts = patternParts(text);
+    const keys = parts ? Object.keys(parts) : [];
+    return keys.length === 1 && parts[keys[0]].startsWith('/') ? { n: Number(parts[keys[0]].slice(1)), unit: keys[0] } : null;
+}
+const NUMBER_VARS = ['input_number', 'number', 'sensor'];
+const WORD_VARS = ['input_select', 'select', 'input_text', 'text'];
+// [ADDED v3.96.0] Each value: its name, how it is picked - a slider, a number, a palette, a word - and the kinds of
+// variable that can give it when the action runs (a light gives its own brightness, colour temperature or colour).
+export const MOVE_VALUES = {
+    brightness_pct: { name: 'Brightness (%)', kind: 'range', min: 0, max: 100, step: 1, vars: [...NUMBER_VARS, 'light'] },
+    brightness: { name: 'Brightness (0-255)', kind: 'range', min: 0, max: 255, step: 1, vars: [...NUMBER_VARS, 'light'] },
+    brightness_step_pct: { name: 'Dim up or down by (%)', kind: 'range', min: -100, max: 100, step: 5, vars: NUMBER_VARS },
+    brightness_step: { name: 'Dim up or down by (0-255)', kind: 'range', min: -255, max: 255, step: 5, vars: NUMBER_VARS },
+    color_temp_kelvin: { name: 'Color temperature (K)', kind: 'range', min: 2000, max: 6500, step: 100, vars: [...NUMBER_VARS, 'light'] },
+    rgb_color: { name: 'Color', kind: 'color', vars: ['input_text', 'text', 'light'] },
+    color_name: { name: 'Color by name', kind: 'word', names: true, vars: [...WORD_VARS, 'light'] },
+    effect: { name: 'Effect', kind: 'word', vars: WORD_VARS },
+    percentage: { name: 'Speed (%)', kind: 'range', min: 0, max: 100, step: 1, vars: NUMBER_VARS },
+    position: { name: 'Position (%)', kind: 'range', min: 0, max: 100, step: 1, vars: NUMBER_VARS },
+    temperature: { name: 'Temperature', kind: 'number', step: 0.5, vars: NUMBER_VARS },
+    humidity: { name: 'Humidity (%)', kind: 'range', min: 0, max: 100, step: 1, vars: NUMBER_VARS },
+    volume_level: { name: 'Volume (0 to 1)', kind: 'range', min: 0, max: 1, step: 0.05, vars: NUMBER_VARS },
+};
+// [ADDED v3.96.0] The colours offered beside the palette, as a light takes them.
+export const COLOR_SWATCHES = [
+    ['Warm white', [255, 180, 107]], ['White', [255, 255, 255]], ['Red', [255, 0, 0]], ['Orange', [255, 128, 0]],
+    ['Yellow', [255, 220, 0]], ['Green', [0, 255, 0]], ['Cyan', [0, 255, 255]], ['Blue', [0, 0, 255]],
+    ['Purple', [160, 32, 240]], ['Pink', [255, 105, 180]],
+];
+// Colour names Home Assistant knows (CSS), offered for Color by name.
+const COLOR_NAMES = ['red', 'orange', 'gold', 'yellow', 'lime', 'green', 'turquoise', 'cyan', 'blue', 'navy', 'purple',
+    'violet', 'magenta', 'pink', 'coral', 'white'];
+const ENTITY_ID_RE = /^[a-z_][a-z0-9_]*\.[a-z0-9_]+$/;
+
+/** [ADDED v3.96.0] A colour as a block holds it - [255, 136, 0], 255, 136, 0 or #ff8800 - as [r, g, b], or null. */
+export function colorOf(value) {
+    const s = String(value === undefined || value === null ? '' : value).trim();
+    let m = s.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+    if (m) return m.slice(1).map(x => parseInt(x, 16));
+    m = s.match(/^\[?\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\]?$/);
+    if (!m) return null;
+    const rgb = m.slice(1).map(Number);
+    return rgb.every(x => x <= 255) ? rgb : null;
+}
+const hexOf = (rgb) => '#' + rgb.map(x => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, '0')).join('');
+const listOf = (rgb) => `[${rgb.join(', ')}]`;
+
+// [ADDED v3.96.0] The blocks a + point adds, in groups with their names: one row of seventeen symbols ran out of the menu.
+// [CHANGED v3.96.0] The user (2026-11-18): the categories first, then every block of the one chosen - each with its
+// symbol and its name - and back to the categories in one tap. A pseudo kind (move_notify, every) is a block made
+// ready: a MOVE that sends a message, an EVERY - a time pattern - that starts the rung (libi-core.js mkEl).
+const INSERT_CATEGORIES = [
+    { id: 'contacts', name: 'Contacts', icon: 'contact_no', types: ['contact_no', 'contact_nc', 'contact_p', 'contact_n'] },
+    { id: 'compare', name: 'Compare', icon: 'cmp_eq', types: ['cmp_eq', 'cmp_ne', 'cmp_gt', 'cmp_lt', 'cmp_ge', 'cmp_le', 'cmp_rng'] },
+    { id: 'coils', name: 'Coils', icon: 'coil', types: ['coil', 'coil_s', 'coil_r', 'coil_t'] },
+    { id: 'move', name: 'MOVE', icon: 'move', types: ['move', 'move_notify', 'move_tts', 'move_both'] },
+    { id: 'timers', name: 'Timers', icon: 'timer_ton', types: ['timer_ton', 'timer_toff', 'every'] },
+    { id: 'counter', name: 'Counter', icon: 'ctu', types: ['ctu'] },
+    { id: 'math', name: 'Math', icon: 'math_div', types: ['math_add', 'math_sub', 'math_mul', 'math_div', 'math_mod', 'math_rand', 'mux'] },
+    { id: 'structure', name: 'Structure', icon: 'repeat', types: ['repeat', 'parallel'] },
+];
+// [ADDED v3.96.0] What each block is, in words: the menus' buttons showed a symbol and, on hover, its internal name.
+const BLOCK_NAMES = {
+    contact_no: 'Contact NO - true while it is on', contact_nc: 'Contact NC - true while it is off',
+    contact_p: 'Rising edge (P) - the moment it turns on, or a value changes', contact_n: 'Falling edge (N) - the moment it turns off',
+    cmp_eq: 'Compare =', cmp_ne: 'Compare not =', cmp_gt: 'Compare >', cmp_lt: 'Compare <', cmp_ge: 'Compare >=',
+    cmp_le: 'Compare <=', cmp_rng: 'Compare: within a range',
+    math_add: 'ADD - IN1 plus IN2', math_sub: 'SUB - IN1 minus IN2', math_mul: 'MUL - IN1 times IN2',
+    math_div: 'DIV - IN1 divided by IN2',
+    math_mod: 'MOD - the remainder of IN1 divided by IN2', math_rand: 'RAND - a random whole number from IN1 to IN2',
+    mux: 'MUX - input number K of a list, K from 0',
+    coil: 'Coil - on while the rung is true', coil_s: 'Set (S) - turn on', coil_r: 'Reset (R) - turn off',
+    coil_t: 'Toggle (T)', move: 'MOVE - set a value (brightness, color ...), or send a message',
+    timer_ton: 'Timer TON - a delay, or true after a time', timer_toff: 'Timer TOF - an off delay',
+    ctu: 'Counter CTU - count up', repeat: 'Repeat - a loop', parallel: 'Parallel branch',
+    move_notify: 'MESSAGE - a notification to a phone', move_tts: 'TTS - a text a speaker says',
+    move_both: 'MESSAGE + TTS - a notification, and the text spoken', every: 'EVERY - every N seconds, minutes or hours',
+};
+
 export function varTypeOf(entityId, hass) {
     const domain = String(entityId || '').split('.')[0];
     if (domain === 'input_boolean' || domain === 'input_button') return 'BOOL';
@@ -230,6 +390,13 @@ class LibiPanel extends HTMLElement {
     connectedCallback() { 
         this.tabIndex = 0; 
         this._keyHandler = (e) => {
+            // [ADDED v3.96.0] Escape in the + point's menu: back to the categories, and from them the menu closes.
+            if (e.key === 'Escape' && this._floatingMenu && this._floatingMenu.type === 'dot') {
+                e.preventDefault();
+                if (this._floatingMenu.category) { this._floatingMenu.category = ''; this._floatingMenu.tall = 0; } else this._floatingMenu = null;
+                this._render();
+                return;
+            }
             // [ADDED v3.94.0] No undo or redo in Traces: it is read only.
             if (this.online && this.online.enabled) return;
             if (e.ctrlKey && e.key.toLowerCase() === 'z') {
@@ -804,6 +971,9 @@ class LibiPanel extends HTMLElement {
             const response = await this._hass.connection.sendMessagePromise({ type: 'libi/list_automations' });
             if (response && response.automations) { 
                 this._automationList = response.automations; 
+                // [ADDED v3.96.0] And the scripts and the scenes Home Assistant has.
+                this._scriptList = Array.isArray(response.scripts) ? response.scripts : [];
+                this._sceneList = Array.isArray(response.scenes) ? response.scenes : [];
                 // [ADDED v3.95.0] The projects LIBI could not read: they may hold any automation (_loadListHtml).
                 this._automationUnreadable = Array.isArray(response.unreadable) ? response.unreadable : [];
                 this._modal = 'list_automations'; 
@@ -821,45 +991,76 @@ class LibiPanel extends HTMLElement {
         const esc = (s) => this._esc(s);
         // [CHANGED v3.95.5] "default" when no project is open, as libi/get_automation has it.
         const slug = this._project ? this._project.slug : 'default';
+        // [CHANGED v3.96.0] An automation, a script and a scene, each kind under its heading; what a NET of this page
+        // shows is told by its kind too (a script and an automation may share a key).
+        const KINDS = [['automation', 'AUTOMATIONS', this._automationList], ['script', 'SCRIPTS', this._scriptList],
+                       ['scene', 'SCENES', this._sceneList]];
         const onPage = new Map();
         this.core.nets.forEach((n, i) => {
-            if (n && n.ha_id && n.id !== this._activeNetForLoad) onPage.set(String(n.ha_id), `NET ${i + 1} on this page`);
+            if (n && n.ha_id && n.id !== this._activeNetForLoad) onPage.set(`${this.core.netLevel(n)}:${n.ha_id}`, `NET ${i + 1} on this page`);
         });
         const unreadable = Array.isArray(this._automationUnreadable) ? this._automationUnreadable : [];
-        const list = Array.isArray(this._automationList) ? this._automationList : [];
-        const free = [], used = [];
-        for (const a of list) {
-            // [CHANGED v3.95.5] A NET may load its own automation again: this project holding it only by that NET (or
-            // by nothing but what it made) is no holder, as libi/get_automation allows it.
-            const own = (u) => !!slug && u.slug === slug && Array.isArray(u.nets) && u.nets.every(n => String(n) === String(this._activeNetForLoad));
-            const holders = (Array.isArray(a.in_use) ? a.in_use : []).filter(u => u && u.name && !own(u))
-                .map(u => (slug && u.slug === slug) ? `${u.name} (this project)` : String(u.name));
-            const page = onPage.get(String(a.id));
-            if (page && !(slug && (a.in_use || []).some(u => u && u.slug === slug && !own(u)))) holders.push(page);
-            (holders.length || unreadable.length ? used : free).push({ a, holders });
+        const free = { automation: [], script: [], scene: [] }, used = [];
+        let total = 0;
+        for (const [kind, , entries] of KINDS) {
+            for (const a of Array.isArray(entries) ? entries : []) {
+                total++;
+                // [CHANGED v3.95.5] A NET may load its own automation again: this project holding it only by that NET
+                // (or by nothing but what it made) is no holder, as libi/get_automation allows it.
+                const own = (u) => !!slug && u.slug === slug && Array.isArray(u.nets) && u.nets.every(n => String(n) === String(this._activeNetForLoad));
+                const holders = (Array.isArray(a.in_use) ? a.in_use : []).filter(u => u && u.name && !own(u))
+                    .map(u => (slug && u.slug === slug) ? `${u.name} (this project)` : String(u.name));
+                const page = onPage.get(`${kind}:${a.id}`);
+                if (page && !(slug && (a.in_use || []).some(u => u && u.slug === slug && !own(u)))) holders.push(page);
+                if (holders.length || unreadable.length) used.push({ a, holders, kind });
+                else free[kind].push({ a, kind });
+            }
         }
-        const pick = ({ a }) => `<div class="auto-item" data-id="${esc(a.id)}"><div class="auto-item-name" dir="auto">${esc(a.name)}</div><div class="auto-item-id">ID: ${esc(a.id)}</div></div>`;
-        const shown = ({ a, holders }) => `<div class="auto-used" aria-disabled="true"><div class="auto-item-name" dir="auto">${esc(a.name)}</div><div class="auto-item-id"><span class="auto-where" dir="auto">${esc(holders.join(', ') || 'Not known')}</span> · ID: ${esc(a.id)}</div></div>`;
+        const idText = (a, kind) => (kind === 'script' ? `script.${esc(a.id)}` : `ID: ${esc(a.id)}`);
+        const pick = ({ a, kind }) => `<div class="auto-item" data-id="${esc(a.id)}" data-domain="${esc(kind)}"><div class="auto-item-name" dir="auto">${esc(a.name)}</div><div class="auto-item-id">${idText(a, kind)}</div></div>`;
+        const shown = ({ a, holders, kind }) => `<div class="auto-used" aria-disabled="true"><div class="auto-item-name" dir="auto">${esc(a.name)}</div><div class="auto-item-id"><span class="auto-where" dir="auto">${esc(holders.join(', ') || 'Not known')}</span> · ${esc(kind)} · ${idText(a, kind)}</div></div>`;
+        const anyFree = KINDS.some(([kind]) => free[kind].length);
+        // The heading of a kind only when more than automations are listed: with automations alone it is as it was.
+        const headings = KINDS.filter(([kind]) => free[kind].length).length > 1 || free.script.length || free.scene.length;
         let body;
         if (unreadable.length) {
-            body = used.map(shown).join('') || '<div class="auto-none">No automations found.</div>';
+            body = used.map(shown).join('') || '<div class="auto-none">Nothing to load was found in Home Assistant.</div>';
         } else {
-            body = (free.length ? free.map(pick).join('')
-                : `<div class="auto-none">${list.length ? 'Every automation is in a project already.' : 'No automations found.'}</div>`)
-                + (used.length ? '<div class="auto-sec">IN USE</div><div class="auto-sec-note">An automation belongs to one project. '
+            body = (anyFree ? KINDS.filter(([kind]) => free[kind].length).map(([kind, title]) =>
+                    (headings ? `<div class="auto-sec auto-kind" data-kind="${esc(kind)}">${esc(title)}</div>` : '') + free[kind].map(pick).join('')).join('')
+                : `<div class="auto-none">${total ? 'Everything is in a project already.' : 'Nothing to load was found in Home Assistant.'}</div>`)
+                + (used.length ? '<div class="auto-sec auto-sec-used">IN USE</div><div class="auto-sec-note">An automation, a script or a scene belongs to one project. '
                     + 'To load one of these here, take it out of its project first: Delete NET… ▸ Remove from LIBI only.</div>'
                     + used.map(shown).join('') : '');
         }
-        const warn = unreadable.length ? `<p class="auto-warn">LIBI could not read the project file of ${esc(unreadable.join(', '))}, so it cannot tell which project holds which automation. Nothing can be loaded until that file is fixed or removed.</p>` : '';
-        return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 500px;"><h2 class="modal-title">Select HA Automation</h2><p style="font-size:13px; color:var(--secondary-text-color, #757575); margin:0;">Choose an automation to load into this Net.</p>${warn}<div class="auto-list" style="max-height:50vh;">${body}</div><div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div></div></div>`;
+        const warn = unreadable.length ? `<p class="auto-warn">LIBI could not read the project file of ${esc(unreadable.join(', '))}, so it cannot tell which project holds what. Nothing can be loaded until that file is fixed or removed.</p>` : '';
+        // [ADDED v3.96.0] A filter by name once the list is long: it hides rows, and never draws the panel again.
+        const filter = total > 8 ? '<input type="search" class="auto-filter" id="loadFilter" placeholder="Filter by name" dir="auto" aria-label="Filter by name" />' : '';
+        return `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="width: 500px;"><h2 class="modal-title">Load from Home Assistant</h2><p style="font-size:13px; color:var(--secondary-text-color, #757575); margin:0;">Choose an automation, a script or a scene to load into this Net.</p>${warn}${filter}<div class="auto-list" style="max-height:50vh;">${body}</div><div class="modal-actions"><button class="btn btn-ghost" id="closeModalBtn">Cancel</button></div></div></div>`;
     }
 
-    async _importAutomation(haId) {
+    // [ADDED v3.96.0] LOAD's filter: the rows whose name or id holds the words stay, and a heading with no row left goes.
+    _filterLoadList(text) {
+        const list = this.shadowRoot && this.shadowRoot.querySelector('.modal .auto-list');
+        if (!list) return;
+        const words = String(text || '').toLowerCase().trim();
+        let heading = null, seen = 0;
+        const close = () => { if (heading) heading.hidden = !seen; };
+        for (const row of list.children) {
+            if (row.classList.contains('auto-sec')) { close(); heading = row; seen = 0; continue; }
+            if (!row.classList.contains('auto-item') && !row.classList.contains('auto-used')) continue;
+            row.hidden = !!words && !row.textContent.toLowerCase().includes(words);
+            if (!row.hidden) seen++;
+        }
+        close();
+    }
+
+    async _importAutomation(haId, domain = 'automation') {
         if (!this._hass || !this._hass.connection) return;
         try {
             // [CHANGED v3.85.0] The NET it goes into: the automation is recorded as it is, V1 the original and V2 its
-            // copy - the user's rule (2026-11-04).
-            const response = await this._hass.connection.sendMessagePromise({ type: 'libi/get_automation', automation_id: haId,
+            // copy - the user's rule (2026-11-04). [CHANGED v3.96.0] Or a script or a scene (domain).
+            const response = await this._hass.connection.sendMessagePromise({ type: 'libi/get_automation', automation_id: haId, domain,
                 slug: this._project ? this._project.slug : 'default', net_id: String(this._activeNetForLoad || '') });
             if (response && response.versions && Object.keys(response.versions).length) this._versions = response.versions;
             if (response && response.net) {
@@ -881,7 +1082,7 @@ class LibiPanel extends HTMLElement {
             // [CHANGED v3.95.0] An automation a project holds is refused by the backend too: its words say why, and the
             // list is fetched again, as it is now.
             const said = !!err && (err.code === 'in_use' || err.code === 'projects_unreadable');
-            alert(said ? err.message : "Failed to load automation AST: " + (err && err.message));
+            alert(said ? err.message : `LIBI could not load this ${domain}: ` + (err && err.message));
             if (said) this._fetchAutomationsList();
         }
     }
@@ -894,7 +1095,7 @@ class LibiPanel extends HTMLElement {
         return `
         <div class="net-notice" data-nid="${net.id}">
             <div class="net-notice-head">
-                <span>⚠️ This automation does not compile back to itself yet</span>
+                <span>⚠️ This ${this._esc(this.core.netLevel(net))} does not compile back to itself yet</span>
                 <button class="net-notice-x" data-nid="${net.id}" title="Hide">✕</button>
             </div>
             <div class="net-notice-body">It is safe to look at and to edit, but saving would change the parts listed here.</div>
@@ -920,25 +1121,55 @@ class LibiPanel extends HTMLElement {
     _palIcon(type) {
         const glyph = {
             cmp_eq: '=', cmp_ne: '≠', cmp_gt: '>', cmp_lt: '<', cmp_ge: '≥', cmp_le: '≤', cmp_rng: '↔',
-            math_add: '+', math_sub: '−', math_mul: '×', math_div: '÷',
+            math_add: '+', math_sub: '−', math_mul: '×', math_div: '÷', math_mod: 'MOD', math_rand: 'RND', mux: 'MUX',
             timer_ton: 'TON', timer_toff: 'TOF', repeat: 'REP', parallel: '⑂', ctu: 'CTU', wait: 'WAIT',
-            move: 'MOV', move_value: 'MOV', move_notify: 'MSG', move_tts: 'TTS', move_both: 'M+T'
+            move: 'MOV', move_value: 'MOV', move_notify: 'MSG', move_tts: 'TTS', move_both: 'M+T', every: 'EVERY'
         }[type];
-        if (glyph) return `<small>${glyph}</small>`;
+        // [CHANGED v3.96.0] A symbol of one or two signs (+, ÷, =, ≠) is drawn large enough to read.
+        if (glyph) return `<small${[...glyph].length <= 2 ? ' class="glyph-big"' : ''}>${glyph}</small>`;
         return this._getFanIcon(type);
+    }
+
+    /** [ADDED v3.96.0] A category of the + point's menu: its symbol, its name, how many blocks it has. */
+    _palCat(c) {
+        const icon = c.id === 'math' ? '<small>+ ÷</small>' : this._palIcon(c.icon);
+        const label = `${c.name}: ${c.types.length} block${c.types.length === 1 ? '' : 's'}`;
+        return `<button type="button" class="pal-btn pal-cat" data-action="cat" data-val="${this._esc(c.id)}" title="${this._esc(label)}" aria-label="${this._esc(label)}">`
+            + `<span class="pal-cat-icon">${icon}</span><span class="pal-cat-name">${this._esc(c.name)}</span>`
+            + `<span class="pal-cat-count">${c.types.length}</span><span class="pal-cat-more" aria-hidden="true">›</span></button>`;
+    }
+
+    /** [ADDED v3.96.0] A block of the category chosen: its symbol and its name in words - "DIV - IN1 divided by IN2". */
+    _palItem(type) {
+        const name = BLOCK_NAMES[type] || type;
+        const cut = name.indexOf(' - ');
+        const short = cut > 0 ? name.slice(0, cut) : name;
+        const more = cut > 0 ? name.slice(cut + 3) : '';
+        return `<button type="button" class="pal-btn pal-item" data-action="add" data-val="${this._esc(type)}" title="${this._esc(name)}" aria-label="${this._esc(name)}">`
+            + `<span class="pal-cat-icon">${this._palIcon(type)}</span><span class="pal-item-text"><b>${this._esc(short)}</b>`
+            + `${more ? `<span class="pal-item-more">${this._esc(more)}</span>` : ''}</span></button>`;
     }
 
     _palBtn(b) {
         const cls = ['pal-btn', b.danger ? 'danger' : '', b.selected ? 'selected' : '', b.cls || ''].join(' ').trim();
-        return `<button class="${cls}" data-action="${b.action}" data-val="${b.val || ''}" title="${b.title || b.val || b.action}">${b.icon || this._palIcon(b.val)}</button>`;
+        // [CHANGED v3.96.0] Its name in words, for the eye and for a screen reader (BLOCK_NAMES).
+        const title = this._esc(b.title || BLOCK_NAMES[b.val] || b.val || b.action);
+        return `<button class="${cls}" data-action="${b.action}" data-val="${b.val || ''}" title="${title}" aria-label="${title}">${b.icon || this._palIcon(b.val)}</button>`;
     }
 
-    _calculateMenuBounds(fm) {
+    // [CHANGED v3.96.0] height: how tall the menu is, about. It goes under the point when it has no room above it.
+    _calculateMenuBounds(fm, height = 0) {
         let yPos = fm.y - 10;
+        let below = false;
         let transformStyle = '';
         let arrowStyle = '';
         
-        if (fm.y < 120 && fm.bottom) {
+        // [CHANGED v3.96.0] Above the point while the menu fits there; else under it when it fits there - and when it fits
+        // on neither side, on the side with more room (a long category on a short screen).
+        const roomAbove = fm.y - 10 - 8;
+        const roomBelow = window.innerHeight - (fm.bottom || fm.y) - 10 - 8;
+        if ((fm.y < 120 || (height > roomAbove && (height <= roomBelow || roomBelow > roomAbove))) && fm.bottom) {
+            below = true;
             yPos = fm.bottom + 10;
             transformStyle = 'transform: translate(-50%, 0);';
             arrowStyle = `
@@ -954,7 +1185,7 @@ class LibiPanel extends HTMLElement {
                 </style>
             `;
         }
-        return { yPos, transformStyle, arrowStyle };
+        return { yPos, transformStyle, arrowStyle, below };
     }
 
     _renderFloatingMenu() {
@@ -963,15 +1194,23 @@ class LibiPanel extends HTMLElement {
         let choices = [];
         let actions = [];
 
+        let cats = [];
+        let items = [];
+        let head = '';
         if (fm.type === 'dot') {
-            ['contact_no', 'contact_nc', 'contact_p', 'cmp_eq', 'cmp_gt', 'cmp_lt', 'math_add', 'math_div',
-             'move', 'coil', 'coil_s', 'coil_r', 'coil_t', 'timer_ton', 'ctu', 'repeat', 'parallel']
-                .forEach(v => choices.push({ action: 'add', val: v }));
+            // [CHANGED v3.96.0] Two steps (INSERT_CATEGORIES): the categories, then every block of the one chosen, with Back.
+            const cat = INSERT_CATEGORIES.find(c => c.id === fm.category);
+            if (cat) {
+                head = `<div class="palette-head"><button type="button" class="pal-btn pal-back" data-action="back" title="Back to the categories" aria-label="Back to the categories">‹ Back</button><span class="palette-title">${this._esc(cat.name)}</span></div>`;
+                items = cat.types.map(v => this._palItem(v));
+            } else {
+                cats = INSERT_CATEGORIES.map(c => this._palCat(c));
+            }
 
-            if (this.core.clipboard) actions.push({ action: 'paste', icon: '<small>PASTE</small>', title: 'Paste' });
+            if (this.core.clipboard && !cat) actions.push({ action: 'paste', icon: '<small>PASTE</small>', title: 'Paste' });
 
             const match = fm.path.match(/^(.*)\.b(\d+)\.\d+$/);
-            if (match) {
+            if (match && !cat) {
                 const pInfo = this.core.getArrTarget(fm.netId, fm.rungId, match[1]);
                 const par = pInfo && pInfo.arr[pInfo.idx];
                 if (par && par.closed) actions.push({ action: 'unclose_block', icon: '<small>UNLINK</small>', title: 'Open this block again' });
@@ -992,7 +1231,7 @@ class LibiPanel extends HTMLElement {
             else if (t.startsWith('coil')) pick(['coil', 'coil_s', 'coil_r', 'coil_t']);
             else if (t.startsWith('timer')) pick(['timer_ton', 'timer_toff']);
             else if (t.startsWith('cmp')) pick(['cmp_eq', 'cmp_ne', 'cmp_gt', 'cmp_lt', 'cmp_ge', 'cmp_le', 'cmp_rng']);
-            else if (t.startsWith('math')) pick(['math_add', 'math_sub', 'math_mul', 'math_div']);
+            else if (t.startsWith('math')) pick(['math_add', 'math_sub', 'math_mul', 'math_div', 'math_mod', 'math_rand']);
             else if (t === 'move') {
                 ['value', 'notify', 'tts', 'both'].forEach(m => choices.push({
                     action: 'mode', val: m, selected: (el.mode || 'value') === m,
@@ -1008,6 +1247,10 @@ class LibiPanel extends HTMLElement {
         }
 
         const rows = [];
+        if (head) rows.push(head);
+        if (cats.length) rows.push(`<div class="palette-cats" role="group" aria-label="Add a block">${cats.join('')}</div>`);
+        if (items.length) rows.push(`<div class="palette-items" role="group" aria-label="Blocks">${items.join('')}</div>`);
+        if ((cats.length || items.length) && actions.length) rows.push('<div class="palette-sep"></div>');
         if (choices.length) rows.push(`<div class="palette-row">${choices.map(b => this._palBtn(b)).join('')}</div>`);
         if (choices.length && actions.length) rows.push('<div class="palette-sep"></div>');
         if (actions.length) rows.push(`<div class="palette-row">${actions.map(b => this._palBtn(b)).join('')}</div>`);
@@ -1015,10 +1258,15 @@ class LibiPanel extends HTMLElement {
 
         const x = Math.min(Math.max(fm.x, 190), window.innerWidth - 190);
         const arrow = Math.max(12, Math.min(360, 180 + (fm.x - x)));
+        // [ADDED v3.96.0] How tall the menu is - about, until it is drawn and measured (_placeFloatingMenu). What is left
+        // of the screen on its side, less the menu's own frame: a menu taller than that scrolls inside.
+        const tall = fm.tall || (cats.length ? Math.ceil(cats.length / 2) * 50 : 0) + (items.length ? 48 + items.length * 46 : 0)
+            + (choices.length ? 50 : 0) + (actions.length ? 50 : 0) + 26;
+        const bounds = this._calculateMenuBounds(fm, tall);
+        const room = Math.max(140, Math.floor((bounds.below ? window.innerHeight - bounds.yPos : bounds.yPos) - 26));
         
-        const bounds = this._calculateMenuBounds(fm);
         
-        return `<div class="fm-overlay" id="fmOverlay"></div>${bounds.arrowStyle}<div class="palette" style="left:${x}px; top:${bounds.yPos}px; --arrow-x:${arrow}px; ${bounds.transformStyle}" id="fmBox">${rows.join('')}</div>`;
+        return `<div class="fm-overlay" id="fmOverlay"></div>${bounds.arrowStyle}<div class="palette" style="left:${x}px; top:${bounds.yPos}px; --arrow-x:${arrow}px; ${bounds.transformStyle}" id="fmBox"><div class="palette-body" style="max-height:${room}px">${rows.join('')}</div></div>`;
     }
 
     /** [ADDED v3.94.0] Traces is read only (TRACE_ALLOWED). In the capture phase of the whole panel, before any of its
@@ -1308,6 +1556,19 @@ class LibiPanel extends HTMLElement {
         this._applyTraceLock();
         this._restoreScrollPlaces(keep);
         this._placeCtxMenu();
+        this._placeFloatingMenu();
+    }
+
+    /** [ADDED v3.96.0] The menu of a + point or of a block, measured once it is drawn. When the height it was placed by
+     *  was wrong - a group wraps on a narrow screen - and it has to scroll where it is, it is drawn once more by its real
+     *  height: on the side of the point that has room for all of it, when one has. */
+    _placeFloatingMenu() {
+        const fm = this._floatingMenu;
+        const box = this.shadowRoot && this.shadowRoot.getElementById('fmBox');
+        const body = box && box.querySelector('.palette-body');
+        if (!fm || !body || fm.tall) return;
+        fm.tall = Math.ceil(box.offsetHeight - body.clientHeight + body.scrollHeight);
+        if (body.scrollHeight > body.clientHeight + 1) this._render();
     }
 
     // [ADDED v3.86.0] The scroll of the canvas, and of the rungs of each NET by its id, in the project open now.
@@ -1614,6 +1875,24 @@ class LibiPanel extends HTMLElement {
         const el = this.core.findEl(this._inspectedEl.netId, this._inspectedEl.rungId, this._inspectedEl.elId);
         if (!el) return '';
 
+        // [ADDED v3.96.0] A condition the ladder has no drawing for (a kind Home Assistant added, an and or an or that
+        // is turned off, a not it cannot turn round): kept exactly as it is - shown here, never edited. It can be deleted.
+        if (el.opaque) {
+            let config = '';
+            try { config = JSON.stringify(el.raw, null, 2); } catch (err) { config = String(el.raw); }
+            return `
+            <div class="sidebar-hdr">Element Properties</div>
+            <div class="sidebar-body" id="inspectorBody">
+                <div class="fgrp opaque-info">
+                    <label>Kept as it is</label>
+                    <div class="insp-note">LIBI has no drawing for this condition, so it is kept exactly as Home Assistant has it and is not edited here. To change it, use Home Assistant's own editor. Deleting this block takes the condition out.</div>
+                    <pre class="opaque-config" dir="ltr">${this._esc(config)}</pre>
+                </div>
+                <div style="flex:1"></div>
+                <button class="btn btn-danger" id="propDelete">🗑 Delete Element</button>
+            </div>`;
+        }
+
         // [ADDED v3.5.0] The inspector needs the level of the net the element sits in, because a
         // script and a scene have no trigger to offer.
         const elLevel = this.core.netLevel(this.core.nets.find(n => n.id === this._inspectedEl.netId));
@@ -1641,6 +1920,9 @@ class LibiPanel extends HTMLElement {
                         <option value="math_sub" ${el.type === 'math_sub' ? 'selected' : ''}>Math (SUB −)</option>
                         <option value="math_mul" ${el.type === 'math_mul' ? 'selected' : ''}>Math (MUL ×)</option>
                         <option value="math_div" ${el.type === 'math_div' ? 'selected' : ''}>Math (DIV ÷)</option>
+                        <option value="math_mod" ${el.type === 'math_mod' ? 'selected' : ''}>Math (MOD, remainder)</option>
+                        <option value="math_rand" ${el.type === 'math_rand' ? 'selected' : ''}>Random number (RAND)</option>
+                        <option value="mux" ${el.type === 'mux' ? 'selected' : ''}>Choose input K (MUX)</option>
                         <option value="cmp_gt" ${el.type === 'cmp_gt' ? 'selected' : ''}>Compare (GT >)</option>
                         <option value="cmp_lt" ${el.type === 'cmp_lt' ? 'selected' : ''}>Compare (LT <)</option>
                         <option value="cmp_ge" ${el.type === 'cmp_ge' ? 'selected' : ''}>Compare (GE ≥)</option>
@@ -1652,7 +1934,7 @@ class LibiPanel extends HTMLElement {
                         ${el.type === 'notify' ? '<option value="notify" selected>Send Notification (old drawing)</option>' : ''}
                     </select>
                 </div>
-                ${elLevel === 'automation' && !el.type.startsWith('coil') && !el.type.startsWith('math') && el.type !== 'move' && el.type !== 'notify' && el.type !== 'ctu' && el.type !== 'repeat' ? `
+                ${elLevel === 'automation' && !el.type.startsWith('coil') && !el.type.startsWith('math') && el.type !== 'mux' && el.type !== 'move' && el.type !== 'notify' && el.type !== 'ctu' && el.type !== 'repeat' ? `
                 <div class="fgrp checkbox-grp">
                     <input type="checkbox" id="propIsTrigger" ${el.isTrigger ? 'checked' : ''} />
                     <label style="margin:0; font-weight:800; color:var(--success-color, #4caf50);">[✔] Use as Trigger (Starts Flow)</label>
@@ -1785,7 +2067,27 @@ class LibiPanel extends HTMLElement {
 
     _epAll() {
         const states = (this._hass && this._hass.states) || {};
-        return Object.keys(states).filter(e => this._epMatches(e)).sort();
+        return Object.keys(states).filter(e => this._epMatches(e) && this._epFits(e)).sort();
+    }
+
+    /** [ADDED v3.96.0] For an IN pin: of a kind that holds a value of the pin's kind (PIN_DOMAINS), never on or off; a
+     *  sensor for a number only when it holds one. Anything for a block's own entity. */
+    _epFits(entityId) {
+        const p = this._ep;
+        if (!p || (!p.kind && !p.domains)) return true;
+        const domain = entityId.split('.')[0];
+        if (!(p.domains || PIN_DOMAINS[p.kind] || PIN_DOMAINS.any).includes(domain)) return false;
+        if (domain !== 'sensor' || p.kind !== 'number') return true;
+        const st = this._hass.states[entityId];
+        return !!st && (Number.isFinite(Number(st.state)) || !!(st.attributes && st.attributes.unit_of_measurement));
+    }
+
+    /** [ADDED v3.96.0] The browser's first tab for a pin: the helpers, by kind - the user's own variables. */
+    _epByHelperHtml(current) {
+        const all = this._epAll();
+        const html = HELPER_KINDS.map(([domain, name, icon]) =>
+            this._epGroupHtml(`helper:${domain}`, icon, name, all.filter(e => e.startsWith(`${domain}.`)), current)).join('');
+        return html || '<div class="ep-empty">No helper holds a value of this kind. By target and By type list the sensors and the settings of devices.</div>';
     }
 
     _epGroupHtml(key, icon, name, entities, current) {
@@ -1964,12 +2266,17 @@ class LibiPanel extends HTMLElement {
 
     _epDialogHtml() {
         const current = (this._ep && this._ep.current) || '';
-        const body = this._epTab === 'type' ? this._epByTypeHtml(current) : this._epByTargetHtml(current);
+        // [CHANGED v3.96.0] For an IN pin: a variable - the helpers first, then by target or by type - of what holds a value.
+        const pin = !!(this._ep && (this._ep.kind || this._ep.domains));
+        const body = this._epTab === 'type' ? this._epByTypeHtml(current)
+            : (this._epTab === 'helpers' && pin) ? this._epByHelperHtml(current) : this._epByTargetHtml(current);
         return `<div class="modal-overlay" id="modalOverlay"><div class="modal ep-modal">
-            <h2 class="modal-title">Choose an entity</h2>
+            <h2 class="modal-title">${pin ? 'Choose a variable' : 'Choose an entity'}</h2>
+            ${pin ? `<p class="ep-cur ep-kind">${this._ep.out ? 'Where the result goes: what can take it - a helper, or a device that takes a value.' : 'What holds a value - a helper, a sensor, the setting of a device - never on or off.'}</p>` : ''}
             ${current ? `<p class="ep-cur">replacing ${this._esc(current)}</p>` : ''}
             <div class="ep-top"><input type="text" id="epSearch" placeholder="Search" value="${this._esc(this._epQuery)}" dir="auto" /></div>
             <div class="ep-tabs">
+                ${pin ? `<button class="ep-tab${this._epTab === 'helpers' ? ' on' : ''}" id="epTabHelpers">Helpers</button>` : ''}
                 <button class="ep-tab${this._epTab === 'target' ? ' on' : ''}" id="epTabTarget">By target</button>
                 <button class="ep-tab${this._epTab === 'type' ? ' on' : ''}" id="epTabType">By type</button>
             </div>
@@ -1987,15 +2294,23 @@ class LibiPanel extends HTMLElement {
     }
 
     // Opened from the block, from the right click menu, or from the inspector.
-    _openEntityPicker(netId, rungId, elId, prop) {
+    _openEntityPicker(netId, rungId, elId, prop, opts) {
         const el = this.core.findEl(netId, rungId, elId);
         if (!el) return;
         const field = prop || (String(el.type || '').startsWith('cmp') ? 'sourceA'
                     : (el.type === 'move' ? 'target' : 'label'));
-        this._ep = { netId, rungId, elId, prop: field,
-                     current: String(el[field] || '').replace(/\s*\+\d+$/, '').trim() };
+        // [CHANGED v3.96.0] For an IN pin only what holds a value of its kind (_pinFilter), the helpers first.
+        const filter = opts || this._pinFilter(el, field, this.core.netLevel(this.core.nets.find(n => n.id === netId) || {}));
+        this._ep = { netId, rungId, elId, prop: field, kind: filter.kind || '', domains: filter.domains || null, out: !!filter.out,
+                     current: String(pinGet(el, field) || '').replace(/\s*\+\d+$/, '').trim() };
         this._epQuery = '';
         this._epOpen = {};
+        if (this._ep.kind || this._ep.domains) {
+            this._epTab = 'helpers';
+            HELPER_KINDS.forEach(([domain]) => { this._epOpen[`helper:${domain}`] = true; });
+        } else if (this._epTab === 'helpers') {
+            this._epTab = 'target';
+        }
         this._modal = 'entity_picker';
         this._render();
     }
@@ -2009,7 +2324,8 @@ class LibiPanel extends HTMLElement {
             // phone's action, as in the Inspector (_notifyTargetField). A message has no target spec.
             const message = p.prop === 'target' && this._sendsMessage(el);
             const phone = message ? this.core.phoneOf(entityId) : null;
-            el[p.prop] = phone ? phone.service : entityId;
+            pinSet(el, p.prop, phone ? phone.service : entityId);  // [CHANGED v3.96.0] a pin of a list too
+            if (p.prop === 'source') delete el.literal;  // [ADDED v3.96.2] a variable chosen: no more the words of one
             if (!message && (p.prop === 'label' || p.prop === 'target')) {
                 el.targetSpec = { entity_id: [entityId] };
                 el.targetKind = 'entity';
@@ -3162,7 +3478,8 @@ class LibiPanel extends HTMLElement {
         if (el.kind) return el.kind;
         const a = String(el.sourceA || '');
         const b = String(el.sourceB || '');
-        if (a === 'time' || a === 'time pattern') return 'time';
+        if (a === 'time pattern') return 'pattern';
+        if (a === 'time') return 'time';
         if (a === 'weekday') return 'date';
         if (a === 'datetime') return 'datetime';
         if (a === 'sun') return 'sun';
@@ -3213,6 +3530,15 @@ class LibiPanel extends HTMLElement {
             // [ADDED v3.9.0] The Home Assistant picker shows only the friendly name, which is not
             // enough to tell which entity or which device is behind it. The id goes right under it.
             slot.appendChild(this._idNote(el));
+            // [ADDED v3.96.0] A contact on a value: why it never holds, or what a P contact on one waits for.
+            const why = this._contactProblem(el);
+            const said = why || this._contactNote(el);
+            if (said) {
+                const note = document.createElement('div');
+                note.className = why ? 'insp-note why contact-why' : 'insp-note contact-note';
+                note.textContent = said;
+                slot.appendChild(note);
+            }
             // [ADDED v3.24.0] Which service the coil calls, and whether the rung carries on when it
             // fails. Neither could be seen or changed before.
             if (el.type.startsWith('coil')) {
@@ -3250,7 +3576,15 @@ class LibiPanel extends HTMLElement {
                 <option value="both" ${mode === 'both' ? 'selected' : ''}>MOVE NOTIFY/TTS (alert and speak)</option>
             </select></div>`);
 
-            if (mode === 'value') {
+            if (mode === 'value' && el.moveKind !== 'action') {
+                // [CHANGED v3.96.0] The target first - what it is decides what can be set on it - then its value
+                // (_moveValueFields): what to set on a device, a slider, a palette, or a variable.
+                // [CHANGED v3.96.2] OUT chosen as an IN is: by category, what takes a value (_inField, OUT_DOMAINS).
+                const sceneOut = this.core.netLevel(this.core.nets.find(n => n.id === (this._inspectedEl && this._inspectedEl.netId)) || {}) === 'scene';
+                this._inField(slot, el, 'target', 'OUT - a helper, or a device and what it sets',
+                    sceneOut ? { varOnly: true, out: true } : { varOnly: true, out: true, domains: OUT_DOMAINS.value });
+                this._moveValueFields(el, slot);
+            } else if (mode === 'value') {
                 // [CHANGED v3.8.0] On a MOVE ACTION the IN pin is the Home Assistant service name, so
                 // the field says so rather than calling it a value.
                 const isAction = el.moveKind === 'action';
@@ -3268,10 +3602,11 @@ class LibiPanel extends HTMLElement {
             }
 
             // [CHANGED v3.87.0] A message goes to a phone or a notify action from LIBI's own list (_notifyTargetField).
-            slot.appendChild(mode === 'value'
-                ? this._picker('entity', el.target, v => { el.target = v; this.core.pushHistory(); this._render(); },
-                    { label: 'Target Entity / Helper', id: 'target' })
-                : this._notifyTargetField(el, mode));
+            if (mode !== 'value') slot.appendChild(this._notifyTargetField(el, mode));
+            else if (el.moveKind === 'action') {
+                slot.appendChild(this._picker('entity', el.target, v => { el.target = v; this.core.pushHistory(); this._render(); },
+                    { label: 'Target Entity / Helper', id: 'target' }));
+            }
             if (mode === 'value') {
                 // [CHANGED v3.7.0] A value assignment targets things the same way an action does.
                 const tpm = this._targetPicker(el);
@@ -3289,18 +3624,10 @@ class LibiPanel extends HTMLElement {
             });
 
         } else if (el.type === 'cmp_rng') {
-            const fgrpA = document.createElement('div'); fgrpA.className = 'fgrp';
-            fgrpA.innerHTML = `<label id="lbl_sourceA">Measured Entity (IN)</label>`;
-            const pickerA = document.createElement('ha-entity-picker'); pickerA.hass = this._hass;
-            pickerA.value = el.sourceA || ''; pickerA.allowCustomEntity = true; pickerA.id = "inp_sourceA";
-            pickerA.addEventListener('value-changed', onChange('sourceA'));
-            fgrpA.appendChild(pickerA); slot.appendChild(fgrpA);
-            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">Above (MIN)</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`);
-            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceC">Below (MAX)</label><input type="text" id="inp_sourceC" value="${this._esc(el.sourceC === undefined ? '' : el.sourceC)}" /></div>`);
-            ['sourceB', 'sourceC'].forEach(prop => {
-                const f = slot.querySelector(`#inp_${prop}`);
-                if (f) f.addEventListener('change', e => { el[prop] = e.target.value; this.core.pushHistory(); this._render(); });
-            });
+            // [CHANGED v3.96.0] What is measured - a variable - and MIN and MAX, a value or a variable each (_inField).
+            this._inField(slot, el, 'sourceA', 'Measured (IN)', { kind: 'number', varOnly: true });
+            this._inField(slot, el, 'sourceB', 'Above (MIN)', { kind: 'number' });
+            this._inField(slot, el, 'sourceC', 'Below (MAX)', { kind: 'number' });
 
         } else if (el.type === 'ctu') {
             const fgrpSrc = document.createElement('div'); fgrpSrc.className = 'fgrp'; fgrpSrc.innerHTML = `<label id="lbl_source">Counter Entity</label>`;
@@ -3324,6 +3651,7 @@ class LibiPanel extends HTMLElement {
                 kindWrap.innerHTML = `<label>What do you compare</label><select id="propCmpKind">
                     <option value="entity" ${kind === 'entity' ? 'selected' : ''}>A value (any entity that is not a boolean)</option>
                     <option value="time" ${kind === 'time' ? 'selected' : ''}>Time of day</option>
+                    <option value="pattern" ${kind === 'pattern' ? 'selected' : ''}>Every ... (a time pattern)</option>
                     <option value="date" ${kind === 'date' ? 'selected' : ''}>Date (days of the week)</option>
                     <option value="datetime" ${kind === 'datetime' ? 'selected' : ''}>Date and time</option>
                     <option value="zone" ${kind === 'zone' ? 'selected' : ''}>A person against a zone</option>
@@ -3334,10 +3662,14 @@ class LibiPanel extends HTMLElement {
                 kindWrap.querySelector('#propCmpKind').addEventListener('change', e => {
                     el.kind = e.target.value;
                     if (el.kind === 'time') el.sourceA = 'time';
+                    if (el.kind === 'pattern') {
+                        el.sourceA = 'time pattern'; el.type = 'cmp_eq'; el.isTrigger = true;
+                        if (!patternParts(el.sourceB)) el.sourceB = 'seconds=/10';
+                    }
                     if (el.kind === 'date') { el.sourceA = 'weekday'; el.type = 'cmp_eq'; }
                     if (el.kind === 'datetime') el.sourceA = 'datetime';
                     if (el.kind === 'sun') { el.sourceA = 'sun'; el.sourceB = el.sourceB || 'sunset'; }
-                    if (el.kind === 'entity' && ['time', 'weekday', 'datetime', 'sun'].includes(String(el.sourceA))) el.sourceA = '';
+                    if (el.kind === 'entity' && ['time', 'weekday', 'datetime', 'sun', 'time pattern'].includes(String(el.sourceA))) el.sourceA = '';
                     this.core.pushHistory(); this._render();
                 });
             }
@@ -3360,6 +3692,26 @@ class LibiPanel extends HTMLElement {
                 slot.appendChild(this._picker('entity', el.sourceA, v => { el.sourceA = v; this.core.pushHistory(); this._render(); },
                     { label: 'Sensor of that device', id: 'sourceA' }));
                 slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">Value (IN2)</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`);
+            } else if (kind === 'pattern') {
+                // [ADDED v3.96.0] EVERY: how often, a number and a unit - or a pattern of Home Assistant as it is.
+                const every = patternEvery(el.sourceB);
+                const unitOf = every ? every.unit : 'seconds';
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp pattern-every"><label for="inp_everyN">Every</label><div class="range-row">`
+                    + `<input type="number" id="inp_everyN" min="1" max="${PATTERN_MAX[unitOf]}" step="1" value="${every ? every.n : ''}" placeholder="?">`
+                    + `<select id="inp_everyUnit">${['seconds', 'minutes', 'hours'].map(u => `<option value="${u}"${unitOf === u ? ' selected' : ''}>${u}</option>`).join('')}</select></div></div>`);
+                const everyN = slot.querySelector('#inp_everyN');
+                const everyUnit = slot.querySelector('#inp_everyUnit');
+                const write = () => {
+                    const n = parseInt(everyN.value, 10);
+                    if (n >= 1) { el.sourceB = `${everyUnit.value}=/${n}`; this.core.pushHistory(); this._render(); }
+                };
+                everyN.addEventListener('change', write);
+                everyUnit.addEventListener('change', write);
+                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label for="inp_sourceB">or a time pattern of Home Assistant</label>`
+                    + `<input type="text" id="inp_sourceB" value="${this._esc(el.sourceB || '')}" dir="ltr" placeholder="hours=* minutes=0"></div>`);
+                slot.insertAdjacentHTML('beforeend', '<div class="insp-note pattern-note">It starts the rung on the clock: every 10 seconds is at :00, :10, :20 ... of each minute.</div>');
+                const why = this._patternProblem(el);
+                if (why) slot.insertAdjacentHTML('beforeend', `<div class="insp-note why pattern-why">${this._esc(why)}</div>`);
             } else if (kind === 'time') {
                 el.sourceA = 'time';
                 slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Left side (IN1)</label><input type="text" value="${CLOCK_IN1.time}" disabled /></div>`);
@@ -3404,14 +3756,21 @@ class LibiPanel extends HTMLElement {
                 slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">Event</label><select id="inp_sourceB">
                     <option value="sunrise" ${el.sourceB === 'sunrise' ? 'selected' : ''}>sunrise</option>
                     <option value="sunset" ${el.sourceB === 'sunset' ? 'selected' : ''}>sunset</option></select></div>`);
+            } else if (el.type === 'math_rand' || el.type === 'math_mod') {
+                // [ADDED v3.96.0] Each pin a whole number or a variable; OUT a number helper (_calcFields).
+                this._calcFields(el, slot);
+            } else if (!isCmp) {
+                // [CHANGED v3.96.0] IN1, IN2 and IN3 ... - a value or a variable each (_mathFields).
+                this._mathFields(el, slot);
             } else {
-                slot.appendChild(this._picker('entity', el.sourceA, v => { el.sourceA = v; this.core.pushHistory(); this._render(); },
-                    { label: isCmp ? 'Entity (IN1)' : 'Variable A (IN1)', id: 'sourceA' }));
-                slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_sourceB">${isCmp ? 'Value or helper (IN2)' : 'Variable B (IN2)'}</label><input type="text" id="inp_sourceB" value="${this._esc(el.sourceB === undefined ? '' : el.sourceB)}" /></div>`);
+                // [CHANGED v3.96.0] IN1 is what is compared - a variable; IN2 a value or a variable (_inField).
+                this._inField(slot, el, 'sourceA', 'IN1 - what is compared', { kind: 'any', varOnly: true });
+                this._inField(slot, el, 'sourceB', 'IN2 - a value or a variable', { kind: 'any' });
             }
             
             const inpB = slot.querySelector('#inp_sourceB');
-            if (inpB) inpB.addEventListener('change', e => { el.sourceB = e.target.value; this.core.pushHistory(); this._render(); });
+            // [CHANGED v3.96.0] An IN pin saves itself (_inField).
+            if (inpB && !inpB.dataset.own) inpB.addEventListener('change', e => { el.sourceB = e.target.value; this.core.pushHistory(); this._render(); });
 
             if (el.type === 'math_div') {
                 slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Decimals</label><input type="number" id="inp_precision" value="${this._esc(el.precision === undefined ? 2 : el.precision)}" min="0" max="6" /></div>`);
@@ -3421,31 +3780,417 @@ class LibiPanel extends HTMLElement {
                     if (f) f.addEventListener('change', e => { el[prop] = prop === 'precision' ? parseInt(e.target.value, 10) || 0 : e.target.value; this.core.pushHistory(); this._render(); });
                 });
             }
-            if (el.type.startsWith('math')) {
-                const fgrpTgt = document.createElement('div'); fgrpTgt.className = 'fgrp'; fgrpTgt.innerHTML = `<label id="lbl_target">Target Entity (OUT)</label>`;
-                const pickerTgt = document.createElement('ha-entity-picker'); pickerTgt.hass = this._hass; pickerTgt.value = el.target || ''; pickerTgt.allowCustomEntity = true;
-                pickerTgt.id = "inp_target";
-                pickerTgt.addEventListener('value-changed', onChange('target')); fgrpTgt.appendChild(pickerTgt); slot.appendChild(fgrpTgt);
+            if (el.type.startsWith('math') && el.type !== 'math_rand' && el.type !== 'math_mod') {
+                // [CHANGED v3.96.2] OUT: the variable that gets the result, chosen as an IN is (_inField, OUT_DOMAINS).
+                this._inField(slot, el, 'target', 'OUT - the variable that gets the result', { varOnly: true, out: true, domains: OUT_DOMAINS.number });
             }
+        } else if (el.type === 'mux') {
+            this._muxFields(el, slot);
         } else if (el.type === 'repeat') {
             slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label>Loop Type</label><select id="propLoopType"><option value="count" ${el.loopType === 'count' ? 'selected' : ''}>Count</option><option value="while" ${el.loopType === 'while' ? 'selected' : ''}>While</option></select></div><div class="fgrp"><label id="lbl_value">Value/Condition</label><input type="text" id="inp_value" value="${this._esc(el.value || '')}" /></div>`);
         }
 
         if (this._inspectedEl && this._inspectedEl.focusProp) {
             setTimeout(() => {
-                const fTarget = this.shadowRoot.getElementById(`inp_${this._inspectedEl.focusProp}`);
+                const fTarget = this.shadowRoot.getElementById(`inp_${pinId(this._inspectedEl.focusProp)}`);
                 if (fTarget) {
                     if (fTarget.focus) fTarget.focus();
-                    const lbl = this.shadowRoot.getElementById(`lbl_${this._inspectedEl.focusProp}`);
+                    const lbl = this.shadowRoot.getElementById(`lbl_${pinId(this._inspectedEl.focusProp)}`);
                     if (lbl) lbl.style.color = 'var(--primary-color)';
                 }
             }, 100);
         }
     }
 
-    _validateEl(el) {
+    /** [ADDED v3.96.0] What a MOVE that assigns a value sets on its target (MOVE_SETS): the kind of target, the values it
+     *  can set, and the one it sets - the block's valueKey, or the first. null when the target takes no value, or the
+     *  MOVE calls an action. */
+    _moveSet(el) {
+        if (!el || !['move', 'mux'].includes(el.type) || (el.mode || 'value') !== 'value' || el.moveKind === 'action') return null;
+        const domain = String(el.target || '').trim().split('.')[0];
+        const sets = MOVE_SETS[domain];
+        if (!sets) return null;
+        const own = domain === 'light' ? LIGHT_VALUE_KEYS.includes(el.valueKey) : !!el.valueKey;
+        // [CHANGED v3.96.0] A MUX to a light gives it a colour by name unless it says otherwise (libi_to_yaml._mux_action).
+        const first = el.type === 'mux' && domain === 'light' ? 'color_name' : sets[0];
+        return { domain, sets, key: own ? el.valueKey : first };
+    }
+
+    /** [ADDED v3.96.0] Why a block of the Math group cannot compile, in words, or '' - the compiler refuses the same
+     *  (libi_to_yaml._math_action, _mux_action): a RAND or a MOD into anything but a number helper, a RAND from more
+     *  to less, a MOD by 0, a MUX of fewer than two inputs or with an empty one, a fixed K that is none of them, or a
+     *  MUX into what takes no value. An empty pin is red as on any block. */
+    _calcProblem(el) {
+        if (!el) return '';
+        const text = (v) => String(v === undefined || v === null ? '' : v).trim();
+        const out = text(el.target);
+        if (el.type === 'math_rand' || el.type === 'math_mod') {
+            const name = el.type === 'math_rand' ? 'RAND' : 'MOD';
+            if ((el.more || []).length) return `${name} takes two inputs, IN1 and IN2: remove IN3 and the ones after.`;
+            if (out && !(ENTITY_ID_RE.test(out) && NUMBER_OUT_DOMAINS.includes(out.split('.')[0]))) {
+                return `${name} puts a number into a variable: OUT is an input_number, a counter or a number.`;
+            }
+            const a = text(el.sourceA), b = text(el.sourceB);
+            if (el.type === 'math_mod' && /^-?0+(\.0+)?$/.test(b)) return 'MOD of 0 does not exist: IN2 is never 0.';
+            if (el.type === 'math_rand' && INT_TEXT_RE.test(a) && INT_TEXT_RE.test(b) && Number(a) > Number(b)) {
+                return `IN1 is the smallest number and IN2 the largest: ${a} is more than ${b}.`;
+            }
+            // [ADDED v3.96.2] What a RAND cannot run with (libi_to_yaml._math_action).
+            const fraction = [a, b].find(v => /^-?\d+\.\d+$/.test(v));
+            if (el.type === 'math_rand' && fraction) return `RAND gives whole numbers: ${fraction} is no whole number.`;
+            if (el.type === 'math_rand' && el.notSame && INT_TEXT_RE.test(a) && a === b) {
+                return `From ${a} to ${b} there is one number: never the one OUT holds leaves none. Untick it, or give a range.`;
+            }
+            return '';
+        }
+        if (el.type !== 'mux') return '';
+        const inputs = (el.inputs || []).map(text);
+        if (inputs.length < 2) return 'MUX chooses one of two inputs or more: add an input.';
+        if (inputs.some(v => !v)) return 'An input is empty: give it a value or a variable, or remove it.';
+        const k = text(el.sourceA);
+        if (/^-?\d+\.\d+$/.test(k)) return `K is the number of an input, a whole number: not ${k}.`;
+        if (INT_TEXT_RE.test(k) && !(Number(k) >= 0 && Number(k) < inputs.length)) return `K is ${k}, and the inputs are 0 to ${inputs.length - 1}.`;
+        if (out && ENTITY_ID_RE.test(out) && !this._moveSet(el)) {
+            return `A ${out.split('.')[0]} has no value a MUX can set. Turn it on and off with a coil, or keep the value in a helper.`;
+        }
+        return '';
+    }
+
+    /** [ADDED v3.96.0] Why an EVERY cannot start its rung, or '': how often is no time pattern, a part that never comes
+     *  (seconds go up to 59), or it is no trigger - the compiler refuses the same (libi_to_yaml._pattern_trigger). */
+    _patternProblem(el) {
+        if (!el || !String(el.type || '').startsWith('cmp') || String(el.sourceA || '').trim() !== 'time pattern') return '';
+        if (el.type !== 'cmp_eq') return 'EVERY starts the rung on the clock: it is =, never another compare.';
+        const parts = patternParts(el.sourceB);
+        if (!parts) return 'EVERY needs how often: every 10 seconds, or a time pattern such as minutes=/5.';
+        for (const [key, value] of Object.entries(parts)) {
+            const n = Number(String(value).replace('/', ''));
+            if (value !== '*' && !(n >= (value.startsWith('/') ? 1 : 0) && n <= PATTERN_MAX[key])) return `${key} go up to ${PATTERN_MAX[key]}: ${value} never comes.`;
+        }
+        if (!el.isTrigger) return 'EVERY starts the rung: tick Use as Trigger.';
+        return '';
+    }
+
+    /** [ADDED v3.96.0] An IN pin (the user, 2026-11-18): a value typed - 20 - or a variable, chosen by category in the
+     *  entity browser - the helpers first - of the kinds that hold a value of the pin's kind, never on or off
+     *  (_pinFilter). A variable shows by its name, its id and what it holds now; × goes back to a value. opts: varOnly -
+     *  a variable only (IN1 of a compare: Home Assistant compares an entity); remove - a button that takes the pin away;
+     *  list - the id of a datalist of words; kind / domains - what the browser offers, else as the pin needs. */
+    _inField(slot, el, prop, label, opts = {}) {
+        const raw = pinGet(el, prop);
+        const value = String(raw === undefined || raw === null ? '' : raw).trim();
+        const id = pinId(prop);
+        const isVar = ENTITY_ID_RE.test(value);
+        const st = isVar && this._hass && this._hass.states ? this._hass.states[value] : null;
+        const name = isVar ? (this.core.friendlyName(value, this._hass) || value.split('.')[1]) : '';
+        const unit = st && st.attributes && st.attributes.unit_of_measurement ? ` ${st.attributes.unit_of_measurement}` : '';
+        const wrap = document.createElement('div');
+        wrap.className = 'fgrp in-field';
+        wrap.innerHTML = `<label for="inp_${id}" id="lbl_${id}">${this._esc(label)}</label><div class="in-row">`
+            + (isVar
+                ? `<span class="in-var" id="inp_${id}" tabindex="0" title="${this._esc(value)}"><b dir="auto">${this._esc(name)}</b>`
+                  + `<span class="in-eid" dir="ltr">${this._esc(value)}</span>${st ? `<span class="in-now" dir="auto">${this._esc(String(st.state).slice(0, 24) + unit)}</span>` : ''}</span>`
+                  + (opts.noClear ? '' : `<button type="button" class="btn btn-ghost in-clear" title="A value instead" aria-label="A value instead of ${this._esc(label)}">×</button>`)
+                : opts.varOnly ? `<span class="in-var in-empty" id="inp_${id}" tabindex="0">${opts.out ? 'Nothing chosen yet' : 'No variable yet'}</span>`
+                : `<input type="text" id="inp_${id}" data-own="1" value="${this._esc(value)}" placeholder="a value, e.g. 20" dir="auto"${opts.list ? ` list="${this._esc(opts.list)}"` : ''}>`)
+            + `<button type="button" class="btn btn-ghost in-pick" title="Choose a variable" aria-label="Choose a variable for ${this._esc(label)}">Variable</button>`
+            + (opts.remove ? `<button type="button" class="btn btn-ghost in-del" title="Remove ${this._esc(label)}" aria-label="Remove ${this._esc(label)}">−</button>` : '')
+            + '</div>';
+        slot.appendChild(wrap);
+        const save = (v) => { pinSet(el, prop, v); this.core.pushHistory(); this._render(); };
+        const input = wrap.querySelector('input');
+        if (input) input.addEventListener('change', e => save(e.target.value.trim()));
+        const clear = wrap.querySelector('.in-clear');
+        if (clear) clear.addEventListener('click', () => {
+            // [ADDED v3.96.2] OUT cleared: what it was drawn as goes with it.
+            if (prop === 'target') { el.targetSpec = {}; delete el.targetLabel; }
+            save('');
+        });
+        wrap.querySelector('.in-pick').addEventListener('click', () => {
+            const at = this._inspectedEl;
+            if (at) this._openEntityPicker(at.netId, at.rungId, at.elId, prop, opts.kind || opts.domains ? { kind: opts.kind, domains: opts.domains, out: !!opts.out } : undefined);
+        });
+        if (opts.remove) wrap.querySelector('.in-del').addEventListener('click', opts.remove);
+    }
+
+    /** [ADDED v3.96.0] What the entity browser offers for a pin of a block: { kind } - number, word or any - or { domains },
+     *  {} for a block's own entity (a contact, a coil, OUT) which can be anything. */
+    _pinFilter(el, prop, level = 'automation') {
+        const t = String((el && el.type) || '');
+        // [ADDED v3.96.2] A scene sets the state of anything: its MOVE's OUT is any entity.
+        if (prop === 'target' && level === 'scene') return {};
+        const set = this._moveSet(el);
+        const spec = set && MOVE_VALUES[set.key];
+        if (/^inputs\./.test(prop) && t === 'mux') {
+            return { kind: spec && (spec.kind === 'range' || spec.kind === 'number') ? 'number' : spec && spec.kind === 'word' ? 'word' : 'any' };
+        }
+        if (/^more\./.test(prop)) return { kind: 'number' };
+        if (['sourceA', 'sourceB', 'sourceC'].includes(prop)) {
+            if (t.startsWith('math') || t === 'mux') return { kind: 'number' };
+            if (t === 'cmp_rng') return { kind: 'number' };
+            if (t.startsWith('cmp')) return { kind: 'any' };
+        }
+        if (prop === 'source' && t === 'move') return spec ? { domains: spec.vars } : { kind: 'any' };
+        // [ADDED v3.96.2] OUT: what can take the result (OUT_DOMAINS).
+        if (prop === 'target' && t.startsWith('math')) return { domains: OUT_DOMAINS.number, out: true };
+        if (prop === 'target' && (t === 'mux' || (t === 'move' && (el.mode || 'value') === 'value' && el.moveKind !== 'action'))) {
+            return { domains: OUT_DOMAINS.value, out: true };
+        }
+        return {};
+    }
+
+    /** [ADDED v3.96.0] MATH ADD, SUB, MUL and DIV: IN1, IN2 and IN3 ... up to IN8 (more) - each a value or a variable -
+     *  added and removed here. With no input past IN2 the block has no more, as before. */
+    _mathFields(el, slot) {
+        const more = Array.isArray(el.more) ? el.more : [];
+        const save = () => { this.core.pushHistory(); this._render(); };
+        this._inField(slot, el, 'sourceA', 'IN1', { kind: 'number' });
+        this._inField(slot, el, 'sourceB', 'IN2', { kind: 'number' });
+        more.forEach((_v, i) => this._inField(slot, el, `more.${i}`, `IN${i + 3}`, { kind: 'number', remove: () => {
+            const rest = more.filter((_x, j) => j !== i);
+            if (rest.length) el.more = rest; else delete el.more;
+            save();
+        } }));
+        if (MORE_INPUTS.has(el.type) && 2 + more.length < MAX_INPUTS) {
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><button type="button" class="btn btn-ghost in-add" id="inAdd">+ Add an input (IN${3 + more.length})</button></div>`);
+            slot.querySelector('#inAdd').addEventListener('click', () => { el.more = [...more, '']; save(); });
+        }
+    }
+
+    /** [ADDED v3.96.0] RAND and MOD: the two pins - a whole number or a variable each (_inField) - OUT, and for RAND the
+     *  tick "never the number OUT holds now". */
+    _calcFields(el, slot) {
+        const rand = el.type === 'math_rand';
+        this._inField(slot, el, 'sourceA', rand ? 'Smallest (IN1)' : 'IN1', { kind: 'number' });
+        this._inField(slot, el, 'sourceB', rand ? 'Largest (IN2)' : 'Divided by (IN2)', { kind: 'number' });
+        this._inField(slot, el, 'target', 'Into the variable (OUT)', { varOnly: true, out: true, domains: OUT_DOMAINS.number });
+        if (rand) {
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp checkbox-grp"><input type="checkbox" id="inp_notSame" ${el.notSame ? 'checked' : ''}>`
+                + '<label for="inp_notSame">Never the number OUT holds now</label></div>');
+            slot.querySelector('#inp_notSame').addEventListener('change', e => { el.notSame = e.target.checked; this.core.pushHistory(); this._render(); });
+            slot.insertAdjacentHTML('beforeend', '<div class="insp-note calc-note">Each run gives a whole number from IN1 to IN2, both included. Ticked, it is never the one OUT holds - a new color every time, from a MUX that reads OUT.</div>');
+        } else {
+            slot.insertAdjacentHTML('beforeend', '<div class="insp-note calc-note">The remainder of IN1 divided by IN2: a step that counts up, MOD 4, goes 0, 1, 2, 3 and again.</div>');
+        }
+        const why = this._calcProblem(el);
+        if (why) slot.insertAdjacentHTML('beforeend', `<div class="insp-note why calc-why">${this._esc(why)}</div>`);
+    }
+
+    /** [ADDED v3.96.0] MUX: K, the inputs - a value or a variable each (_inField), added and removed - and OUT, a helper or
+     *  a device with what it sets (Set), as a MOVE has them. */
+    _muxFields(el, slot) {
+        const inputs = Array.isArray(el.inputs) ? el.inputs : [];
+        const save = () => { this.core.pushHistory(); this._render(); };
+        this._inField(slot, el, 'sourceA', 'Input number K (from 0)', { kind: 'number' });
+        const set = this._moveSet(el);
+        const names = set && set.key === 'color_name';
+        if (names) slot.insertAdjacentHTML('beforeend', `<datalist id="libiMuxColors">${COLOR_NAMES.map(n => `<option value="${n}"></option>`).join('')}</datalist>`);
+        inputs.forEach((_v, i) => this._inField(slot, el, `inputs.${i}`, `IN${i}`, { list: names ? 'libiMuxColors' : '', remove: () => {
+            el.inputs = inputs.filter((_x, j) => j !== i);
+            save();
+        } }));
+        if (inputs.length < MAX_INPUTS) {
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><button type="button" class="btn btn-ghost in-add" id="inAdd">+ Add an input (IN${inputs.length})</button></div>`);
+            slot.querySelector('#inAdd').addEventListener('click', () => { el.inputs = [...inputs, '']; save(); });
+        }
+        this._inField(slot, el, 'target', 'Into (OUT) - a helper, or a light, a fan ... and what it sets', { varOnly: true, out: true, domains: OUT_DOMAINS.value });
+        if (set && !HELPER_SET_DOMAINS.has(set.domain)) {
+            const keys = set.sets.includes(set.key) ? set.sets : [...set.sets, set.key];
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label for="propMuxKey">Set</label><select id="propMuxKey">${keys.map(k =>
+                `<option value="${this._esc(k)}"${k === set.key ? ' selected' : ''}>${this._esc((MOVE_VALUES[k] || { name: k }).name)}</option>`).join('')}</select></div>`);
+            slot.querySelector('#propMuxKey').addEventListener('change', e => { el.valueKey = e.target.value; save(); });
+            const can = set.domain === 'light' ? this._lightNote(String(el.target || '').trim(), set.key) : '';
+            if (can) slot.insertAdjacentHTML('beforeend', `<div class="insp-note light-note">${this._esc(can)}</div>`);
+        }
+        slot.insertAdjacentHTML('beforeend', '<div class="insp-note calc-note">K = 0 gives IN0, K = 1 gives IN1 ... A variable on K - a step that counts up with MOD, or a RAND - chooses another input on every run.'
+            + (names ? ' Names that differ only in brightness - green and lime, blue and navy, purple and magenta - are one color on most lights.' : '') + '</div>');
+        const why = this._calcProblem(el);
+        if (why) slot.insertAdjacentHTML('beforeend', `<div class="insp-note why calc-why">${this._esc(why)}</div>`);
+    }
+
+    /** [ADDED v3.96.0] Why a MOVE that assigns a value cannot compile, in words, or '': a target that takes no value (a
+     *  switch is switched by a coil), or a value its target cannot take (a word for a brightness). The compiler refuses
+     *  the same (libi_to_yaml._move_value_action). A block read from Home Assistant that calls something else (service),
+     *  and a scene - which sets any state - are not checked here. */
+    _moveProblem(el, level) {
+        if (!el || el.type !== 'move' || (el.mode || 'value') !== 'value' || el.moveKind === 'action' || el.service
+            || level === 'scene') return '';
+        const target = String(el.target || '').trim();
+        if (!target || target === '?') return '';
+        if (!ENTITY_ID_RE.test(target)) return 'OUT needs one entity: a helper, or a device that takes a value (a light, a fan, a cover ...).';
+        const set = this._moveSet(el);
+        if (!set) return `A ${target.split('.')[0]} has no value a MOVE can set. Turn it on and off with a coil, or keep the value in a helper (input_number, input_text, input_select).`;
+        const spec = MOVE_VALUES[set.key];
+        const src = String(el.source === undefined || el.source === null ? '' : el.source).trim();
+        if (!spec || !src || ENTITY_ID_RE.test(src) || /\{[{%]/.test(src)) return '';
+        if ((spec.kind === 'range' || spec.kind === 'number') && !Number.isFinite(Number(src))) return `${spec.name} takes a number.`;
+        if (spec.kind === 'color' && !colorOf(src)) return `${spec.name} is #rrggbb or [r, g, b].`;
+        return '';
+    }
+
+    /** [ADDED v3.96.0] What a light does with a value a MOVE gives it, as Home Assistant handles it (light/helper.py,
+     *  filter_turn_on_params): a value the light cannot take is left out and the light is only turned on - and a
+     *  brightness of 0, or a dim down to 0, turns it off. '' when it takes the value, or when Home Assistant does not
+     *  say what the light can do (unavailable, a group of mixed lights). */
+    _lightNote(target, key) {
+        const st = this._hass && this._hass.states && this._hass.states[target];
+        const attrs = (st && st.attributes) || {};
+        const modes = Array.isArray(attrs.supported_color_modes) ? attrs.supported_color_modes : [];
+        if (!modes.length) return '';
+        const name = attrs.friendly_name || target;
+        const dims = modes.some(m => m !== 'onoff');
+        const colour = modes.some(m => COLOR_MODES.includes(m));
+        if (String(key).startsWith('brightness') && !dims) {
+            return `${name} only turns on and off: Home Assistant turns it on and leaves the brightness out (0 turns it off).`;
+        }
+        if (['rgb_color', 'color_name', 'hs_color', 'xy_color', 'rgbw_color', 'rgbww_color'].includes(key) && !colour) {
+            return `${name} has no color: Home Assistant turns it on and leaves the color out.`;
+        }
+        if (key === 'color_temp_kelvin' && !modes.includes('color_temp')) {
+            return colour ? `${name} has no white of its own: Home Assistant gives it the color of that temperature.`
+                : `${name} has no color temperature: Home Assistant turns it on and leaves it out.`;
+        }
+        if (key === 'effect' && !((Number(attrs.supported_features) || 0) & 4)) {
+            return `${name} has no effects: Home Assistant turns it on and leaves the effect out.`;
+        }
+        return '';
+    }
+
+    /** [ADDED v3.96.0] Why a contact drawn on a value never holds, or ''. A value (VALUE_DOMAINS) is never on or off: a
+     *  contact waiting for on or off on one - or a P contact that does not start the rung - is red, as the compiler
+     *  refuses it on what is never on (NEVER_ON_DOMAINS). A choice with on or off among its options, a text or a
+     *  sensor holding on or off now, or one Home Assistant does not know, may be on: not red. A block read from Home
+     *  Assistant (raw) is never red here - SAVE would be refused over an automation the user did not touch -
+     *  the Inspector says it instead (_contactNote). */
+    _contactProblem(el) {
+        if (!el || el.raw || !this._neverHolds(el)) return '';
+        return `${String(el.label).trim()} is never on or off, so this contact never holds. To start the rung when its value changes, make it a P contact; to compare it with a value, use a CMP block.`;
+    }
+
+    /** [ADDED v3.96.0] A contact on a value that waits for on or off (_contactProblem): true when it can never hold. */
+    _neverHolds(el) {
+        if (!el || !['contact_no', 'contact_nc', 'contact_p', 'contact_n'].includes(el.type)) return false;
+        if (el.type === 'contact_p' && el.isTrigger) return false;
+        const ent = String(el.label || '').trim();
+        if (!ENTITY_ID_RE.test(ent)) return false;
+        const domain = ent.split('.')[0];
+        if (!VALUE_DOMAINS.has(domain)) return false;
+        if (NEVER_ON_DOMAINS.has(domain)) return true;
+        const st = this._hass && this._hass.states && this._hass.states[ent];
+        if (!st) return false;
+        const options = st.attributes && Array.isArray(st.attributes.options) ? st.attributes.options : [];
+        return ![st.state, ...options].some(s => ['on', 'off'].includes(String(s).toLowerCase()));
+    }
+
+    /** [ADDED v3.96.0] What a contact on a value waits for: a P contact starting a rung, the moment its value changes -
+     *  picked on the dashboard, typed, measured - and not when its device drops off (libi_to_yaml._change_trigger);
+     *  one read from Home Assistant that waits for on or off on it, that it never holds. '' for any other. */
+    _contactNote(el) {
+        const ent = String((el && el.label) || '').trim();
+        if (!ENTITY_ID_RE.test(ent) || !VALUE_DOMAINS.has(ent.split('.')[0])) return '';
+        if (el.type === 'contact_p' && el.isTrigger) {
+            if (['input_button', 'button'].includes(ent.split('.')[0])) return 'Starts the rung the moment it is pressed.';
+            // [ADDED v3.96.2] One that may be on (a list of on, off and auto) fires on any change too - off as well.
+            const mayBeOn = !NEVER_ON_DOMAINS.has(ent.split('.')[0]) && !this._neverHolds({ ...el, type: 'contact_no' })
+                && !!(this._hass && this._hass.states && this._hass.states[ent]);
+            return mayBeOn
+                ? 'Starts the rung the moment its value changes - to any value, off too. For the moment it turns on, use a CMP = on.'
+                : 'Starts the rung the moment its value changes - picked on a dashboard, typed or measured - and not when its device drops off.';
+        }
+        if (el.raw && this._neverHolds(el)) return `This check from Home Assistant waits for on or off, and ${ent} is never on or off: it never holds. It is saved as it is.`;
+        return '';
+    }
+
+    /** [ADDED v3.96.0] The value of a MOVE that assigns one (the user, 2026-11-17: dimming, and a colour for an LED strip,
+     *  fixed or from a variable). On a device - a light, a fan, a cover ... - what it sets (Set); then the value: a
+     *  slider for a number, a palette for a colour, a field for a word - or a variable (a helper, a sensor, another
+     *  light) read when the action runs. A template typed by hand keeps its text field. A scene takes no variable:
+     *  Home Assistant reads no template in a scene. */
+    _moveValueFields(el, slot) {
+        const net = this.core.nets.find(n => n.id === (this._inspectedEl && this._inspectedEl.netId)) || {};
+        const scene = this.core.netLevel(net) === 'scene';
+        const set = this._moveSet(el);
+        const device = !!set && !HELPER_SET_DOMAINS.has(set.domain);
+        const key = scene ? (el.valueKey || '') : (set ? set.key : '');
+        const spec = (key && MOVE_VALUES[key]) || null;
+        const src = el.source === undefined || el.source === null ? '' : String(el.source);
+        const isVar = !scene && !el.literal && ENTITY_ID_RE.test(src.trim());  // [CHANGED v3.96.2] literal: words
+        const save = (v) => { el.source = v; this.core.pushHistory(); this._render(); };
+
+        if (device && !scene) {
+            const keys = set.sets.includes(set.key) ? set.sets : [...set.sets, set.key];
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label for="propMoveKey">Set</label><select id="propMoveKey">${keys.map(k =>
+                `<option value="${this._esc(k)}"${k === set.key ? ' selected' : ''}>${this._esc((MOVE_VALUES[k] || { name: k }).name)}</option>`).join('')}</select></div>`);
+            slot.querySelector('#propMoveKey').addEventListener('change', e => {
+                const was = (MOVE_VALUES[set.key] || {}).kind;
+                const now = (MOVE_VALUES[e.target.value] || {}).kind;
+                el.valueKey = e.target.value;
+                // A value of another kind does not carry over: 50 is no colour. A variable stays.
+                if (!ENTITY_ID_RE.test(String(el.source === undefined || el.source === null ? '' : el.source).trim()) && was !== now) el.source = '';
+                this.core.pushHistory();
+                this._render();
+            });
+        }
+
+        // [ADDED v3.96.0] What this light does with the value (_lightNote): many lights only turn on and off.
+        const can = device && !scene && set.domain === 'light' ? this._lightNote(String(el.target || '').trim(), set.key) : '';
+        if (can) slot.insertAdjacentHTML('beforeend', `<div class="insp-note light-note">${this._esc(can)}</div>`);
+
+        if (isVar) {
+            // [CHANGED v3.96.0] The variable chosen by category, as on every IN (_inField).
+            this._inField(slot, el, 'source', 'Value from a variable', { domains: spec ? spec.vars : undefined, varOnly: true, noClear: true });
+            slot.insertAdjacentHTML('beforeend', '<div class="fgrp"><button type="button" class="btn btn-ghost" id="moveFixed">Use a fixed value instead</button></div>');
+            slot.querySelector('#moveFixed').addEventListener('click', () => save(''));
+        } else if (spec && spec.kind === 'color' && (!src.trim() || colorOf(src))) {
+            const rgb = colorOf(src);
+            const swatches = COLOR_SWATCHES.map(([name, c]) => `<button type="button" class="swatch${rgb && listOf(rgb) === listOf(c) ? ' on' : ''}" data-rgb="${c.join(',')}" title="${this._esc(name)}" aria-label="${this._esc(name)}" style="background:${hexOf(c)}"></button>`).join('');
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp move-color"><label for="inp_color">${this._esc(spec.name)}</label>`
+                + `<div class="color-row"><input type="color" id="inp_color" value="${hexOf(rgb || [255, 255, 255])}" aria-label="${this._esc(spec.name)}">`
+                + `<span class="color-text" dir="ltr">${rgb ? listOf(rgb) : 'Pick a color'}</span></div><div class="swatches">${swatches}</div></div>`);
+            slot.querySelector('#inp_color').addEventListener('change', e => { const c = colorOf(e.target.value); if (c) save(listOf(c)); });
+            slot.querySelectorAll('.move-color .swatch').forEach(b => b.addEventListener('click', () => save(listOf(b.dataset.rgb.split(',').map(Number)))));
+        } else if (spec && (spec.kind === 'range' || spec.kind === 'number') && (!src.trim() || Number.isFinite(Number(src)))) {
+            const has = src.trim() !== '';
+            const bounds = `${spec.min !== undefined ? ` min="${spec.min}"` : ''}${spec.max !== undefined ? ` max="${spec.max}"` : ''} step="${spec.step || 'any'}"`;
+            const mid = spec.min !== undefined && spec.max !== undefined ? (spec.min + spec.max) / 2 : 0;
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp move-range"><label for="inp_moveNum">${this._esc(spec.name)}</label><div class="range-row">`
+                + (spec.kind === 'range' ? `<input type="range" id="inp_moveRange"${bounds} value="${has ? Number(src) : mid}" aria-label="${this._esc(spec.name)}">` : '')
+                + `<input type="number" id="inp_moveNum"${bounds} value="${has ? this._esc(src.trim()) : ''}" placeholder="?"></div></div>`);
+            const range = slot.querySelector('#inp_moveRange');
+            const num = slot.querySelector('#inp_moveNum');
+            if (range) {
+                range.addEventListener('input', () => { num.value = range.value; });
+                range.addEventListener('change', () => save(range.value));
+            }
+            num.addEventListener('change', () => { if (num.value.trim() !== '') save(num.value.trim()); });
+        } else if (spec && spec.kind === 'word' && !/\{[{%]/.test(src)) {
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label for="inp_moveText">${this._esc(spec.name)}</label>`
+                + `<input type="text" id="inp_moveText" value="${this._esc(src)}" dir="auto"${spec.names ? ' list="libiColorNames"' : ''}>`
+                + (spec.names ? `<datalist id="libiColorNames">${COLOR_NAMES.map(n => `<option value="${n}"></option>`).join('')}</datalist>` : '') + '</div>');
+            slot.querySelector('#inp_moveText').addEventListener('change', e => save(e.target.value));
+        } else {
+            slot.insertAdjacentHTML('beforeend', `<div class="fgrp"><label id="lbl_source">Value or Template</label><textarea id="inp_source" rows="3" style="font-family:monospace;">${this._esc(src)}</textarea></div>`);
+        }
+
+        if (!isVar && !scene) {
+            slot.insertAdjacentHTML('beforeend', '<div class="fgrp in-field"><label>Or the value of a variable</label><div class="in-row">'
+                + '<button type="button" class="btn btn-ghost in-pick" id="moveVarPick" title="Choose a variable" aria-label="Or the value of a variable">Variable</button></div></div>');
+            slot.querySelector('#moveVarPick').addEventListener('click', () => {
+                const at = this._inspectedEl;
+                if (at) this._openEntityPicker(at.netId, at.rungId, at.elId, 'source', spec ? { domains: spec.vars } : { kind: 'any' });
+            });
+        }
+        const why = this._moveProblem(el, scene ? 'scene' : 'automation');
+        if (why) slot.insertAdjacentHTML('beforeend', `<div class="insp-note move-why">${this._esc(why)}</div>`);
+        if (device && !scene) {
+            slot.insertAdjacentHTML('beforeend', '<div class="insp-note move-vars">A variable is changed on a dashboard: an input_number is a slider there, an input_select a list. A color comes from a text helper holding #rrggbb, a list of color names (Color by name), or another light and its color wheel.</div>');
+        }
+    }
+
+    _validateEl(el, level = 'automation') {
         const errs = { el: false, lbl: false, src: false, tgt: false, srcA: false, srcB: false };
-        const isEmpty = (v) => !v || v === '?' || String(v).trim() === '';
+        // [CHANGED v3.96.0] 0 is a value: a MOVE of 0 (a blind closed to 0 %, a helper set to 0) was red as if empty.
+        const isEmpty = (v) => v === undefined || v === null || v === '?' || String(v).trim() === '';
         
         if (['contact_no', 'contact_nc', 'contact_p', 'contact_n', 'coil', 'coil_s', 'coil_r', 'coil_t', 'wait'].includes(el.type)) { 
             if (isEmpty(el.label) && !el.raw_trigger) { errs.lbl = true; errs.el = true; } 
@@ -3462,17 +4207,40 @@ class LibiPanel extends HTMLElement {
         } else if (['ctu'].includes(el.type)) { 
             if (isEmpty(el.source)) { errs.src = true; errs.el = true; } 
             if (isEmpty(el.value)) { errs.lbl = true; errs.el = true; } 
+        } else if (el.type === 'mux') {
+            // [ADDED v3.96.0] K, two inputs or more, none empty, and OUT (_calcProblem says which).
+            if (isEmpty(el.sourceA)) { errs.srcA = true; errs.el = true; }
+            if (isEmpty(el.target)) { errs.tgt = true; errs.el = true; }
+            const inputs = (el.inputs || []);
+            if (inputs.length < 2 || inputs.some(isEmpty)) { errs.src = true; errs.el = true; }
         } else if (el.type.startsWith('cmp') || el.type.startsWith('math')) { 
             if (el.tplId && isEmpty(el.sourceB)) return errs;
             if (['time', 'weekday', 'datetime', 'sun'].includes(String(el.sourceA)) && !isEmpty(el.sourceB)) return errs;
             if (isEmpty(el.sourceA) && !el.raw_trigger && !el.raw) { errs.srcA = true; errs.el = true; } 
             if (isEmpty(el.sourceB) && !el.raw_trigger && !el.raw) { errs.srcB = true; errs.el = true; } 
             if (el.type.startsWith('math') && isEmpty(el.target)) { errs.tgt = true; errs.el = true; } 
+            if (el.type.startsWith('math') && (el.more || []).some(isEmpty)) { errs.src = true; errs.el = true; }
         } else if (el.type.startsWith('timer')) { 
             if (isEmpty(el.label)) { errs.lbl = true; errs.el = true; } 
         }
         // [ADDED v3.87.0] A notify target Home Assistant cannot call is red: Home Assistant saves it, and nothing is sent.
         if (this._sendsMessage(el) && !errs.tgt && this._notifyTarget(el.target).problem) { errs.tgt = true; errs.el = true; }
+        // [ADDED v3.96.0] A MOVE to what takes no value, or with a value its target cannot take: red, and the Inspector
+        // says why (_moveProblem). The compiler refuses it too.
+        if (this._moveProblem(el, level)) {
+            if (this._moveSet(el)) errs.src = true; else errs.tgt = true;
+            errs.el = true;
+        }
+        // [ADDED v3.96.0] An EVERY that cannot start its rung (_patternProblem).
+        if (this._patternProblem(el)) { errs.srcB = true; errs.el = true; }
+        // [ADDED v3.96.0] A block of the Math group that cannot compile (_calcProblem): red where it is wrong.
+        const calc = this._calcProblem(el);
+        if (calc) {
+            if (/^(RAND|MOD) puts|has no value/.test(calc)) errs.tgt = true; else if (/^K is/.test(calc)) errs.srcA = true; else errs.src = true;
+            errs.el = true;
+        }
+        // [ADDED v3.96.0] A contact drawn on a value never holds (_contactProblem): red, and the Inspector says why.
+        if (this._contactProblem(el)) { errs.lbl = true; errs.el = true; }
         return errs;
     }
 
@@ -3542,7 +4310,7 @@ class LibiPanel extends HTMLElement {
             ${this.online.enabled ? `<div class="net-monitor" data-nid="${this._esc(net.id)}"></div>` : ''}
             <div class="net-body" style="flex-direction:column;">
                 <div class="net-toolbar">
-                    <button class="ha-text-btn load-net-btn" data-nid="${net.id}" title="Load HA Automation">📥 LOAD YAML / AUTO</button>
+                    <button class="ha-text-btn load-net-btn" data-nid="${net.id}" title="Load an automation, a script or a scene from Home Assistant">📥 LOAD YAML / AUTO</button>
                     <!-- [ADDED v3.6.0] The kind of logic sits next to the load button, because it is the
                          first decision about a net and it changes which rules the linter applies. -->
                     <select class="net-level-select" data-nid="${net.id}" title="${lv.tip}"
@@ -3768,7 +4536,7 @@ class LibiPanel extends HTMLElement {
 
     _elHtml(el, netId, rungId, path, pos = null) {
         const isSelected = this._inspectedEl && this._inspectedEl.elId === el.id;
-        const errs = this._validateEl(el);
+        const errs = this._validateEl(el, this.core.netLevel(this.core.nets.find(n => n.id === netId) || {}));
         const hasStructErr = el.structuralError ? true : false;
         const isTriggerClass = el.isTrigger ? 'is-trigger ' : '';
         const selClass = (isSelected ? 'selected ' : '') + (errs.el || hasStructErr ? 'has-error ' : '') + isTriggerClass;
@@ -4844,7 +5612,7 @@ class LibiPanel extends HTMLElement {
     // takes it wherever that kind of block keeps its entity.
     _applyDroppedVar(entityId, netId, rungId, elId, prop) {
         const el = this.core.findEl(netId, rungId, elId);
-        if (!el) return false;
+        if (!el || el.opaque) return false;  // [CHANGED v3.96.0] a condition kept as it is takes no variable
         const type = String(el.type || '');
         let field = prop;
         if (!field) {
@@ -4854,7 +5622,7 @@ class LibiPanel extends HTMLElement {
             else if (type === 'ctu') field = 'source';
             else field = 'label';
         }
-        el[field] = entityId;
+        pinSet(el, field, entityId);  // [CHANGED v3.96.0] a pin of a list (inputs.N, more.N) too
         if (field === 'label' || field === 'target') {
             el.targetSpec = { entity_id: [entityId] };
             el.targetKind = 'entity';
@@ -5167,12 +5935,13 @@ class LibiPanel extends HTMLElement {
             const local = this.core.localName(v) || (recipient ? recipient.name : '');
             return local ? local + ((v.match(/\s*\+\d+$/) || [''])[0]) : v;
         };
-        const varPin = (side, name, val, errClass, propName, extra = '') => {
+        // [CHANGED v3.96.0] swatch: the colour a pin holds, beside its value.
+        const varPin = (side, name, val, errClass, propName, extra = '', swatch = '') => {
             if (!name && val === null) return `<div class="plc-col-${side} empty"></div>`;
             return `
                 <div class="plc-col-${side} ${extra} ${errClass ? 'has-error' : ''}">
                     ${name ? `<span class="pin-lbl">${this._esc(name)}</span>` : ''}
-                    ${val !== null ? `<div class="pin-val ${errClass ? 'has-error' : ''}" data-prop="${propName}" title="${this._esc(val)}" dir="auto">${this._formatDisplayVal(pinShown(val))}</div>` : ''}
+                    ${val !== null ? `<div class="pin-val ${errClass ? 'has-error' : ''}" data-prop="${propName}" title="${this._esc(val)}" dir="auto">${swatch ? `<span class="pin-swatch" style="background:${swatch}"></span>` : ''}${this._formatDisplayVal(pinShown(val))}</div>` : ''}
                 </div>
             `;
         };
@@ -5203,10 +5972,18 @@ class LibiPanel extends HTMLElement {
                        : (el.moveKind === 'action' || el.service ? 'MOVE ACTION' : 'MOVE');
             let rows = '';
             if (mode === 'value') {
+                // [CHANGED v3.96.0] A colour shows its colour, and what a MOVE sets on a device is written under it. 0 is
+                // a value: it was shown as ?.
+                const set = this._moveSet(el);
+                const rgb = el.valueKey === 'rgb_color' || (set && set.key === 'rgb_color') ? colorOf(el.source) : null;
+                const inVal = el.source === undefined || el.source === null || String(el.source).trim() === '' ? '?' : el.source;
                 rows = `<div class="plc-row">
-                    ${varPin('l', 'IN', el.source || '?', errs.src, 'source')}
+                    ${varPin('l', 'IN', inVal, errs.src, 'source', '', rgb ? hexOf(rgb) : '')}
                     ${varPin('r', 'OUT', el.target || '?', errs.tgt, el.moveKind === 'action' ? null : 'target')}
                 </div>`;
+                if (set && !HELPER_SET_DOMAINS.has(set.domain) && MOVE_VALUES[set.key]) {
+                    rows += `<div class="plc-note move-key">${this._esc(MOVE_VALUES[set.key].name)}</div>`;
+                }
             } else if (mode === 'tts') {
                 rows = `<div class="plc-row">
                     ${varPin('l', 'TTS', el.tts || '?', errs.src, 'tts')}
@@ -5235,10 +6012,20 @@ class LibiPanel extends HTMLElement {
             const aSide = String(el.sourceA || '');
             const heading = aSide === 'time' ? 'CMP TIME' : aSide === 'weekday' ? 'CMP DAY'
                           : aSide === 'datetime' ? 'CMP DATETIME' : aSide === 'sun' ? 'CMP SUN' : `CMP ${op}`;
+            // [ADDED v3.96.0] EVERY: how often, on one pin - 10 s, 5 min - or the pattern as it is.
+            const every = aSide === 'time pattern' ? patternEvery(el.sourceB) : null;
             // [ADDED v3.71.0] A schedule on IN2: the days and hours it holds, which the clock is compared with.
             const week = aSide === 'datetime' && String(el.sourceB || '').startsWith('schedule.') ? this._scheduleText(el.sourceB) : '';
             const clock = clockIn1(aSide);  // [ADDED v3.77.0] datetime.time.now / datetime.day.now
-            innerBody = `
+            innerBody = aSide === 'time pattern' ? `
+            <div class="plc-block">
+                <div class="plc-header">EVERY</div>
+                <div class="power-row"><div class="pin-lbl">EN</div><div class="pin-lbl">ENO</div></div>
+                <div class="plc-row">
+                    ${varPin('l', 'PT', every ? `${every.n} ${PATTERN_SHORT[every.unit]}` : (el.sourceB || '?'), errs.srcB, 'sourceB')}
+                    ${varPin('r', '', null, false, '')}
+                </div>
+            </div>` : `
             <div class="plc-block">
                 <div class="plc-header">${heading === `CMP ${op}` ? heading : heading + ' ' + op}</div>
                 <div class="power-row"><div class="pin-lbl">EN</div><div class="pin-lbl">ENO</div></div>
@@ -5251,6 +6038,44 @@ class LibiPanel extends HTMLElement {
                     ${varPin('r', '', null, false, '')}
                 </div>
                 ${week ? `<div class="plc-note" dir="ltr" title="${this._esc(week)}">${this._esc(week)}</div>` : ''}
+                ${el.opaque ? '<div class="plc-note opaque-tag" title="LIBI has no drawing for this condition: it is kept exactly as Home Assistant has it">kept as it is</div>' : ''}
+            </div>`;
+        } else if (el.type === 'math_rand') {
+            // [ADDED v3.96.0] RAND: a random whole number from MIN to MAX into OUT.
+            innerBody = `
+            <div class="plc-block">
+                <div class="plc-header">RAND</div>
+                <div class="power-row"><div class="pin-lbl">EN</div><div class="pin-lbl">ENO</div></div>
+                <div class="plc-row">
+                    ${varPin('l', 'MIN', el.sourceA === undefined || el.sourceA === '' ? '?' : el.sourceA, errs.srcA, 'sourceA')}
+                    ${varPin('r', 'OUT', el.target || '?', errs.tgt, 'target')}
+                </div>
+                <div class="plc-row">
+                    ${varPin('l', 'MAX', el.sourceB === undefined || el.sourceB === '' ? '?' : el.sourceB, errs.srcB, 'sourceB')}
+                    ${varPin('r', '', null, false, '')}
+                </div>
+                ${el.notSame ? '<div class="plc-note calc-tag">never the one OUT holds</div>' : ''}
+            </div>`;
+        } else if (el.type === 'mux') {
+            // [ADDED v3.96.0] MUX: K and OUT, then a row for each input; what it sets on a device under them.
+            const set = this._moveSet(el);
+            const inputs = Array.isArray(el.inputs) ? el.inputs : [];
+            const swatchOf = (v) => (set && set.key === 'color_name' && COLOR_NAMES.includes(String(v).trim())) ? String(v).trim()
+                : (colorOf(v) ? hexOf(colorOf(v)) : '');
+            const rows = inputs.map((v, i) => `<div class="plc-row">
+                    ${varPin('l', `IN${i}`, String(v || '').trim() === '' ? '?' : v, errs.src && String(v || '').trim() === '', `inputs.${i}`, '', swatchOf(v))}
+                    ${varPin('r', '', null, false, '')}
+                </div>`).join('');
+            innerBody = `
+            <div class="plc-block">
+                <div class="plc-header">MUX</div>
+                <div class="power-row"><div class="pin-lbl">EN</div><div class="pin-lbl">ENO</div></div>
+                <div class="plc-row">
+                    ${varPin('l', 'K', el.sourceA === undefined || el.sourceA === '' ? '?' : el.sourceA, errs.srcA, 'sourceA')}
+                    ${varPin('r', 'OUT', el.target || '?', errs.tgt, 'target')}
+                </div>
+                ${rows || `<div class="plc-row">${varPin('l', 'IN0', '?', true, 'inputs.0')}${varPin('r', '', null, false, '')}</div>`}
+                ${set && !HELPER_SET_DOMAINS.has(set.domain) && MOVE_VALUES[set.key] ? `<div class="plc-note move-key">${this._esc(MOVE_VALUES[set.key].name)}</div>` : ''}
             </div>`;
         } else if (el.type.startsWith('math')) {
             let op = this.core.opSymbol(el.type);
@@ -5266,6 +6091,7 @@ class LibiPanel extends HTMLElement {
                     ${varPin('l', 'IN2', el.sourceB || '?', errs.srcB, 'sourceB')}
                     ${varPin('r', '', null, false, '')}
                 </div>
+                ${(el.more || []).map((v, i) => `<div class="plc-row">${varPin('l', `IN${i + 3}`, String(v || '').trim() === '' ? '?' : v, errs.src && String(v || '').trim() === '', `more.${i}`)}${varPin('r', '', null, false, '')}</div>`).join('')}
             </div>`;
         } else if (el.type.startsWith('timer')) {
             let tName = el.type === 'timer_ton' ? 'TON' : 'TOF';
@@ -5358,6 +6184,7 @@ class LibiPanel extends HTMLElement {
         // filters, editing a type in the table, and dragging a row onto a block.
         // [ADDED v3.32.0] The entity chooser.
         this._bindGroup('entity picker', () => {
+            on('epTabHelpers', 'click', (e) => { e.stopPropagation(); this._epTab = 'helpers'; this._render(); });
             on('epTabTarget', 'click', (e) => { e.stopPropagation(); this._epTab = 'target'; this._render(); });
             on('epTabType', 'click', (e) => { e.stopPropagation(); this._epTab = 'type'; this._render(); });
             all('.ep-fold', 'click', e => {
@@ -5436,7 +6263,7 @@ class LibiPanel extends HTMLElement {
                 const prop = e.currentTarget.getAttribute('data-prop');
                 if (!block || !prop || prop === 'null') return;
                 const el = elOf(block);
-                const val = el ? el[prop] : '';
+                const val = el ? pinGet(el, prop) : '';
                 openCtx(e, block, typeof val === 'string' ? val.replace(/\s*\+\d+$/, '').trim() : '', prop);
             });
             on('ctxChange', 'click', (e) => {
@@ -5934,8 +6761,9 @@ class LibiPanel extends HTMLElement {
             // [ADDED v3.5.0] The level picker reuses the auto-item styling but carries no data-id,
             // so it must not be mistaken for an automation to import.
             if (!haId) return; 
-            this._importAutomation(haId); 
+            this._importAutomation(haId, e.currentTarget.getAttribute('data-domain') || 'automation'); 
         });
+        on('loadFilter', 'input', e => this._filterLoadList(e.target.value));
 
         // [ADDED v3.5.0] Choosing a kind in the ADD NET dialog is what actually creates the net.
         all('.level-item', 'click', e => { 
@@ -6260,6 +7088,17 @@ class LibiPanel extends HTMLElement {
             const action = e.currentTarget.getAttribute('data-action'); 
             const val = e.currentTarget.getAttribute('data-val'); 
             const fm = this._floatingMenu;
+            // [ADDED v3.96.0] A category opens its blocks, Back the categories again: the menu stays open.
+            if (action === 'cat' || action === 'back') {
+                const was = fm.category;
+                fm.category = action === 'cat' ? val : '';
+                fm.tall = 0;
+                this._render();
+                const box = this.shadowRoot.getElementById('fmBox');
+                const next = box && (action === 'cat' ? box.querySelector('.pal-item') : box.querySelector(`.pal-cat[data-val="${was}"]`));
+                if (next) next.focus();
+                return;
+            }
             
             if (action === 'add') { 
                 this.core.insertElement(fm.netId, fm.rungId, fm.path, val); 

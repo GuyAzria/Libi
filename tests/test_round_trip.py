@@ -747,7 +747,10 @@ async def test_an_edited_or_removed_ton_of_a_trigger_writes_its_for(hass: HomeAs
 def _palette():
     """Every block the user's palette offers: the ones it adds, and the kinds each block can be switched to."""
     text = (Path(__file__).parents[1] / "custom_components" / "libi" / "frontend" / "libi-panel.js").read_text(encoding="utf-8")
-    lists = re.findall(r"fm\.type === 'dot'\) \{\s*\[([^\]]*)\]", text) + re.findall(r"pick\(\[([^\]]*)\]\)", text)
+    # [CHANGED 2026-11-18, LIBI 3.96.0] The + point's blocks are listed by category now (INSERT_CATEGORIES): the types of
+    # each category's blocks; its id, name and icon are words the set may hold besides, which no block is drawn as.
+    lists = (re.findall(r"fm\.type === 'dot'\) \{\s*\[([^\]]*)\]", text) + re.findall(r"pick\(\[([^\]]*)\]\)", text)
+             + re.findall(r"types: \[([^\]]*)\]", text))
     return {name for chunk in lists for name in re.findall(r"'([a-z_]+)'", chunk)}
 
 
@@ -1092,8 +1095,10 @@ async def test_an_edited_condition_is_what_its_block_shows(hass: HomeAssistant, 
 
 async def test_a_new_not_in_a_zone_is_a_not_around_the_zone(hass: HomeAssistant) -> None:
     from custom_components.libi.libi_to_yaml import ast_to_yaml
+    # [CHANGED 2026-11-17, v3.96.0] The button is pressed: a P contact. A NO contact waited for "on", which a button never
+    # is - an automation that never runs, which the compiler now refuses (libi_to_yaml._contact_holds).
     net = {"id": "n", "name": "x", "level": "automation", "links": [], "rungs": [{"id": "r1", "elements": [
-        {"id": "e1", "type": "contact_no", "isTrigger": True, "label": "input_button.go"},
+        {"id": "e1", "type": "contact_p", "isTrigger": True, "label": "input_button.go"},
         {"id": "e2", "type": "cmp_ne", "sourceA": "person.guy", "sourceB": "zone.work"},
         {"id": "e3", "type": "coil_s", "label": "light.z"}]}]}
     out = ast_to_yaml(hass, net)
@@ -1161,15 +1166,17 @@ async def test_the_fourth_pass_of_the_review_compiler(hass: HomeAssistant) -> No
     net = yaml_to_ast(hass, _with_condition(copy.deepcopy(listed)))
     _the(net, "input_select.mode")["sourceA"] = "input_select.mode2"
     assert first(net) == {**listed, "entity_id": "input_select.mode2"}
-    # A person's state with a for (its TON), IN2 a zone: a zone with that for, which Home Assistant refuses - the panel
-    # refuses the block first; with the TON taken away, the zone has no for.
+    # A person's state with a for (its TON), IN2 a zone: a zone held for a time, which Home Assistant refuses - the panel
+    # refuses the block first, and [CHANGED 2026-11-18] since the review of the release the compiler too, saying why
+    # (it wrote the zone with that for); with the TON taken away, the zone has no for.
     timed_person = {"condition": "state", "entity_id": "person.guy", "state": "Guy at work", "for": "00:05:00"}
     net = yaml_to_ast(hass, _with_condition(copy.deepcopy(timed_person)))
     _the(net, "person.guy")["sourceB"] = "zone.work"
-    got = first(net)
-    assert (got["condition"], got["zone"], got.get("for")) == ("zone", "zone.work", "00:05:00"), got
-    with pytest.raises(Exception):  # noqa: B017
-        await cond_helper.async_validate_condition_config(hass, cv.CONDITION_SCHEMA(copy.deepcopy(got)))
+    with pytest.raises(ValueError, match="A zone check held for a time"):
+        first(net)
+    with pytest.raises(Exception):  # noqa: B017 - what it wrote before: Home Assistant refuses it
+        await cond_helper.async_validate_condition_config(hass, cv.CONDITION_SCHEMA(
+            {"condition": "zone", "entity_id": "person.guy", "zone": "zone.work", "for": "00:05:00"}))
     for rung in net["rungs"]:
         rung["elements"] = [e for e in rung["elements"] if e.get("type") != "timer_ton"]
     assert first(net) == {"condition": "zone", "entity_id": "person.guy", "zone": "zone.work"}
@@ -1227,3 +1234,139 @@ async def test_an_edited_state_trigger_is_what_its_block_shows(hass: HomeAssista
     got = ast_to_yaml(hass, net)["triggers"]
     assert got == [expected]
     await trig_helper.async_validate_trigger_config(hass, cv.TRIGGER_SCHEMA(copy.deepcopy(got)))
+
+
+# [ADDED 2026-11-18] The review of the release (RULE 41): an edited CMP >, <, >=, <= or RANGE is written from the check
+# it was drawn from. A >=, <= or RANGE went back unedited - the new bound never reached the file, and the save said it
+# had; a check of two bounds - Home Assistant's own "between" - was drawn as CMP > of the lower one, and lost the upper
+# one once edited; a state check made CMP > kept its state beside the above, which Home Assistant refuses.
+_TEMP = "sensor.temp"
+_HOT = {"condition": "device", "device_id": "abc123", "domain": "sensor", "entity_id": _TEMP, "type": "is_temperature"}
+_NOT_ABOVE = {"condition": "not", "conditions": [{"condition": "numeric_state", "entity_id": _TEMP, "above": 20}]}
+_BOUND_EDITS = [
+    ("between, IN2 edited", {"condition": "numeric_state", "entity_id": _TEMP, "above": 20, "below": 30, "alias": "warm"},
+     "cmp_rng", {"sourceB": "25"},
+     {"condition": "numeric_state", "entity_id": _TEMP, "above": 25, "below": 30, "alias": "warm"}),
+    ("between, both edited", {"condition": "numeric_state", "entity_id": _TEMP, "above": 20, "below": 30},
+     "cmp_rng", {"sourceB": 21, "sourceC": 31}, {"condition": "numeric_state", "entity_id": _TEMP, "above": 21, "below": 31}),
+    ("a device's range", {**_HOT, "above": 20, "below": 30}, "cmp_rng", {"sourceB": 21, "sourceC": 31},
+     {**_HOT, "above": 21, "below": 31}),
+    ("a device's check above", {**_HOT, "above": 20}, "cmp_gt", {"sourceB": 25}, {**_HOT, "above": 25}),
+    ("not above is <=", {**_NOT_ABOVE, "alias": "not hot"}, "cmp_le", {"sourceB": 25},
+     {"condition": "not", "alias": "not hot", "conditions": [
+         {"condition": "numeric_state", "entity_id": _TEMP, "above": 25}]}),
+    ("not below is >=", {"condition": "not", "conditions": [{"condition": "numeric_state", "entity_id": _TEMP, "below": 20}]},
+     "cmp_ge", {"sourceB": 25},
+     {"condition": "not", "conditions": [{"condition": "numeric_state", "entity_id": _TEMP, "below": 25}]}),
+    ("a state check made CMP >", {"condition": "state", "entity_id": "sensor.level", "state": "3", "alias": "level"},
+     "cmp_eq", {"type": "cmp_gt", "sourceB": "5"},
+     {"condition": "numeric_state", "entity_id": "sensor.level", "alias": "level", "above": 5}),
+    ("CMP > made >=", {"condition": "numeric_state", "entity_id": _TEMP, "above": 20}, "cmp_gt", {"type": "cmp_ge"},
+     {"condition": "not", "conditions": [{"condition": "numeric_state", "entity_id": _TEMP, "below": 20}]}),
+    ("<= made RANGE", _NOT_ABOVE, "cmp_le", {"type": "cmp_rng", "sourceB": 10, "sourceC": 20},
+     {"condition": "numeric_state", "entity_id": _TEMP, "above": 10, "below": 20}),
+]
+
+
+@pytest.mark.parametrize("name, check, drawn, change, expected", _BOUND_EDITS, ids=[c[0] for c in _BOUND_EDITS])
+async def test_an_edited_bound_is_what_its_block_shows(hass: HomeAssistant, name, check, drawn, change, expected) -> None:
+    import copy
+
+    from homeassistant.helpers import condition as cond_helper
+    from homeassistant.helpers import config_validation as cv
+
+    from custom_components.libi.libi_to_yaml import ast_to_yaml
+    from custom_components.libi.yaml_to_libi import yaml_to_ast
+    auto = {"id": "x", "alias": "x", "triggers": [{"trigger": "state", "entity_id": "binary_sensor.motion", "to": "on"}],
+            "conditions": [copy.deepcopy(check)], "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.z"}}]}
+    net = yaml_to_ast(hass, copy.deepcopy(auto))
+    block = next(el for rung in net["rungs"] for el in rung["elements"] if str(el["type"]).startswith("cmp_"))
+    assert block["type"] == drawn, block
+    assert ast_to_yaml(hass, copy.deepcopy(net))["conditions"] == [check]  # untouched: as the file had it
+    block.update(change)
+    got = ast_to_yaml(hass, net)["conditions"]
+    assert got == [expected], got
+    valid = cv.CONDITIONS_SCHEMA(copy.deepcopy(got))  # Home Assistant's schema takes it
+    if not any("device_id" in c for c in got):  # a device's check is validated against its device, which is not here
+        await cond_helper.async_validate_conditions_config(hass, valid)
+
+
+_DOOR = {"condition": "state", "entity_id": "binary_sensor.door", "state": "on"}
+_OR_EDITS = [
+    ("a time window", {"condition": "time", "after": "07:00:00", "before": "09:00:00"},
+     {"sourceB": "06:30:00", "sourceC": "09:30:00"}, {"condition": "time", "after": "06:30:00", "before": "09:30:00"}),
+    ("a time after", {"condition": "time", "after": "07:00:00"}, {"sourceB": "06:30:00"},
+     {"condition": "time", "after": "06:30:00"}),
+    ("a time before", {"condition": "time", "before": "09:00:00"}, {"sourceB": "09:30:00"},
+     {"condition": "time", "before": "09:30:00"}),
+    ("between", {"condition": "numeric_state", "entity_id": _TEMP, "above": 20, "below": 30}, {"sourceB": 21},
+     {"condition": "numeric_state", "entity_id": _TEMP, "above": 21, "below": 30}),
+]
+
+
+@pytest.mark.parametrize("name, check, change, expected", _OR_EDITS, ids=[c[0] for c in _OR_EDITS])
+async def test_an_edited_bound_inside_an_or_is_what_its_block_shows(hass: HomeAssistant, name, check, change,
+                                                                    expected) -> None:
+    """Inside an OR each check is compiled on its own, not as a group: an edited time window there was not written at
+    all, and then - while this release was made - as a numeric check of an entity "time"."""
+    import copy
+
+    from homeassistant.helpers import condition as cond_helper
+    from homeassistant.helpers import config_validation as cv
+
+    from custom_components.libi.libi_to_yaml import ast_to_yaml
+    from custom_components.libi.yaml_to_libi import yaml_to_ast
+    auto = {"id": "x", "alias": "x", "triggers": [{"trigger": "state", "entity_id": "binary_sensor.motion", "to": "on"}],
+            "conditions": [{"condition": "or", "conditions": [copy.deepcopy(check), _DOOR]}],
+            "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.z"}}]}
+    net = yaml_to_ast(hass, copy.deepcopy(auto))
+    blocks = [x for rung in net["rungs"] for el in rung["elements"] for branch in el.get("branches") or [] for x in branch
+              if str(x["type"]).startswith("cmp_")]
+    assert len(blocks) == 1, blocks
+    assert ast_to_yaml(hass, copy.deepcopy(net))["conditions"] == auto["conditions"]  # untouched: as the file had it
+    blocks[0].update(change)
+    got = ast_to_yaml(hass, net)["conditions"]
+    assert got == [{"condition": "or", "conditions": [expected, _DOOR]}], got
+    await cond_helper.async_validate_conditions_config(hass, cv.CONDITIONS_SCHEMA(copy.deepcopy(got)))
+
+
+async def test_a_not_of_two_bounds_is_one_block_kept_as_it_is(hass: HomeAssistant) -> None:
+    """not between 20 and 30 was drawn as CMP <= 20 - the upper bound out of sight; it is one block, written as it is."""
+    from custom_components.libi.yaml_to_libi import yaml_to_ast
+    check = {"condition": "not", "conditions": [
+        {"condition": "numeric_state", "entity_id": _TEMP, "above": 20, "below": 30}]}
+    auto = {"id": "x", "alias": "x", "triggers": [{"trigger": "state", "entity_id": "binary_sensor.motion", "to": "on"}],
+            "conditions": [check], "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.z"}}]}
+    blocks = [el for rung in yaml_to_ast(hass, auto)["rungs"] for el in rung["elements"]]
+    assert [el.get("opaque") for el in blocks if not el.get("isTrigger") and el["type"] != "coil_s"] == [True], blocks
+    report = verify_round_trip(hass, auto)
+    assert report["ok"], report.get("error") or report.get("issues")
+
+
+async def test_a_check_home_assistant_cannot_hold_for_a_time_does_not_compile(hass: HomeAssistant) -> None:
+    """A TON after a CMP > is a for Home Assistant has no form of: written, the save was refused. Drawn or edited, it
+    does not compile, and says why; a hand-written one LIBI did not change is written as it is (RULE 5) - a NET that
+    does not compile stops the whole save. A state held for a time is the for it always was."""
+    import copy
+
+    from custom_components.libi.libi_to_yaml import ast_to_yaml
+    from custom_components.libi.yaml_to_libi import yaml_to_ast
+    drawn = {"id": "n", "name": "Hot", "level": "automation", "rungs": [{"id": "r", "elements": [
+        {"id": "e0", "type": "contact_no", "label": "binary_sensor.motion", "isTrigger": True},
+        {"id": "e1", "type": "cmp_gt", "sourceA": _TEMP, "sourceB": "25"},
+        {"id": "e2", "type": "timer_ton", "label": "00:05:00", "isFor": True},
+        {"id": "e3", "type": "coil_s", "label": "switch.fan"}]}]}
+    with pytest.raises(ValueError, match="A numeric_state check held for a time - the TON after it - has no form"):
+        ast_to_yaml(hass, copy.deepcopy(drawn))
+    held = copy.deepcopy(drawn)
+    held["rungs"][0]["elements"][1] = {"id": "e1", "type": "contact_no", "label": "binary_sensor.door"}
+    assert ast_to_yaml(hass, held)["conditions"] == [{"condition": "state", "entity_id": "binary_sensor.door",
+                                                      "state": "on", "for": {"hours": 0, "minutes": 5, "seconds": 0}}]
+    hand = {"id": "x", "alias": "x", "triggers": [{"trigger": "state", "entity_id": "binary_sensor.motion", "to": "on"}],
+            "conditions": [{"condition": "numeric_state", "entity_id": _TEMP, "above": 20, "for": "00:05:00"}],
+            "actions": [{"action": "switch.turn_on", "target": {"entity_id": "switch.fan"}}]}
+    net = yaml_to_ast(hass, copy.deepcopy(hand))
+    assert ast_to_yaml(hass, copy.deepcopy(net))["conditions"] == hand["conditions"]  # not changed: as it is
+    next(el for rung in net["rungs"] for el in rung["elements"] if el["type"] == "cmp_gt")["sourceB"] = 25
+    with pytest.raises(ValueError, match="held for a time"):
+        ast_to_yaml(hass, net)

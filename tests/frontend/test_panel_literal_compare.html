@@ -4,7 +4,7 @@
   [ADDED v1.0.0 | 2026-11-11] Purpose: the virtual tests of 2026-11-11 (the user's train reminder was saved with
   state: zone.work, which never holds). A CMP = / not = whose IN2 is an entity Home Assistant reads as plain text is red,
   and so the save is refused; a value, an input helper in a condition, and a zone for a person are not. A CMP not = that
-  starts an automation on a state is red too. IN2 of a CMP of a value says "Value or helper".
+  starts an automation on a state is red too. IN2 of a CMP of a value says it takes a value or a variable.
 -->
 <html><head><meta charset="utf-8"><meta name="window-size" content="1280,900"><title>libi literal compare test</title></head>
 <body style="margin:0; width:1280px; height:800px;">
@@ -139,11 +139,11 @@ try {
   const tip = block && block.querySelector('.err-tooltip');
   check('the block is drawn red, its reason on it', red('e0') && !!tip && tip.textContent.includes('IN2 is sensor.other'), block && block.outerHTML.slice(0, 300));
   check('a block that holds is not red', !red('e3') && !red('e7'));
-  // IN2 of a CMP of a value says "Value or helper".
+  // IN2 of a CMP of a value says it takes a value or a variable. [CHANGED 2026-11-18] In the user's words, every IN.
   panel._inspectedEl = { netId: 'n1', rungId: 'c3', elId: 'e3' };
   panel._wakeSidebar(); panel._render(); await sleep(50);
   const label = panel.shadowRoot.querySelector('#lbl_sourceB');
-  check('IN2 of a CMP of a value says "Value or helper"', !!label && label.textContent === 'Value or helper (IN2)', label && label.textContent);
+  check('IN2 of a CMP of a value says it takes a value or a variable', !!label && label.textContent === 'IN2 - a value or a variable', label && label.textContent);
 } catch (err) {
   results.push({ name: 'harness threw', ok: false, detail: String(err && err.stack || err) });
 }

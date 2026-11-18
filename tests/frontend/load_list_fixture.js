@@ -1,5 +1,7 @@
 // LIBI for Home Assistant - Copyright (C) 2026 Guy Azria - GPL-3.0-or-later
 // Shared by test_panel_load_list*.html.
+// [CHANGED v1.1.0 | 2026-11-11] Purpose: LIBI 3.96.0 - LOAD lists the scripts and the scenes of Home Assistant too, each
+//   kind under its heading, opens the one chosen by its kind, and filters a long list by name.
 // [ADDED v1.0.0 | 2026-11-10] Purpose: the user's rule (2026-11-10) - an automation belongs to one project. LOAD's window
 //   offers only the automations no project holds; under the heading IN USE the others, each with the project that holds
 //   it (or the NET of this page that shows it), which cannot be chosen. A load the backend refuses says why and lists
@@ -21,7 +23,7 @@ export const LIST = [
   { id: 'a6', name: 'Taken meanwhile', in_use: [] },
 ];
 
-function makeHass({ list = LIST, unreadable = [], refuse = {} } = {}) {
+function makeHass({ list = LIST, scripts = [], scenes = [], unreadable = [], refuse = {} } = {}) {
   const sent = [];
   const hass = {
     states: {}, entities: {}, devices: {}, areas: {}, themes: { darkMode: false }, language: 'en',
@@ -35,10 +37,10 @@ function makeHass({ list = LIST, unreadable = [], refuse = {} } = {}) {
           return { slug: 'p', name: 'Home Lights', revision: 3, stats: {}, versions: {},
                    nets: [NET('n1', { name: 'Empty' }), NET('n2', { ha_id: 'a4', name: 'Shown' })] };
         }
-        if (m.type === 'libi/list_automations') return { automations: JSON.parse(JSON.stringify(list)), unreadable };
+        if (m.type === 'libi/list_automations') return { automations: JSON.parse(JSON.stringify(list)), scripts: JSON.parse(JSON.stringify(scripts)), scenes: JSON.parse(JSON.stringify(scenes)), unreadable };
         if (m.type === 'libi/get_automation') {
           if (refuse[m.automation_id]) throw { code: 'in_use', message: refuse[m.automation_id] };
-          return { net: NET('x', { name: 'Loaded ' + m.automation_id, ha_id: m.automation_id }), verify: { ok: true }, versions: {} };
+          return { net: NET('x', { name: 'Loaded ' + m.automation_id, ha_id: m.automation_id, level: m.domain || 'automation' }), verify: { ok: true }, versions: {} };
         }
         if (m.type === 'libi/load_automation') return { nets: [] };
         return [];
@@ -82,7 +84,9 @@ export async function loadListChecks(check, { phone = false } = {}) {
   // ---- The list: free ones to choose, then IN USE
   let { panel, sent } = await start({ refuse: { a6: 'This automation is already in the project Garden. An automation belongs to one project.' } });
   let modal = await openLoad(panel);
-  check('LOAD opens the window', !!modal && /Select HA Automation/.test(modal.textContent));
+  check('LOAD opens the window', !!modal && /Load from Home Assistant/.test(modal.textContent)
+        && /Choose an automation, a script or a scene/.test(modal.textContent));
+  check('with automations only: no heading of a kind, and no filter for a short list', !modal.querySelector('.auto-kind') && !modal.querySelector('#loadFilter'));
   const free = [...modal.querySelectorAll('.auto-item[data-id]')].map(r => r.getAttribute('data-id'));
   check('only the automations no project holds can be chosen, in the file order', free.join() === 'a1,a5,a6', free.join());
   const sec = modal.querySelector('.auto-sec');
@@ -134,7 +138,7 @@ export async function loadListChecks(check, { phone = false } = {}) {
   // ---- Every one held: nothing to choose, said
   ({ panel, sent } = await start({ list: LIST.filter(a => a.in_use && a.in_use.length) }));
   modal = await openLoad(panel);
-  check('when every automation is in a project, the window says so', (modal.querySelector('.auto-none') || {}).textContent === 'Every automation is in a project already.'
+  check('when every automation is in a project, the window says so', (modal.querySelector('.auto-none') || {}).textContent === 'Everything is in a project already.'
         && modal.querySelectorAll('.auto-item[data-id]').length === 0);
   panel._markSaved(); panel.remove(); await sleep(50);
 
@@ -149,6 +153,41 @@ export async function loadListChecks(check, { phone = false } = {}) {
   for (const r of modal.querySelectorAll('.auto-used')) r.click();
   await sleep(50);
   check('a click loads nothing', gets(sent).length === 0);
+  panel._markSaved(); panel.remove(); await sleep(50);
+
+  // ---- [v3.96.0] Scripts and scenes too: each kind under its heading, opened by its kind; a long list has a filter
+  const many = Array.from({ length: 7 }, (_, i) => ({ id: 'm' + i, name: 'Lamp ' + i, in_use: [] }));
+  ({ panel, sent } = await start({ list: many,
+    scripts: [{ id: 'night', name: 'Night routine', in_use: [] }, { id: 'held', name: 'Held script', in_use: [{ slug: 'garden', name: 'Garden', nets: ['n9'] }] },
+              { id: 'a4', name: 'A script with the key of an automation on this page', in_use: [] }],
+    scenes: [{ id: '1700', name: '<img src=x onerror="window.__xss=1">Movie', in_use: [] }] }));
+  modal = await openLoad(panel);
+  const heads = [...modal.querySelectorAll('.auto-kind')].map(hd => hd.textContent).join();
+  check('automations, scripts and scenes, each under its heading', heads === 'AUTOMATIONS,SCRIPTS,SCENES', heads);
+  const kinds = [...modal.querySelectorAll('.auto-item[data-id]')].map(r => `${r.getAttribute('data-domain')}:${r.getAttribute('data-id')}`).join();
+  check('each row carries its kind', kinds === 'automation:m0,automation:m1,automation:m2,automation:m3,automation:m4,automation:m5,automation:m6,script:night,script:a4,scene:1700', kinds);
+  check('a script is shown by its entity id', [...modal.querySelectorAll('.auto-item[data-domain="script"] .auto-item-id')].map(x => x.textContent).join() === 'script.night,script.a4');
+  check('a script another project holds is IN USE, and says it is a script', [...modal.querySelectorAll('.auto-used')].map(r => r.querySelector('.auto-item-id').textContent).join() === 'Garden · script · script.held');
+  check('a script is not taken for the automation of the same key on this page', !!modal.querySelector('.auto-item[data-domain="script"][data-id="a4"]'));
+  check('a scene\'s name is text', !modal.querySelector('.auto-list img') && window.__xss === undefined);
+  const filter = modal.querySelector('#loadFilter');
+  check('a long list has a filter by name', !!filter);
+  filter.value = 'night';
+  filter.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(20);
+  const visible = () => [...modal.querySelectorAll('.auto-item, .auto-used')].filter(r => !r.hidden && getComputedStyle(r).display !== 'none').map(r => r.querySelector('.auto-item-name').textContent).join();
+  const headsShown = () => [...modal.querySelectorAll('.auto-sec')].filter(hd => !hd.hidden && getComputedStyle(hd).display !== 'none').map(hd => hd.textContent).join();
+  check('the filter keeps the rows that match, and the headings that still have a row', visible() === 'Night routine' && headsShown() === 'SCRIPTS', `${visible()} | ${headsShown()}`);
+  check('the filter draws nothing again: the field keeps the words and the focus stays possible', modal.isConnected && modal.querySelector('#loadFilter') === filter && filter.value === 'night');
+  filter.value = '';
+  filter.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(20);
+  check('cleared, everything is back', visible().split(',').length === 11 && headsShown() === 'AUTOMATIONS,SCRIPTS,SCENES,IN USE', `${visible()} | ${headsShown()}`);
+  modal.querySelector('.auto-item[data-domain="script"][data-id="night"]').click();
+  await until(() => !panel.shadowRoot.querySelector('.modal .auto-list'));
+  const asked = gets(sent).at(-1) || {};
+  check('a script chosen is asked for as a script, into that NET', asked.domain === 'script' && asked.automation_id === 'night' && asked.net_id === 'n1', JSON.stringify(asked));
+  check('and the NET is a script now', panel.core.netLevel(panel.core.nets[0]) === 'script' && panel.core.nets[0].ha_id === 'night', JSON.stringify([panel.core.nets[0].level, panel.core.nets[0].ha_id]));
   panel._markSaved(); panel.remove(); await sleep(50);
 
   // ---- [v3.95.5] A NET may load its own automation again, as libi/get_automation allows (the review of the release)

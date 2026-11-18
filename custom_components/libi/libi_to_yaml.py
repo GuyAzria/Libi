@@ -11,22 +11,15 @@
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
 # FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 # more details. <https://www.gnu.org/licenses/>.
-# [ADDED v3.94.0 | 2026-11-07] Purpose: trigger_place - where the trigger an element of a NET is sits in the automation
-#   it compiles to, so Online's Real fires that trigger of a NET drawn in LIBI.
-# [CHANGED v3.95.5 | 2026-11-11] Purpose: An edited CMP = / not = and contact of a state compile to what the block shows
-#   (_compare_condition, _contact_condition): not = is a not around the check and = none - it was written without the
-#   not, the logic turned round; a not the importer drew as not = keeps its form; a list of states stays a list; a
-#   person in a zone is a zone condition (the user's train reminder was saved with state: zone.work and never fired),
-#   the zone chosen on the card a state condition. An edited state trigger takes its new entity and state - they were
-#   ignored. Found by the virtual tests of 2026-11-11; the review of the release (RULE 41) added: a one-item list state and a
-#   list of zones keep their form, a trigger of from alone gets no to, and a check with options a zone has none of (for,
-#   attribute ...) is never turned into a zone - the panel says so instead; a check of several entities keeps them all,
-#   a not's enabled goes with its check, an empty IN2 never writes an empty state, and a person leaving a zone drawn
-#   from a state trigger is a zone trigger (leave) - the second pass of that review; the third: a zone trigger keeps its id,
-#   and IN2 "heat, dry" of a block drawn new is two states where the entity's states never hold a comma. The fourth and
-#   fifth: a not = with a TON after it is held for a time, which Home Assistant cannot say - the panel refuses it, and its
-#   for is never put inside the not, which would mean "not (x for that time)"; a TON taken away takes the check's own for
-#   with it; a list whose text did not change is written back as it was; "zone.a, zone.b" is a list of zones.
+# [CHANGED v3.96.1 | 2026-11-18] Purpose: ADD, SUB, MUL and DIV take IN3, IN4 ... (more), written by calc_template;
+#   MOD and RAND keep their two, and an input left empty does not compile (_math_action).
+# [CHANGED v3.96.2 | 2026-11-18] Purpose: The review of the release (RULE 41): a block of a scene in a script or an
+#   automation is compiled from the block, never written as its scene node (_element_to_actions); a value that is
+#   the words of an entity id stays those words (literal, _move_input); RAND of a fraction, RAND of one number never
+#   the one OUT holds, and a MUX's K a fraction do not compile (_math_action, _mux_action); an edited CMP >, <, >=, <=
+#   or RANGE is written from the check it was drawn from (_bound_condition) - a >=, <= or RANGE went back unedited, a
+#   check of two bounds lost one, a state check made CMP > kept its state; a for (a TON after it) on a check Home
+#   Assistant cannot hold for a time does not compile (_NO_FOR_CONDITIONS). The signs of MATH are CALC_SIGN.
 # [ADDED v1.69.0] Output perfectly formed logic for standard triggers, retrieving native YAML dictionary if present via raw_trigger.
 # [ADDED v3.5.0 | 2026-08-24] Purpose: A net now carries a level. automation compiles to the
 #   automation schema exactly as before, script compiles to alias plus sequence, and scene
@@ -39,6 +32,7 @@
 #      user actually edited patched into it, so templates, ids, titles and media_stream survive.
 #   4. python_script.set_state is never written again.
 import copy
+import json
 import logging
 import re
 
@@ -47,14 +41,17 @@ from .yaml_to_libi import (
     COMPARED_DOMAINS, norm_entity,
     norm_service, norm_kind, domain_of, short,
     element_sig, EVENT_TRIGGER_KEYS, target_spec,
-    hms_to_seconds, yaml_to_ast, repeat_loop, for_to_hms, duration_label, wait_parts, is_recipient_action,
-    ON_STATES,
+    hms_to_seconds, repeat_loop, for_to_hms, duration_label, wait_parts, is_recipient_action,
+    ON_STATES, entry_to_ast, VALUE_DOMAINS, NEVER_ON_DOMAINS, NOT_A_VALUE, calc_template, NUMBER_OUT_DOMAINS, CALC_SIGN,
+    PATTERN_KEYS, pattern_parts,
+    DEVICE_VALUE_SERVICES, DEVICE_VALUE_DOMAINS, LIST_VALUE_KEYS, SET_VALUE_SERVICES, is_entity_ref, read_template,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 CONDITION_TYPES = ("contact_", "cmp_", "schedule")
-MATH_SYMBOL = {"math_add": "+", "math_sub": "-", "math_mul": "*", "math_div": "/"}
+# [CHANGED v3.96.2] One table of the signs, the importer's (yaml_to_libi.CALC_SIGN).
+MATH_SYMBOL = CALC_SIGN
 
 
 # ==========================================================================================
@@ -279,6 +276,37 @@ def _patch(raw, updates, target_kind=""):
 # TRIGGERS
 # ==========================================================================================
 
+def _change_trigger(ent):
+    """[ADDED v3.96.0] A P contact - the moment it turns on - on a value (VALUE_DOMAINS): the moment its value changes,
+    from one value to another. Not when its device drops off or comes back (NOT_A_VALUE): a MOVE of the colour picked
+    on the dashboard would send unavailable to the light. No to or from, as the importer draws a P contact."""
+    return {"trigger": "state", "entity_id": ent, "not_from": list(NOT_A_VALUE), "not_to": list(NOT_A_VALUE)}
+
+
+def _contact_holds(ent):
+    """[ADDED v3.96.0] A contact that waits for on or off, drawn on what is never on or off (NEVER_ON_DOMAINS: a
+    number, a date, a button), never holds - an automation that never runs, a check never true. Refused, as the panel
+    shows it red (_contactProblem)."""
+    if domain_of(ent) in NEVER_ON_DOMAINS:
+        raise ValueError(f"{ent} is never on or off, so a contact on it never holds. A P contact is the moment its "
+                         "value changes; a CMP block compares it with a value.")
+
+
+def _pattern_trigger(el, raw):
+    """[ADDED v3.96.0] EVERY - a time pattern - as Home Assistant takes it: the hours, minutes and seconds the block holds
+    ("seconds=/10"), in the place they had; every other key of its node - id, alias, enabled - kept."""
+    parts = pattern_parts(el.get("sourceB"))
+    if not parts:
+        raise ValueError(f"EVERY: {el.get('sourceB') or 'nothing'} is no time pattern - it is how often the rung starts, "
+                         "e.g. seconds=/10 for every 10 seconds, minutes=/5 for every 5 minutes.")
+    out = dict(raw) if isinstance(raw, dict) and norm_kind(raw) == "time_pattern" else {"trigger": "time_pattern"}
+    for key in PATTERN_KEYS:
+        if key in out and key not in parts:
+            out.pop(key)
+    out.update(parts)
+    return out
+
+
 def _clock_trigger(el, raw):
     """[ADDED v3.70.0] CMP DATETIME as a trigger. Against a schedule it is a state trigger, to on for cmp_eq and to
     off for cmp_ne; against a date and time helper (input_datetime, a timestamp sensor) a time trigger at it. An
@@ -314,6 +342,13 @@ def _element_to_trigger(el, trig_id):
 
     if _untouched(el) and (norm_kind(raw) or "platform" in raw or "trigger" in raw):
         out = dict(raw)
+        if trig_id:
+            out["id"] = trig_id
+        return out
+
+    # [ADDED v3.96.0] EVERY, edited or drawn new.
+    if t == "cmp_eq" and str(el.get("sourceA")).strip().lower() == "time pattern":
+        out = _pattern_trigger(el, raw)
         if trig_id:
             out["id"] = trig_id
         return out
@@ -391,7 +426,10 @@ def _element_to_trigger(el, trig_id):
     val = el.get("sourceB")
     out = None
 
-    if t.startswith("contact_"):
+    if t == "contact_p" and domain_of(ent) in VALUE_DOMAINS:
+        out = _change_trigger(ent)
+    elif t.startswith("contact_"):
+        _contact_holds(ent)
         state = "off" if t in ("contact_nc", "contact_n") else "on"
         out = {"trigger": "state", "entity_id": ent, "to": state}
         if t in ("contact_p", "contact_n"):
@@ -431,7 +469,8 @@ def _element_to_trigger(el, trig_id):
 def _trigger_key(el):
     """Two identical triggers on two rungs are one trigger in the automation."""
     if el.get("trigId"):
-        return f"id:{el['trigId']}"
+        # [CHANGED v3.96.0] Several triggers may share one id; the importer numbers the later ones (trigDup).
+        return f"id:{el['trigId']}" + (f"#{el['trigDup']}" if el.get("trigDup") else "")
     return "|".join([
         el.get("type", ""),
         str(el.get("label", "")),
@@ -603,7 +642,67 @@ def _contact_condition(el, wrapper, inner):
     return _wrap_not(wrapper, out) if on == shows_on else _unwrap(wrapper, out)
 
 
+def _plain_trigger_ids(conds):
+    """[ADDED v3.96.0] The ids of conditions that are each a plain reference to a trigger, in order and once each; None
+    when one of them is anything else."""
+    ids = []
+    for c in conds:
+        if not (isinstance(c, dict) and set(c) == {"condition", "id"} and c["condition"] == "trigger"
+                and not isinstance(c["id"], (list, dict))):
+            return None
+        if c["id"] not in ids:
+            ids.append(c["id"])
+    return ids
+
+
+# [ADDED v3.96.2] The bound each CMP writes, and whether it is a not of it: Home Assistant has no >= or <= of its own.
+_BOUNDS = {"cmp_gt": ("above", False), "cmp_lt": ("below", False), "cmp_ge": ("below", True), "cmp_le": ("above", True)}
+
+
+def _bound_condition(el, raw):
+    """[ADDED v3.96.2] CMP >, <, >=, <= or RANGE edited, written from the check it was drawn from: the bounds the block
+    shows are the block's, and the rest of that check stays - a device's device_id, domain and type, an attribute, an
+    alias (RULE 5). A >= is a not of below, a <= a not of above. The review of the release found: an edited >=, <= or
+    RANGE went back as it had been - the new bound never reached the file, and the save said it had; a check of both
+    bounds, drawn as CMP > of one, lost the other when edited; and a state check made CMP > kept its state beside the
+    above, which Home Assistant refuses. A check of another kind made a bound is a numeric check of its entity."""
+    t = el.get("type")
+    kids = raw.get("conditions") if raw.get("condition") == "not" else None
+    negated = isinstance(kids, list) and len(kids) == 1 and isinstance(kids[0], dict)
+    node = kids[0] if negated else raw
+    if str(el.get("sourceA") or el.get("label") or "").strip().lower() == "time" or el.get("kind") == "time":
+        # The clock, as a check drawn new writes it: a time condition - inside an OR it was a numeric check of an entity
+        # "time". Its days are a block of their own (CMP DAY), written from that block.
+        check = {"condition": "time", **{k: node[k] for k in ("alias", "enabled") if k in node}}
+        if t == "cmp_rng":
+            check["after"], check["before"] = el.get("sourceB"), el.get("sourceC")
+        else:
+            check["after" if t in ("cmp_gt", "cmp_ge") else "before"] = el.get("sourceB")
+        return check
+    if node.get("condition") in ("numeric_state", "device"):
+        check = _patch(node, {"entity_id": el.get("sourceA")})
+    else:
+        check = {"condition": "numeric_state", "entity_id": clean_target(el.get("sourceA")),
+                 **{k: node[k] for k in ("attribute", "alias", "enabled") if k in node}}
+    if t == "cmp_rng":
+        check["above"], check["below"] = _num(el.get("sourceB")), _num(el.get("sourceC"))
+        wrap = False
+    else:
+        bound, wrap = _BOUNDS[t]
+        check.pop("below" if bound == "above" else "above", None)
+        check[bound] = _num(el.get("sourceB"))
+    if wrap:
+        return {**raw, "conditions": [check]} if negated else {"condition": "not", "conditions": [check]}
+    for key in ("alias", "enabled"):
+        if negated and key in raw and key not in check:
+            check[key] = raw[key]  # a not's own name goes with its check
+    return check
+
+
 def _element_to_condition(el):
+    # [ADDED v3.96.0] A condition the ladder has no drawing for: its node, as it was, whatever the block shows.
+    if el.get("opaque") and isinstance(el.get("raw"), dict):
+        return copy.deepcopy(el["raw"])
     t = el.get("type", "")
     raw = el.get("raw")
 
@@ -629,6 +728,11 @@ def _element_to_condition(el):
             domain_of(clean_target(el.get("sourceB"))) in COMPARED_DOMAINS:
         return _clock_condition(el, raw)
 
+    # [ADDED v3.96.0] EVERY starts a rung; as a check it holds no meaning.
+    if str(el.get("sourceA")).strip().lower() == "time pattern":
+        raise ValueError("EVERY - a time pattern - starts the rung: it is a trigger, never a check after one. Tick "
+                         "Use as Trigger, or start the rung with it.")
+
     # [ADDED v3.76.0] CMP DAY, edited or drawn new: its days, or the days an 8-bit helper holds. Patched from its raw
     # node like the others, an edited one got the entity_id "weekday" written into its time condition.
     if t == "cmp_eq" and str(el.get("sourceA")) == "weekday":
@@ -652,14 +756,8 @@ def _element_to_condition(el):
             # [CHANGED v3.95.5] A state or zone check is _compare_condition's (above); any other keeps its node, IN1
             # written in.
             out = _patch(out, {"entity_id": el.get("sourceA")})
-        elif t in ("cmp_gt", "cmp_lt"):
-            out = _patch(out, {"entity_id": el.get("sourceA")})
-            if t == "cmp_gt":
-                out.pop("below", None)
-                out["above"] = el.get("sourceB")
-            else:
-                out.pop("above", None)
-                out["below"] = el.get("sourceB")
+        elif t in ("cmp_gt", "cmp_lt", "cmp_ge", "cmp_le", "cmp_rng"):
+            out = _bound_condition(el, raw)  # [CHANGED v3.96.2] every bound, from the check it was drawn from
         elif t == "cmp_tpl":
             out["value_template"] = el.get("sourceA", "")
         elif t == "schedule":
@@ -675,6 +773,7 @@ def _element_to_condition(el):
     val = el.get("sourceB")
 
     if t.startswith("contact_"):
+        _contact_holds(ent)
         return {"condition": "state", "entity_id": ent, "state": "off" if t in ("contact_nc", "contact_n") else "on"}
     if t in ("cmp_eq", "cmp_ne"):
         # [CHANGED v3.95.5] Not in a zone is a not around the zone condition: state: zone.work never holds.
@@ -778,6 +877,79 @@ def _move_action_node(el):
     return out
 
 
+# [CHANGED v3.96.0] What a MOVE puts on each kind of thing: the action, and the key of its data. The helpers as before,
+# and the devices (DEVICE_VALUE_SERVICES) - their action, with the first of their keys unless the block says another.
+_MOVE_SERVICES = {
+    "input_datetime": ("input_datetime.set_datetime", "time"),
+    "input_number": ("input_number.set_value", "value"),
+    "input_text": ("input_text.set_value", "value"),
+    "input_select": ("input_select.select_option", "option"),
+    "number": ("number.set_value", "value"),
+    "select": ("select.select_option", "option"),
+    "text": ("text.set_value", "value"),
+    "counter": ("counter.set_value", "value"),
+    **{svc.split(".")[0]: (svc, keys[0]) for svc, keys in DEVICE_VALUE_SERVICES.items()},
+}
+
+
+def _color_list(text):
+    """[ADDED v3.96.0] A colour typed or picked for a light - #ff8800, [255, 136, 0] or 255, 136, 0 - as the list Home
+    Assistant takes. None for anything else."""
+    s = str(text if text is not None else "").strip()
+    m = re.fullmatch(r"#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})", s)
+    if m:
+        return [int(x, 16) for x in m.groups()]
+    if s[:1] == "[":
+        try:
+            listed = json.loads(s)
+        except ValueError:
+            return None
+        ok = isinstance(listed, list) and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in listed)
+        return listed if ok else None
+    if re.fullmatch(r"-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?){1,4}", s):
+        return [_num(x.strip()) for x in s.split(",")]
+    return None
+
+
+def _move_input(value, key, target, literal=False):
+    """[ADDED v3.96.0] What a MOVE writes for its IN pin. A variable - an entity id - is the value it holds when the action
+    runs (read_template): it was written as the words of its id. For a device a number is a number, and a colour the
+    list a light takes."""
+    text = str(value if value is not None else "").strip()
+    # [CHANGED v3.96.2] literal: the words of an entity id given as the value (yaml_to_libi) stay those words.
+    if is_entity_ref(text) and not literal:
+        return read_template(text, key)
+    if domain_of(target) in DEVICE_VALUE_DOMAINS:
+        if key in LIST_VALUE_KEYS:
+            listed = _color_list(text)
+            if listed is not None:
+                return listed
+        return _num(value)
+    return value
+
+
+def _move_key(key, value):
+    """[ADDED v3.96.0] A colour by name read from a light is that light's colour: the list, under rgb_color."""
+    text = str(value if value is not None else "").strip()
+    return "rgb_color" if key == "color_name" and is_entity_ref(text) and domain_of(text) == "light" else key
+
+
+_NUMBER_KEYS = frozenset(("brightness_pct", "brightness", "brightness_step_pct", "brightness_step", "color_temp_kelvin",
+                          "percentage", "position", "temperature", "humidity", "volume_level"))
+
+
+def _device_checked(key, written, target):
+    """[ADDED v3.96.0] A value a device cannot take does not compile - Home Assistant would save it, and the action would
+    fail each time it runs: a word for a brightness, a colour that is not one. A template is the user's own."""
+    if domain_of(target) not in DEVICE_VALUE_DOMAINS or (isinstance(written, str) and ("{{" in written or "{%" in written)):
+        return written
+    if key in _NUMBER_KEYS and (isinstance(written, bool) or not isinstance(written, (int, float))):
+        raise ValueError(f"MOVE to {target}: {key} takes a number, not {written!r}.")
+    if key in LIST_VALUE_KEYS and not isinstance(written, list):
+        raise ValueError(f"MOVE to {target}: {key} takes a colour such as #ff8800 or [255, 136, 0], not {written!r}.")
+    return written
+
+
 def _move_value_action(el):
     target = el.get("target", "")
     value = el.get("source", "")
@@ -796,12 +968,31 @@ def _move_value_action(el):
         out["set_conversation_response"] = value
         return out
 
+    # [ADDED v3.96.0] stop and event keep their own key: edited, they were written as an action named stop.
+    if el.get("service") == "stop" and isinstance(raw, dict) and "stop" in raw:
+        return {**raw, "stop": value}
+    if el.get("service") == "event" and isinstance(raw, dict) and "event" in raw:
+        return {**raw, "event": target or raw["event"]}
+
+    domain = domain_of(target)
+    own = _MOVE_SERVICES.get(domain)
+    # [ADDED v3.96.0] A target of another kind than the action it was read from - a fan where a light was - gets the
+    # action of its own kind, not the old one with the new entity.
+    if raw and own and norm_service(raw) and norm_service(raw).split(".")[0] != domain:
+        raw = None
+
     if raw and norm_service(raw):
         out = dict(raw)
         data = dict(out.get("data") or {})
         key = el.get("valueKey") or next((k for k in data if k != "entity_id"), None)
         if key:
-            data[key] = value
+            # [CHANGED v3.96.0] The block sets one value: another of the same call - a light's brightness where the
+            # block now sets its colour - goes; a variable is its value, a colour a list (_move_input).
+            new_key = _move_key(key, value)
+            for other in DEVICE_VALUE_SERVICES.get(norm_service(raw), ()):
+                if other != new_key:
+                    data.pop(other, None)
+            data[new_key] = _device_checked(new_key, _move_input(value, new_key, target, bool(el.get("literal"))), target)
         out["data"] = data
         out.pop("service", None)
         out["action"] = norm_service(raw)
@@ -813,43 +1004,87 @@ def _move_value_action(el):
             return _patch(out, updates)
         return _patch(out, {"entity_id": target})
 
-    domain = domain_of(target)
-    svc_map = {
-        "input_datetime": ("input_datetime.set_datetime", "time"),
-        "input_number": ("input_number.set_value", "value"),
-        "input_text": ("input_text.set_value", "value"),
-        "input_select": ("input_select.select_option", "option"),
-        "number": ("number.set_value", "value"),
-        "select": ("select.select_option", "option"),
-        "text": ("text.set_value", "value"),
-        "counter": ("counter.set_value", "value"),
-    }
-    svc, key = svc_map.get(domain, ("", ""))
-    if not svc:
-        return {"action": target, "data": {"value": value}} if target else None
-    return {"action": svc, "target": {"entity_id": target}, "data": {key: value}}
+    if not str(target or "").strip():
+        return None
+    # [CHANGED v3.96.0] Anything with no value to set does not compile: it was written as an action named after the
+    # entity (action: light.kitchen), which Home Assistant saves and never runs.
+    if not own and not domain:
+        raise ValueError(f"MOVE to {target}: OUT needs one entity - a helper (input_number, input_text, input_select "
+                         "...) or a device that takes a value (a light, a fan, a cover ...).")
+    if not own:
+        raise ValueError(f"MOVE to {target}: a {domain} has no value a MOVE can set. Turn it on and off with a coil, "
+                         "or keep the value in a helper (input_number, input_text, input_select ...).")
+    svc, key = own
+    allowed = DEVICE_VALUE_SERVICES.get(svc) or SET_VALUE_SERVICES.get(svc) or (key,)
+    if el.get("valueKey") in allowed:
+        key = el["valueKey"]
+    key = _move_key(key, value)
+    written = _device_checked(key, _move_input(value, key, target, bool(el.get("literal"))), target)
+    return _apply_continue_on_error({"action": svc, "target": {"entity_id": target}, "data": {key: written}}, el)
 
 
 def _math_action(el):
+    """[CHANGED v3.96.0] MATH, MOD and RAND as the template calc_template writes, into the helper on OUT. An entity is
+    read; a constant with a point is a constant - 0.5 was read as states('0.5'), 0. A MOD of 0, a RAND from more to
+    less, and a MOD or RAND into anything but a number helper do not compile, and say why."""
     t = el.get("type", "math_add")
-    op = MATH_SYMBOL.get(t, "+")
-    a = el.get("sourceA", "")
-    b = el.get("sourceB", "")
-    target = el.get("target", "")
-    a_expr = f"(states('{a}') | float(0))" if "." in str(a) else f"({a})"
-    b_expr = f"(states('{b}') | float(0))" if "." in str(b) else f"({b})"
-
-    if t == "math_div":
-        precision = el.get("precision", 2)
-        fallback = el.get("fallback", 0)
-        expr = ("{{ ((" + a_expr + " / " + b_expr + ") | round(" + str(precision) + "))"
-                " if " + b_expr + " != 0 else " + str(fallback) + " }}")
-    else:
-        expr = "{{ " + a_expr + " " + op + " " + b_expr + " }}"
+    if t not in MATH_SYMBOL and t != "math_rand":
+        t = "math_add"
+    target = clean_target(el.get("target", ""))
+    name = "RAND" if t == "math_rand" else "MOD" if t == "math_mod" else "MATH"
+    a, b = str(el.get("sourceA", "")).strip(), str(el.get("sourceB", "")).strip()
+    more = [str(v if v is not None else "").strip() for v in el.get("more") or []]
+    if more and t in ("math_mod", "math_rand"):
+        raise ValueError(f"{name} to {target or '?'}: it takes two inputs, IN1 and IN2 - remove IN3 and the ones after.")
+    for i, value in enumerate([a, b, *more], start=1):
+        if more and not value:
+            raise ValueError(f"{name} to {target or '?'}: IN{i} needs a number or a variable.")
+    if t in ("math_mod", "math_rand"):
+        for pin, value in (("IN1", a), ("IN2", b)):
+            if not value:
+                raise ValueError(f"{name} to {target or '?'}: {pin} needs a whole number or a variable.")
+        if not _ENTITY_SHAPE.fullmatch(target) or domain_of(target) not in NUMBER_OUT_DOMAINS:
+            raise ValueError(f"{name}: OUT is the variable that gets the number - an input_number, a counter or a "
+                             f"number - not {target or 'nothing'}.")
+        if t == "math_mod" and re.fullmatch(r"-?0+(?:\.0+)?", b):
+            raise ValueError(f"MOD to {target}: the remainder of a division by 0 does not exist - IN2 is never 0.")
+        if t == "math_rand" and re.fullmatch(r"-?\d+", a) and re.fullmatch(r"-?\d+", b) and int(a) > int(b):
+            raise ValueError(f"RAND to {target}: IN1 ({a}) is the smallest number, IN2 ({b}) the largest.")
+        # [ADDED v3.96.2] What a RAND cannot run with: a fraction (range takes whole numbers), and one number that
+        # must never be the one OUT holds - nothing is left (the review of the release).
+        for pin, value in (("IN1", a), ("IN2", b)):
+            if t == "math_rand" and re.fullmatch(r"-?\d+\.\d+", value):
+                raise ValueError(f"RAND to {target}: {pin} is a whole number, not {value}.")
+        if t == "math_rand" and el.get("notSame") and re.fullmatch(r"-?\d+", a) and a == b:
+            raise ValueError(f"RAND to {target}: from {a} to {b} there is one number, so never the one OUT holds leaves "
+                             "none. Untick it, or give a range.")
+    expr = calc_template({**el, "type": t, "target": target})
 
     domain = domain_of(target)
     svc = "input_number.set_value" if domain in ("input_number", "") else f"{domain}.set_value"
     return {"action": svc, "target": {"entity_id": target}, "data": {"value": expr}}
+
+
+def _mux_action(el):
+    """[ADDED v3.96.0] MUX - input number K of its list, K from 0 - set as a MOVE sets a value (_move_value_action): a
+    helper, or a device's value - a light's colour by name, as the user's colours one after another are. Two inputs at
+    least, none of them empty, and a fixed K that is one of them."""
+    inputs = [str(v if v is not None else "").strip() for v in (el.get("inputs") or [])]
+    target = clean_target(el.get("target", ""))
+    k = str(el.get("sourceA", "")).strip()
+    if len(inputs) < 2 or not all(inputs):
+        raise ValueError(f"MUX to {target or '?'}: it chooses one of two inputs or more, and none is empty.")
+    if not k:
+        raise ValueError(f"MUX to {target or '?'}: K, the number of the input it chooses, is a number or a variable.")
+    if re.fullmatch(r"-?\d+\.\d+", k):
+        raise ValueError(f"MUX to {target}: K is a whole number - the number of an input - not {k}.")
+    if re.fullmatch(r"-?\d+", k) and not 0 <= int(k) < len(inputs):
+        raise ValueError(f"MUX to {target}: K is {k}, and its inputs are 0 to {len(inputs) - 1}.")
+    key = el.get("valueKey") or ("color_name" if domain_of(target) == "light" else "")
+    move = {**el, "type": "move", "mode": "value", "source": calc_template(el), "target": target}
+    if key:
+        move["valueKey"] = key
+    return _move_value_action(move)
 
 
 _LOOP_KEYS = ("count", "for_each", "while", "until")
@@ -942,7 +1177,10 @@ def _element_to_actions(el):
         # came from wait_for_trigger goes back as wait_for_trigger, and a coil that came from a device
         # action goes back as that device action, registry ids and all.
         raw = el.get("raw")
-        if isinstance(raw, dict) and not raw.get("condition") and not norm_kind(raw):
+        # [CHANGED v3.96.2] Not a block of a scene (its node is its entity's place in the scene): moved into a script
+        # or an automation - its NET's kind changed, the block pasted there - it was written as an action scene: {...}.
+        if isinstance(raw, dict) and not raw.get("condition") and not norm_kind(raw) \
+                and not isinstance(raw.get("scene"), dict):
             return [dict(raw)]
 
     if t in ("native", "device"):  # legacy saves only, the model has no opaque block any more
@@ -996,6 +1234,9 @@ def _element_to_actions(el):
 
     if t.startswith("math_"):
         return [_math_action(el)]
+
+    if t == "mux":
+        return [_mux_action(el)]
 
     if t.startswith("coil"):
         raw = el.get("raw")
@@ -1316,6 +1557,10 @@ def _rung_conditions(head, trig_ids, use_trigger_refs, skip_base=False):
                             ors.append(sub[0])
                         elif sub:
                             ors.append({"condition": "and", "conditions": sub})
+                    # [CHANGED v3.96.0] Triggers that share one id are one reference to it.
+                    same = _plain_trigger_ids(ors)
+                    if same is not None and len(same) == 1:
+                        ors = [{"condition": "trigger", "id": same[0]}]
                     if len(ors) == 1:
                         conds.append(ors[0])
                     elif ors:
@@ -1339,6 +1584,9 @@ def _rung_conditions(head, trig_ids, use_trigger_refs, skip_base=False):
                 conds.append(built)
                 continue
         cond = _element_to_condition(el)
+        if cond and el.get("opaque"):
+            conds.append(cond)  # [ADDED v3.96.0] kept as it is, a for of its own included
+            continue
         if cond:
             # [ADDED v3.27.0] The timer drawn after this condition is its for. When there is none,
             # any for the node used to carry is gone, because the timer was taken off the rung.
@@ -1354,6 +1602,15 @@ def _rung_conditions(head, trig_ids, use_trigger_refs, skip_base=False):
             if not _untouched(el) and isinstance(kids, list) and len(kids) == 1 and isinstance(kids[0], dict) \
                     and "for" in kids[0]:
                 cond[key] = [{k: v for k, v in kids[0].items() if k != "for"}]
+            raw = el.get("raw") if isinstance(el.get("raw"), dict) else {}
+            if held and cond.get("condition") in _NO_FOR_CONDITIONS and not (_untouched(el) and raw.get("for") == held):
+                # [ADDED v3.96.2] A check Home Assistant reads at one moment cannot be held for a time: written with a
+                # for, Home Assistant refused the save (the review of the release). Only a for LIBI would write: a
+                # check and its TON as the file has them are written as they are (RULE 5) - a NET not compiling is no
+                # save at all (websocket._compile_nets), and that NET was not changed.
+                raise ValueError(f"A {cond['condition']} check held for a time - the TON after it - has no form in Home "
+                                 "Assistant: only a check of a state (a contact, CMP =) is held. Remove the TON, or "
+                                 "compare with =.")
             if held:
                 cond["for"] = held
             else:
@@ -1412,6 +1669,15 @@ def _elements_to_actions(elements):
         el = elements[i]
         key = _variables_src(el)
         j = i + 1
+        # [ADDED v3.96.0] A check that is a step of the sequence, with the TON of its for after it: the for is the
+        # check's - it was written as a delay of that time, a script waiting five minutes where it only asked.
+        nxt = elements[j] if j < len(elements) else None
+        if key is None and nxt is not None and _is_for_timer(nxt) and _is_condition(el) and not el.get("opaque"):
+            steps = _element_to_actions(el)
+            if len(steps) == 1 and isinstance(steps[0], dict) and steps[0].get("condition") not in (None, "and", "or", "not"):
+                out.append({**steps[0], "for": _timer_for(nxt)})
+                i = j + 1
+                continue
         if key is None:
             out.extend(_element_to_actions(el))
         else:
@@ -1447,6 +1713,8 @@ def _rung_actions(body):
 
 
 _KEEP = object()  # [ADDED v3.72.0] the for of a trigger the importer drew no TON for: as it is
+# [ADDED v3.96.2] The conditions Home Assistant reads at one moment: none of them takes a for.
+_NO_FOR_CONDITIONS = ("numeric_state", "template", "zone", "time", "sun", "trigger")
 FOR_TRIGGERS = ("state", "numeric_state", "template", "device")  # the trigger kinds that have a for
 
 
@@ -1458,9 +1726,12 @@ def _trigger_for(el, nxt):
     return _timer_for(nxt) if nxt and _is_for_timer(nxt) else None
 
 
-def _collect_triggers(net):
-    """One entry per distinct trigger, in the order they appear.
-    [CHANGED v3.72.0] With the for of the TON drawn right after it."""
+def _trigger_order(net):
+    """[ADDED v3.96.0] The distinct triggers of a NET - each key, the element that first draws it and the for of the TON
+    after it - in the order the automation has them (trigIdx, from the importer), the ones drawn new after them as
+    drawn. A choose whose options name its triggers in another order drew the rungs in that order, and a save wrote the
+    triggers so: trigger.idx changed, and LIBI said the automation it opened did not compile back to itself. The one
+    place both _collect_triggers and trigger_place read the order from."""
     order = []
     seen = {}
     held = {}
@@ -1472,6 +1743,18 @@ def _collect_triggers(net):
                     seen[key] = el
                     order.append(key)
                     held[key] = _trigger_for(el, nxt)
+
+    def first_place(key):
+        idx = seen[key].get("trigIdx")
+        return (0, idx) if isinstance(idx, int) and not isinstance(idx, bool) else (1, 0)
+
+    return sorted(order, key=first_place), seen, held
+
+
+def _collect_triggers(net):
+    """One entry per distinct trigger, in the order the automation has them (_trigger_order).
+    [CHANGED v3.72.0] With the for of the TON drawn right after it."""
+    order, seen, held = _trigger_order(net)
     trig_ids = {}
     triggers = []
     for i, key in enumerate(order):
@@ -1494,19 +1777,15 @@ def trigger_place(net, element_id):
     triggers and the trigger as compiled, or None when the element is no trigger of the NET. Online's Real fires the
     trigger at that place (online.py), once Home Assistant's automation has the same trigger there."""
     rungs = merge_linked_rungs(net or {})
-    order = []
     hit = None
     for rung in rungs:
         for el, _nxt in _walk_pairs(rung.get("elements", [])):
-            if not el.get("isTrigger"):
-                continue
-            key = _trigger_key(el)
-            if key not in order:
-                order.append(key)
-            if hit is None and el.get("id") == element_id:
-                hit = key
+            if hit is None and el.get("isTrigger") and el.get("id") == element_id:
+                hit = _trigger_key(el)
     if hit is None:
         return None
+    # [CHANGED v3.96.0] Its place in the order the compiler writes the triggers in (_trigger_order), not the drawing's.
+    order, _seen, _held = _trigger_order({"rungs": rungs})
     triggers, _ids = _collect_triggers({"rungs": rungs})
     idx = order.index(hit)
     return idx, triggers[idx]
@@ -1559,8 +1838,15 @@ def _merge_pair(upper, lower, up_path, lo_path):
     up_head, up_tail = up_arr[:i], up_arr[i:]
     lo_head, lo_tail = lo_arr[:j], lo_arr[j:]
     merged = []
-    if lo_head:
-        merged.append({"id": f"m{id(lower)}h", "type": "parallel", "closed": True,
+    # [CHANGED v3.96.0] A third rung linked at the same column is one more branch of the same or. It was an or of the
+    # or and itself, and the compiler, which reads an or of triggers one level deep, took the three triggers for
+    # conditions as well: an automation of three triggers was written with a condition made of their states.
+    joined = up_head[0] if len(up_head) == 1 and isinstance(up_head[0], dict) and up_head[0].get("mergedHead") else None
+    if lo_head and joined is not None:
+        joined["branches"].append(lo_head)
+        merged.append(joined)
+    elif lo_head:
+        merged.append({"id": f"m{id(lower)}h", "type": "parallel", "closed": True, "mergedHead": True,
                        "branches": [up_head, lo_head], "isTrigger": False})
     else:
         merged.extend(up_head)
@@ -1823,6 +2109,10 @@ def ast_to_script(hass, net_ast):
         "alias": net.get("name"),
         "sequence": _rungs_to_actions(rungs, groups, {}),
     }
+    # [ADDED v3.96.0] A script read from Home Assistant that had no alias is shown by its key: while that is still its
+    # name, no alias is written.
+    if net.get("aliasFromKey") and str(net.get("name") or "") == str(net.get("ha_id") or ""):
+        out.pop("alias")
     if net.get("description"):
         out["description"] = net.get("description")
     if net.get("mode"):
@@ -1840,6 +2130,15 @@ def _scene_entry(el):
     """[ADDED v3.5.0] One element of a scene as a pair of entity and the state it is put into, or
     None when the element assigns nothing. A scene has no order and no logic, only end states."""
     t = el.get("type", "")
+    # [ADDED v3.96.0] A block of a scene read from Home Assistant, not changed since: its value as the file had it - on
+    # written without quotes, a colour as a list - so a save does not rewrite what nobody changed (RULE 5).
+    scene_raw = el["raw"].get("scene") if isinstance(el.get("raw"), dict) else None
+    if isinstance(scene_raw, dict) and _untouched(el):
+        value = copy.deepcopy(scene_raw.get("value"))
+        if scene_raw.get("key") is None:
+            # Written as a mapping (state: on), it stays one.
+            return str(scene_raw.get("entity")), ({"state": value} if scene_raw.get("dict") else value)
+        return str(scene_raw.get("entity")), {scene_raw["key"]: value}
     if t in SCENE_ON_TYPES or t == "coil_r":
         ent = str(el.get("label") or "").strip()
         if not ent:
@@ -1851,18 +2150,42 @@ def _scene_entry(el):
             return None
         value = el.get("source", "")
         key = el.get("valueKey") or ""
+        if key == "brightness_pct" and domain_of(ent) == "light":
+            # [ADDED v3.96.0] A scene holds a light's state: its brightness is 0-255. A MOVE of a percentage (the AI
+            # chat's light.turn_on, brightness_pct: 50) was written as brightness_pct, which no light's state has.
+            pct = _num(value)
+            if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+                return ent, {"brightness": round(pct * 255 / 100)}
         if key:
-            return ent, {key: _num(value)}
+            return ent, {key: _scene_value(value, key)}
         if str(value).strip() == "":
             return None
-        return ent, _num(value)
+        # [CHANGED v3.96.0] A state is text for Home Assistant, a number too: 5 written as a number was refused
+        # ("State for input_number.level should be a string"), so a scene could not set a number or a dropdown's "5".
+        return ent, str(value).strip()
     return None
+
+
+def _scene_value(value, key=""):
+    """[ADDED v3.96.0] What a MOVE of a scene assigns: a number as a number, and a list or a mapping typed as JSON -
+    a colour, [255, 0, 0] - as that list, not as its text."""
+    text = str(value if value is not None else "").strip()
+    # [ADDED v3.96.0] A colour typed as #ff8800 is the list too.
+    if key in LIST_VALUE_KEYS and _color_list(text) is not None:
+        return _color_list(text)
+    if text[:1] in ("[", "{"):
+        try:
+            return json.loads(text)
+        except ValueError:
+            return value
+    return _num(value)
 
 
 def _scene_entities(rungs):
     """[ADDED v3.5.0] The entities map of a scene. Two elements that touch the same entity are merged
     rather than one overwriting the other, so a coil and a brightness assignment live together."""
     entities = {}
+    drawn = set()
 
     def put(ent, state):
         current = entities.get(ent)
@@ -1891,13 +2214,30 @@ def _scene_entities(rungs):
             if el.get("type") == "repeat":
                 walk(el.get("sequence", []))
                 continue
+            # [ADDED v3.96.0] Not left out without a word: a scene holds fixed states, and reads no template.
+            if str(el.get("type") or "").startswith("math_") or el.get("type") == "mux":
+                raise ValueError("A scene sets fixed states: a MATH, MOD, RAND or MUX block has no place in it. Put "
+                                 "it in a script or an automation.")
             entry = _scene_entry(el)
             if entry:
                 put(entry[0], entry[1])
+                if not (isinstance(el.get("raw"), dict) and isinstance(el["raw"].get("scene"), dict) and _untouched(el)):
+                    drawn.add(entry[0])
 
     for rung in rungs or []:
         walk(rung.get("elements", []))
+    # [ADDED v3.96.0] A light given a brightness or a colour and no state is on: Home Assistant refuses a scene entity
+    # with no state ("State ... should be a string"). Only where a block was drawn or changed: a file's entity, as it
+    # was, stays as it was.
+    for ent in drawn:
+        held = entities.get(ent)
+        if domain_of(ent) == "light" and isinstance(held, dict) and "state" not in held and set(held) & _LIGHT_STATE_KEYS:
+            entities[ent] = {"state": "on", **held}
     return entities
+
+
+_LIGHT_STATE_KEYS = frozenset(("brightness", "rgb_color", "hs_color", "xy_color", "rgbw_color", "rgbww_color",
+                               "color_temp_kelvin", "effect", "color_name", "brightness_pct"))
 
 
 def ast_to_scene(hass, net_ast):
@@ -1932,14 +2272,61 @@ def ast_to_yaml(hass, net_ast):
 # ROUND TRIP CHECK - the safety gate
 # ==========================================================================================
 
+# [ADDED v3.96.0] The lists whose items must all hold, or run one after another: there an and written out is its checks,
+# and a not of several checks is a not of each. Never inside an or or a not, where it would change the meaning.
+_ALL_OF_KEYS = ("condition", "conditions", "if", "while", "until", "action", "actions", "sequence", "then", "else", "default")
+
+
+def _spread(items):
+    """[ADDED v3.96.0] A list of conditions that must all hold, as the ladder draws it: an and written out is its own
+    checks, a not of several checks a not of each, a template in its long form the template itself. Only a node with no
+    key of its own besides (an alias, enabled) is spread."""
+    out = []
+    for item in items:
+        if isinstance(item, dict):
+            word = "and" if item.get("condition") == "and" or ("and" in item and "condition" not in item) else (
+                "not" if item.get("condition") == "not" or ("not" in item and "condition" not in item) else "")
+            kids = item.get("conditions") if item.get("condition") == word else item.get(word)
+            if word and isinstance(kids, list) and set(item) <= {"condition", "conditions", word}:
+                if word == "and":
+                    out.extend(_spread(kids))
+                    continue
+                if len(kids) > 1:
+                    out.extend({"condition": "not", "conditions": [kid]} for kid in kids)
+                    continue
+        out.append(item)
+    return out
+
+
 def _canon(node):
     """Compares meaning, not spelling: trigger/platform, action/service, plural keys, numbers as text,
-    and the and/or/not shorthand against the long form."""
+    and the and/or/not shorthand against the long form.
+    [CHANGED v3.96.0] And what the ladder draws another way with the same meaning: an and written out in a list of
+    checks that must all hold, a not of several checks, a template condition in its long form against the bare
+    string, and a trigger condition of several ids against an or of one each."""
     if isinstance(node, dict):
         for word in ("and", "or", "not"):
             if word in node and "condition" not in node and isinstance(node.get(word), list):
                 node = {"condition": word, "conditions": node[word]}
                 break
+        if set(node) == {"condition", "value_template"} and node["condition"] == "template" \
+                and isinstance(node["value_template"], str):
+            return node["value_template"]
+        if node.get("condition") == "trigger" and set(node) == {"condition", "id"} and isinstance(node["id"], list):
+            ids = list(dict.fromkeys(node["id"]))
+            node = {"condition": "trigger", "id": ids[0]} if len(ids) == 1 else {
+                "condition": "or", "conditions": [{"condition": "trigger", "id": i} for i in ids]}
+        if node.get("condition") in ("and", "or") and isinstance(node.get("conditions"), list) \
+                and len(node["conditions"]) == 1 and set(node) == {"condition", "conditions"}:
+            return _canon(node["conditions"][0])
+        # A not of several checks is each of them not holding, wherever it stands (inside an or too).
+        if node.get("condition") == "not" and isinstance(node.get("conditions"), list) \
+                and len(node["conditions"]) > 1 and set(node) == {"condition", "conditions"}:
+            node = {"condition": "and", "conditions": [{"condition": "not", "conditions": [kid]}
+                                                       for kid in node["conditions"]]}
+        node = {k: (_spread(v) if k in _ALL_OF_KEYS and isinstance(v, list)
+                    and not (k == "conditions" and node.get("condition") in ("or", "not")) else v)
+                for k, v in node.items()}
         out = {}
         for k, v in node.items():
             key = k
@@ -1974,10 +2361,11 @@ def same_config(a, b) -> bool:
     return _canon(a) == _canon(b)
 
 
-def verify_round_trip(hass, automation_dict):
-    """Import then export then compare. Returns ok plus the parts that did not survive."""
+def verify_round_trip(hass, automation_dict, domain="automation", key=""):
+    """Import then export then compare. Returns ok plus the parts that did not survive.
+    [CHANGED v3.96.0] An entry of any kind: a script by its key, a scene."""
     try:
-        net = yaml_to_ast(hass, automation_dict)
+        net = entry_to_ast(hass, domain, key, automation_dict)
         back = ast_to_yaml(hass, net)
     except Exception as err:  # noqa: BLE001
         return {"ok": False, "error": str(err), "issues": ["conversion crashed"]}
